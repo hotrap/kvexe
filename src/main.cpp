@@ -70,9 +70,12 @@ int main(int argc, char **argv) {
 	std::string kvops_path = std::string(argv[2]);
 	std::string ans_out_path = std::string(argv[3]);
 	rocksdb::Options options;
-	// options.db_paths = {{"/tmp/sd", 10000000}, {"/tmp/cd", 100000000}}; // 10MB, 100MB
-	options.db_paths = {{"/tmp/sd", 100000000}, {"/tmp/cd", 1000000000}}; // 100MB, 1GB
-	// options.db_paths = {{"/tmp/sd", 10000000000}, {"/tmp/cd", 100000000000}}; // 10GB, 100GB
+	// 10MB, 100MB
+	// options.db_paths = {{"/tmp/sd", 10000000}, {"/tmp/cd", 100000000}};
+	// 100MB, 1GB
+	options.db_paths = {{"/tmp/sd", 100000000}, {"/tmp/cd", 1000000000}};
+	// 10GB, 100GB
+	// options.db_paths = {{"/tmp/sd", 10000000000}, {"/tmp/cd", 100000000000}};
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
