@@ -4,7 +4,43 @@
 
 #include "rocksdb/db.h"
 
-using namespace std;
+std::vector<rocksdb::DbPath>
+decode_db_paths(std::string db_paths) {
+	std::istringstream in(db_paths);
+	std::vector<rocksdb::DbPath> ret;
+	if (in.get() != '{')
+		abort();
+	char c = in.get();
+	if (c == '}')
+		return ret;
+	if (c != '{')
+		abort();
+	while (1) {
+		std::string path;
+		size_t size;
+		if (in.peek() == '"') {
+			in >> std::quoted(path);
+			if (in.get() != ',')
+				abort();
+		} else {
+			while ((c = in.get()) != ',')
+				path.push_back(c);
+		}
+		in >> size;
+		// std::cout << path << "," << size << std::endl;
+		ret.emplace_back(std::move(path), size);
+		if (in.get() != '}')
+			abort();
+		c = in.get();
+		if (c != ',')
+			break;
+		if (in.get() != '{')
+			abort();
+	}
+	if (c != '}')
+		abort();
+	return ret;
+}
 
 // void empty_directory(std::string dir_path) {
 // 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
@@ -17,7 +53,7 @@ bool is_empty_directory(std::string dir_path) {
 	return it == std::filesystem::end(it);
 }
 
-int work(rocksdb::DB *db, const std::string &kvops_path, ostream &ans_out) {
+int work(rocksdb::DB *db, const std::string &kvops_path, std::ostream &ans_out) {
 	std::ifstream in(kvops_path);
 	if (!in) {
 		std::cout << "Fail to open " << kvops_path << std::endl;
@@ -59,23 +95,23 @@ int work(rocksdb::DB *db, const std::string &kvops_path, ostream &ans_out) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 4) {
+	if (argc != 5) {
+		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Path to database\n";
-		std::cout << "Arg 2: Path to KV operation trace file\n";
-		std::cout << "Arg 3: Path to save output\n";
+		std::cout << "Arg 2: db_paths, for example: "
+			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
+		std::cout << "Arg 3: Path to KV operation trace file\n";
+		std::cout << "Arg 4: Path to save output\n";
 		return -1;
 	}
 	std::string db_path = std::string(argv[1]);
-	std::string kvops_path = std::string(argv[2]);
-	std::string ans_out_path = std::string(argv[3]);
+	std::string db_paths(argv[2]);
+	std::string kvops_path = std::string(argv[3]);
+	std::string ans_out_path = std::string(argv[4]);
 	rocksdb::Options options;
-	// 10MB, 100MB
-	// options.db_paths = {{"/tmp/sd", 10000000}, {"/tmp/cd", 100000000}};
-	// 100MB, 1GB
-	options.db_paths = {{"/tmp/sd", 100000000}, {"/tmp/cd", 1000000000}};
-	// 10GB, 100GB
-	// options.db_paths = {{"/tmp/sd", 10000000000}, {"/tmp/cd", 100000000000}};
+
+	options.db_paths = decode_db_paths(db_paths);
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
