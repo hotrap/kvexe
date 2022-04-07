@@ -4,24 +4,29 @@
 
 #include "rocksdb/db.h"
 
+#define crash_if(cond, msg) do { \
+	if (cond) { \
+		fprintf(stderr, "crash_if: %s:%u: %s: Crashes due to %s: %s", \
+			__FILE__, __LINE__, __func__, #cond, msg); \
+		abort(); \
+	} \
+} while (0)
+
 std::vector<rocksdb::DbPath>
 decode_db_paths(std::string db_paths) {
 	std::istringstream in(db_paths);
 	std::vector<rocksdb::DbPath> ret;
-	if (in.get() != '{')
-		abort();
+	crash_if(in.get() != '{', "Invalid db_paths");
 	char c = in.get();
 	if (c == '}')
 		return ret;
-	if (c != '{')
-		abort();
+	crash_if(c != '{', "Invalid db_paths");
 	while (1) {
 		std::string path;
 		size_t size;
 		if (in.peek() == '"') {
 			in >> std::quoted(path);
-			if (in.get() != ',')
-				abort();
+			crash_if(in.get() != ',', "Invalid db_paths");
 		} else {
 			while ((c = in.get()) != ',')
 				path.push_back(c);
@@ -29,16 +34,13 @@ decode_db_paths(std::string db_paths) {
 		in >> size;
 		// std::cout << path << "," << size << std::endl;
 		ret.emplace_back(std::move(path), size);
-		if (in.get() != '}')
-			abort();
+		crash_if(in.get() != '}', "Invalid db_paths");
 		c = in.get();
 		if (c != ',')
 			break;
-		if (in.get() != '{')
-			abort();
+		crash_if(in.get() != '{', "Invalid db_paths");
 	}
-	if (c != '}')
-		abort();
+	crash_if(c != '}', "Invalid db_paths");
 	return ret;
 }
 
