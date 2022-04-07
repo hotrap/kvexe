@@ -1,6 +1,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <random>
 
 #include "rocksdb/db.h"
 
@@ -96,6 +97,38 @@ int work(rocksdb::DB *db, const std::string &kvops_path, std::ostream &ans_out) 
 	return 0;
 }
 
+class RouterTrivial : public rocksdb::CompactionRouter {
+	rocksdb::CompactionRouter::Decision
+	Route(int, const rocksdb::Slice&) override {
+		return rocksdb::CompactionRouter::Decision::kNextLevel;
+	}
+	const char *Name() const override {
+		return "RouterTrivial";
+	}
+};
+
+class RouterProb : public rocksdb::CompactionRouter {
+public:
+	RouterProb(float prob_to_next, unsigned int seed)
+	  : prob_to_next_(prob_to_next),
+		gen_(seed),
+		dis_(0, 1) {}
+	rocksdb::CompactionRouter::Decision
+	Route(int, const rocksdb::Slice &) override {
+		if (dis_(gen_) >= prob_to_next_)
+			return rocksdb::CompactionRouter::Decision::kNextLevel;
+		else
+			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
+	}
+	const char *Name() const override {
+		return "RouterTrivial";
+	}
+private:
+	float prob_to_next_;
+	std::mt19937 gen_;
+	std::uniform_real_distribution<float> dis_;
+};
+
 int main(int argc, char **argv) {
 	if (argc != 5) {
 		std::cout << argc << std::endl;
@@ -114,6 +147,8 @@ int main(int argc, char **argv) {
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
+	// options.compaction_router = new RouterTrivial;
+	options.compaction_router = new RouterProb(0.5, 233);
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
