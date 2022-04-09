@@ -13,13 +13,12 @@ ENDIF()
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
-include_directories(${ROCKSDB_DIR}/include/)
+include_directories(${ROCKSDB_INCLUDE})
 target_include_directories(${PROJECT_NAME}
 	PRIVATE
 		${PROJECT_SOURCE_DIR}/include
 )
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_DIR}/build/)
-# link_directories(${ROCKSDB_DIR}/build/)
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
         rocksdb
