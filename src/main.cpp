@@ -3,6 +3,8 @@
 #include <fstream>
 #include <random>
 #include <set>
+#include <thread>
+#include <chrono>
 
 #include "rocksdb/db.h"
 
@@ -353,7 +355,7 @@ private:
 };
 
 int main(int argc, char **argv) {
-	if (argc != 6) {
+	if (argc != 7) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Path to database\n";
@@ -362,6 +364,7 @@ int main(int argc, char **argv) {
 		std::cout << "Arg 3: Path to KV operation trace file\n";
 		std::cout << "Arg 4: Path to save output\n";
 		std::cout << "Arg 5: Path to VisCnts\n";
+		std::cout << "Arg 6: Seconds to sleep before exit\n";
 		return -1;
 	}
 	std::string db_path = std::string(argv[1]);
@@ -369,6 +372,7 @@ int main(int argc, char **argv) {
 	std::string kvops_path = std::string(argv[3]);
 	std::string ans_out_path = std::string(argv[4]);
 	const char *viscnts_path = argv[5];
+	int sleep_seconds = atoi(argv[6]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -399,6 +403,8 @@ int main(int argc, char **argv) {
 	}
 
 	int ret = work(db, kvops_path, ans_out);
+
+	std::this_thread::sleep_for(std::chrono::seconds(sleep_seconds));
 
 	delete db;
 
