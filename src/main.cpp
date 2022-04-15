@@ -81,7 +81,8 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		if (cur_level == level) {
 			// Does desired level fit in this path?
-			std::cout << level << ' ' << options.db_paths[p].path << std::endl;
+			std::cout << level << ' ' << options.db_paths[p].path << ' ' <<
+				level_size << std::endl;
 			++level;
 		}
 		current_path_size -= level_size;
@@ -102,7 +103,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		cur_level++;
 	}
-	std::cout << level << "+ " << options.db_paths[p].path << std::endl;
+	std::cout << level << "+ " << options.db_paths[p].path << ' ' << level_size << std::endl;
 	return level;
 }
 
