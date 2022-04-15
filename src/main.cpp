@@ -82,7 +82,8 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		if (cur_level == level) {
 			// Does desired level fit in this path?
-			std::cout << level << ' ' << options.db_paths[p].path << std::endl;
+			std::cout << level << ' ' << options.db_paths[p].path << ' ' <<
+				level_size << std::endl;
 			++level;
 		}
 		current_path_size -= level_size;
@@ -103,7 +104,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		cur_level++;
 	}
-	std::cout << level << "+ " << options.db_paths[p].path << std::endl;
+	std::cout << level << "+ " << options.db_paths[p].path << ' ' << level_size << std::endl;
 	return level;
 }
 
@@ -354,8 +355,56 @@ private:
 	int target_level_;
 };
 
+bool has_background_work(rocksdb::DB *db) {
+	uint64_t flush_pending;
+	uint64_t compaction_pending;
+	uint64_t flush_running;
+	uint64_t compaction_running;
+	bool ok =
+		db->GetIntProperty(
+			rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
+	// assert(ok);
+	crash_if(!ok, "");
+	ok = db->GetIntProperty(
+			rocksdb::Slice("rocksdb.compaction-pending"), &compaction_pending);
+	// assert(ok);
+	crash_if(!ok, "");
+	ok = db->GetIntProperty(
+			rocksdb::Slice("rocksdb.num-running-flushes"), &flush_running);
+	// assert(ok);
+	crash_if(!ok, "");
+	ok = db->GetIntProperty(
+			rocksdb::Slice("rocksdb.num-running-compactions"),
+			&compaction_running);
+	// assert(ok);
+	crash_if(!ok, "");
+	return flush_pending || compaction_pending || flush_running ||
+		compaction_running;
+}
+
+void wait_for_background_work(rocksdb::DB *db) {
+	while (1) {
+		if (has_background_work(db)) {
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			continue;
+		}
+		// The properties are not get atomically. Test for more 20 times more.
+		int i;
+		for (i = 0; i < 20; ++i) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			if (has_background_work(db)) {
+				break;
+			}
+		}
+		if (i == 20) {
+			std::cout << "There is no background work detected for more than 2 seconds. Exiting...\n";
+			break;
+		}
+	}
+}
+
 int main(int argc, char **argv) {
-	if (argc != 7) {
+	if (argc != 6) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Path to database\n";
@@ -364,7 +413,6 @@ int main(int argc, char **argv) {
 		std::cout << "Arg 3: Path to KV operation trace file\n";
 		std::cout << "Arg 4: Path to save output\n";
 		std::cout << "Arg 5: Path to VisCnts\n";
-		std::cout << "Arg 6: Seconds to sleep before exit\n";
 		return -1;
 	}
 	std::string db_path = std::string(argv[1]);
@@ -372,7 +420,6 @@ int main(int argc, char **argv) {
 	std::string kvops_path = std::string(argv[3]);
 	std::string ans_out_path = std::string(argv[4]);
 	const char *viscnts_path = argv[5];
-	int sleep_seconds = atoi(argv[6]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -404,7 +451,7 @@ int main(int argc, char **argv) {
 
 	int ret = work(db, kvops_path, ans_out);
 
-	std::this_thread::sleep_for(std::chrono::seconds(sleep_seconds));
+	wait_for_background_work(db);
 
 	delete db;
 
