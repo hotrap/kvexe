@@ -47,6 +47,65 @@ decode_db_paths(std::string db_paths) {
 	return ret;
 }
 
+int MaxBytesMultiplerAdditional(const rocksdb::Options& options, int level) {
+	if (level >= static_cast<int>(options.max_bytes_for_level_multiplier_additional.size())) {
+		return 1;
+	}
+	return options.max_bytes_for_level_multiplier_additional[level];
+}
+
+// Return the first level in the last path
+int predict_level_assignment(const rocksdb::Options& options) {
+	uint32_t p = 0;
+	int level = 0;
+	assert(!options.db_paths.empty());
+
+	std::cout << "Predicted level assignment:\n";
+
+	// size remaining in the most recent path
+	uint64_t current_path_size = options.db_paths[0].target_size;
+
+	uint64_t level_size;
+	int cur_level = 0;
+
+	// max_bytes_for_level_base denotes L1 size.
+	// We estimate L0 size to be the same as L1.
+	level_size = options.max_bytes_for_level_base;
+
+	// Last path is the fallback
+	while (p < options.db_paths.size() - 1) {
+		if (current_path_size < level_size) {
+			p++;
+			current_path_size = options.db_paths[p].target_size;
+			continue;
+		}
+		if (cur_level == level) {
+			// Does desired level fit in this path?
+			std::cout << level << ' ' << options.db_paths[p].path << std::endl;
+			++level;
+		}
+		current_path_size -= level_size;
+		if (cur_level > 0) {
+			if (options.level_compaction_dynamic_level_bytes) {
+				// Currently, level_compaction_dynamic_level_bytes is ignored when
+				// multiple db paths are specified. https://github.com/facebook/
+				// rocksdb/blob/main/db/column_family.cc.
+				// Still, adding this check to avoid accidentally using
+				// max_bytes_for_level_multiplier_additional
+				level_size = static_cast<uint64_t>(
+					level_size * options.max_bytes_for_level_multiplier);
+			} else {
+				level_size = static_cast<uint64_t>(
+					level_size * options.max_bytes_for_level_multiplier *
+						MaxBytesMultiplerAdditional(options, cur_level));
+			}
+		}
+		cur_level++;
+	}
+	std::cout << level << "+ " << options.db_paths[p].path << std::endl;
+	return level;
+}
+
 // void empty_directory(std::string dir_path) {
 // 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
 // 		std::filesystem::remove_all(path);
@@ -249,6 +308,8 @@ int main(int argc, char **argv) {
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
+
+	predict_level_assignment(options);
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
