@@ -2,6 +2,8 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <thread>
+#include <chrono>
 
 #include "rocksdb/db.h"
 
@@ -228,7 +230,7 @@ int work(rocksdb::DB *db, const std::string& kvops_path, std::ostream& ans_out) 
 }
 
 int main(int argc, char **argv) {
-	if (argc != 5) {
+	if (argc != 6) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Path to database\n";
@@ -236,12 +238,14 @@ int main(int argc, char **argv) {
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
 		std::cout << "Arg 3: Path to KV operation trace file\n";
 		std::cout << "Arg 4: Path to save output\n";
+		std::cout << "Arg 5: Seconds to sleep before exit\n";
 		return -1;
 	}
 	std::string db_path = std::string(argv[1]);
 	std::string db_paths(argv[2]);
 	std::string kvops_path = std::string(argv[3]);
 	std::string ans_out_path = std::string(argv[4]);
+	int sleep_seconds = atoi(argv[5]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -265,6 +269,8 @@ int main(int argc, char **argv) {
 	}
 
 	int ret = work(db, kvops_path, ans_out);
+
+	std::this_thread::sleep_for(std::chrono::seconds(sleep_seconds));
 
 	delete db;
 
