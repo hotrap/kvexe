@@ -404,7 +404,7 @@ void wait_for_background_work(rocksdb::DB *db) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 6) {
+	if (argc != 7) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Path to database\n";
@@ -413,6 +413,7 @@ int main(int argc, char **argv) {
 		std::cout << "Arg 3: Path to KV operation trace file\n";
 		std::cout << "Arg 4: Path to save output\n";
 		std::cout << "Arg 5: Path to VisCnts\n";
+		std::cout << "Arg 6: Delta in bytes\n";
 		return -1;
 	}
 	std::string db_path = std::string(argv[1]);
@@ -420,6 +421,7 @@ int main(int argc, char **argv) {
 	std::string kvops_path = std::string(argv[3]);
 	std::string ans_out_path = std::string(argv[4]);
 	const char *viscnts_path = argv[5];
+	float delta = atof(argv[6]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -429,7 +431,7 @@ int main(int argc, char **argv) {
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
 	options.compaction_router =
-		new RouterVisCnts(first_cd_level - 1, viscnts_path, 1e7, true);
+		new RouterVisCnts(first_cd_level - 1, viscnts_path, delta, true);
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
