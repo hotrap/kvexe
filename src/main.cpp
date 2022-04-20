@@ -325,8 +325,8 @@ private:
 };
 
 extern void *VisCntsOpen(const char *path, double delta, bool createIfMissing);
-extern int VisCntsAccess(void *ac, const char *key, size_t vlen);
-extern bool VisCntsIsHot(void *ac, const char *key);
+extern int VisCntsAccess(void *ac, const char *key, size_t klen, size_t vlen);
+extern bool VisCntsIsHot(void *ac, const char *key, size_t klen);
 extern int VisCntsClose(void *ac);
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
@@ -343,13 +343,13 @@ public:
 	}
 	void Access(const rocksdb::Slice& key, size_t vlen) override {
 		accessed_.fetch_add(1, std::memory_order_relaxed);
-		VisCntsAccess(ac_, key.data(), vlen);
+		VisCntsAccess(ac_, key.data(), key.size(), vlen);
 	}
 	rocksdb::CompactionRouter::Decision
 	Route(int level, const rocksdb::Slice& key) override {
 		if (level != target_level_)
 			return rocksdb::CompactionRouter::Decision::kNextLevel;
-		if (VisCntsIsHot(ac_, key.data())) {
+		if (VisCntsIsHot(ac_, key.data(), key.size())) {
 			retained_.fetch_add(1, std::memory_order_relaxed);
 			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
 		} else {
