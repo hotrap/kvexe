@@ -291,7 +291,7 @@ int work(rocksdb::DB *db, const std::string& kvops_path, std::ostream& ans_out) 
 }
 
 class RouterTrivial : public rocksdb::CompactionRouter {
-	void Access(const rocksdb::Slice&) override {}
+	void Access(const rocksdb::Slice&, size_t) override {}
 	rocksdb::CompactionRouter::Decision
 	Route(int, const rocksdb::Slice&) override {
 		return rocksdb::CompactionRouter::Decision::kNextLevel;
@@ -307,7 +307,7 @@ public:
 	  : prob_to_next_(prob_to_next),
 		gen_(seed),
 		dis_(0, 1) {}
-	void Access(const rocksdb::Slice&) override {}
+	void Access(const rocksdb::Slice&, size_t) override {}
 	rocksdb::CompactionRouter::Decision
 	Route(int, const rocksdb::Slice &) override {
 		if (dis_(gen_) >= prob_to_next_)
@@ -324,35 +324,57 @@ private:
 	std::uniform_real_distribution<float> dis_;
 };
 
-extern void *VisCntsOpen(const char *path, float delta, bool createIfMissing);
-extern int VisCntsAccess(void *ac, const char *key);
+extern void *VisCntsOpen(const char *path, double delta, bool createIfMissing);
+extern int VisCntsAccess(void *ac, const char *key, size_t vlen);
 extern bool VisCntsIsHot(void *ac, const char *key);
+extern int VisCntsClose(void *ac);
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
-	RouterVisCnts(int target_level, const char *path, float delta,
+	RouterVisCnts(int target_level, const char *path, double delta,
 			bool create_if_missing)
 	  : ac_(VisCntsOpen(path, delta, create_if_missing)),
-	  	target_level_(target_level) {}
-	void Access(const rocksdb::Slice& key) override {
-		VisCntsAccess(ac_, key.data());
+	  	target_level_(target_level),
+		accessed_(0),
+		retained_(0),
+		not_retained_(0) {}
+	~RouterVisCnts() {
+		VisCntsClose(ac_);
+	}
+	void Access(const rocksdb::Slice& key, size_t vlen) override {
+		accessed_.fetch_add(1, std::memory_order_relaxed);
+		VisCntsAccess(ac_, key.data(), vlen);
 	}
 	rocksdb::CompactionRouter::Decision
 	Route(int level, const rocksdb::Slice& key) override {
 		if (level != target_level_)
 			return rocksdb::CompactionRouter::Decision::kNextLevel;
 		if (VisCntsIsHot(ac_, key.data())) {
+			retained_.fetch_add(1, std::memory_order_relaxed);
 			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
 		} else {
+			not_retained_.fetch_add(1, std::memory_order_relaxed);
 			return rocksdb::CompactionRouter::Decision::kNextLevel;
 		}
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
+	size_t accessed() const {
+		return accessed_.load(std::memory_order_relaxed);
+	}
+	size_t retained() const {
+		return retained_.load(std::memory_order_relaxed);
+	}
+	size_t not_retained() const {
+		return not_retained_.load(std::memory_order_relaxed);
+	}
 private:
 	void *ac_;
 	int target_level_;
+	std::atomic<size_t> accessed_;
+	std::atomic<size_t> retained_;
+	std::atomic<size_t> not_retained_;
 };
 
 bool has_background_work(rocksdb::DB *db) {
@@ -421,7 +443,7 @@ int main(int argc, char **argv) {
 	std::string kvops_path = std::string(argv[3]);
 	std::string ans_out_path = std::string(argv[4]);
 	const char *viscnts_path = argv[5];
-	float delta = atof(argv[6]);
+	double delta = atof(argv[6]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -430,8 +452,9 @@ int main(int argc, char **argv) {
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
-	options.compaction_router =
+	auto router =
 		new RouterVisCnts(first_cd_level - 1, viscnts_path, delta, true);
+	options.compaction_router = router;
 
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
@@ -455,7 +478,12 @@ int main(int argc, char **argv) {
 
 	wait_for_background_work(db);
 
+	std::cout << "Accessed: " << router->accessed() << std::endl;
+	std::cout << "Retained: " << router->retained() << std::endl;
+	std::cout << "Not retained: " << router->not_retained() << std::endl;
+
 	delete db;
+	delete router;
 
 	return ret;
 }
