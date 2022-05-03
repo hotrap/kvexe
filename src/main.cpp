@@ -118,14 +118,14 @@ bool is_empty_directory(std::string dir_path) {
 	return it == std::filesystem::end(it);
 }
 
-void handle_table_name(std::ifstream& in) {
+void handle_table_name(std::istream& in) {
 	std::string table;
 	in >> table;
 	crash_if(table != "usertable", "Column families not supported yet.");
 }
 
 std::vector<std::pair<std::vector<char>, std::vector<char> > >
-read_field_values(std::ifstream& in) {
+read_field_values(std::istream& in) {
 	std::vector<std::pair<std::vector<char>, std::vector<char> > > ret;
 	char c;
 	do {
@@ -160,7 +160,7 @@ void serialize_field_values(std::ostream& out, const T& fvs) {
 	}
 }
 
-std::set<std::string> read_fields(std::ifstream& in) {
+std::set<std::string> read_fields(std::istream& in) {
 	char c;
 	do {
 		c = in.get();
@@ -201,13 +201,7 @@ deserialize_values(std::istream& in,
 	return result;
 }
 
-int work(rocksdb::DB *db, const std::string& kvops_path, std::ostream& ans_out) {
-	std::ifstream in(kvops_path);
-	if (!in) {
-		std::cout << "Fail to open " << kvops_path << std::endl;
-		return -1;
-	}
-
+int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
 		std::string op;
 		in >> op;
@@ -358,6 +352,12 @@ int main(int argc, char **argv) {
 
 	predict_level_assignment(options);
 
+	std::ifstream in(kvops_path);
+	if (!in) {
+		std::cout << "Fail to open " << kvops_path << std::endl;
+		return -1;
+	}
+
 	std::ofstream ans_out(ans_out_path);
 	if (!ans_out) {
 		std::cout << "Fail to open " << ans_out_path << std::endl;
@@ -376,7 +376,7 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	int ret = work(db, kvops_path, ans_out);
+	int ret = work(db, in, ans_out);
 
 	wait_for_background_work(db);
 
