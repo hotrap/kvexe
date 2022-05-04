@@ -108,11 +108,11 @@ int predict_level_assignment(const rocksdb::Options& options) {
 	return level;
 }
 
-// void empty_directory(std::string dir_path) {
-// 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
-// 		std::filesystem::remove_all(path);
-// 	}
-// }
+void empty_directory(std::string dir_path) {
+	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
+		std::filesystem::remove_all(path);
+	}
+}
 
 bool is_empty_directory(std::string dir_path) {
 	auto it = std::filesystem::directory_iterator(dir_path);
@@ -420,27 +420,40 @@ void wait_for_background_work(rocksdb::DB *db) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 7) {
+	if (argc != 8) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
-		std::cout << "Arg 1: Path to database\n";
-		std::cout << "Arg 2: db_paths, for example: "
+		std::cout << "Arg 1: Whether to empty the directories.\n";
+		std::cout << "\t1: Empty the directories first.\n";
+		std::cout << "\t0: Leave the directories as they are.\n";
+		std::cout << "Arg 2: Path to database\n";
+		std::cout << "Arg 3: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cout << "Arg 3: Path to KV operation trace file\n";
-		std::cout << "Arg 4: Path to save output\n";
-		std::cout << "Arg 5: Path to VisCnts\n";
-		std::cout << "Arg 6: Delta in bytes\n";
+		std::cout << "Arg 4: Path to KV operation trace file\n";
+		std::cout << "Arg 5: Path to save output\n";
+		std::cout << "Arg 6: Path to VisCnts\n";
+		std::cout << "Arg 7: Delta in bytes\n";
 		return -1;
 	}
-	std::string db_path = std::string(argv[1]);
-	std::string db_paths(argv[2]);
-	std::string kvops_path = std::string(argv[3]);
-	std::string ans_out_path = std::string(argv[4]);
-	const char *viscnts_path = argv[5];
-	double delta = atof(argv[6]);
+	bool empty_directories_first = (argv[1][0] == '1');
+	std::string db_path = std::string(argv[2]);
+	std::string db_paths(argv[3]);
+	std::string kvops_path = std::string(argv[4]);
+	std::string ans_out_path = std::string(argv[5]);
+	const char *viscnts_path = argv[6];
+	double delta = atof(argv[7]);
 	rocksdb::Options options;
 
 	options.db_paths = decode_db_paths(db_paths);
+
+	if (empty_directories_first) {
+		std::cout << "Emptying directories\n";
+		empty_directory(db_path);
+		for (auto path : options.db_paths) {
+			empty_directory(path.path);
+		}
+		empty_directory(viscnts_path);
+	}
 
 	int first_cd_level = predict_level_assignment(options);
 
