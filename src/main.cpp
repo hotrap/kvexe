@@ -332,25 +332,30 @@ void wait_for_background_work(rocksdb::DB *db) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 6) {
+	if (argc != 7) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Whether to empty the directories.\n";
 		std::cout << "\t1: Empty the directories first.\n";
 		std::cout << "\t0: Leave the directories as they are.\n";
-		std::cout << "Arg 2: Path to database\n";
-		std::cout << "Arg 3: db_paths, for example: "
+		std::cout << "Arg 2: Use O_DIRECT for user and compaction reads?\n";
+		std::cout << "\t1: Yes\n";
+		std::cout << "\t0: No\n";
+		std::cout << "Arg 3: Path to database\n";
+		std::cout << "Arg 4: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cout << "Arg 4: Path to KV operation trace file\n";
-		std::cout << "Arg 5: Path to save output\n";
+		std::cout << "Arg 5: Path to KV operation trace file\n";
+		std::cout << "Arg 6: Path to save output\n";
 		return -1;
 	}
-	bool empty_directories_first = (argv[1][0] == '1');
-	std::string db_path = std::string(argv[2]);
-	std::string db_paths(argv[3]);
-	std::string kvops_path = std::string(argv[4]);
-	std::string ans_out_path = std::string(argv[5]);
 	rocksdb::Options options;
+
+	bool empty_directories_first = (argv[1][0] == '1');
+	options.use_direct_reads = (argv[2][0] == '1');
+	std::string db_path = std::string(argv[3]);
+	std::string db_paths(argv[4]);
+	std::string kvops_path = std::string(argv[5]);
+	std::string ans_out_path = std::string(argv[6]);
 
 	options.db_paths = decode_db_paths(db_paths);
 
