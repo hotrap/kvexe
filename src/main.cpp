@@ -392,9 +392,18 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	auto start = std::chrono::steady_clock::now();
 	int ret = work(db, in, ans_out);
+	auto end = std::chrono::steady_clock::now();
+	std::cout << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
+			end - start).count() / 1e9 << " second(s) for work\n";
 
+	start = std::chrono::steady_clock::now();
 	wait_for_background_work(db);
+	end = std::chrono::steady_clock::now();
+	std::cout << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
+			end - start).count() / 1e9 <<
+		" second(s) waiting for background work\n";
 
 	delete db;
 
