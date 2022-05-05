@@ -413,7 +413,7 @@ void wait_for_background_work(rocksdb::DB *db) {
 			}
 		}
 		if (i == 20) {
-			std::cout << "There is no background work detected for more than 2 seconds. Exiting...\n";
+			// std::cout << "There is no background work detected for more than 2 seconds. Exiting...\n";
 			break;
 		}
 	}
