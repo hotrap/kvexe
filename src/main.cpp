@@ -356,6 +356,9 @@ int main(int argc, char **argv) {
 	std::string db_paths(argv[4]);
 	std::string kvops_path = std::string(argv[5]);
 	std::string ans_out_path = std::string(argv[6]);
+	options.write_buffer_size = 1 << 20;
+	options.target_file_size_base = 1 << 20;
+	options.max_bytes_for_level_base = 4 * options.target_file_size_base;
 
 	options.db_paths = decode_db_paths(db_paths);
 
