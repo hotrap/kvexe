@@ -285,7 +285,7 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 }
 
 class RouterTrivial : public rocksdb::CompactionRouter {
-	void Access(const rocksdb::Slice&, size_t) override {}
+	void Access(int, const rocksdb::Slice&, size_t) override {}
 	rocksdb::CompactionRouter::Decision
 	Route(int, const rocksdb::Slice&) override {
 		return rocksdb::CompactionRouter::Decision::kNextLevel;
@@ -301,7 +301,7 @@ public:
 	  : prob_to_next_(prob_to_next),
 		gen_(seed),
 		dis_(0, 1) {}
-	void Access(const rocksdb::Slice&, size_t) override {}
+	void Access(int, const rocksdb::Slice&, size_t) override {}
 	rocksdb::CompactionRouter::Decision
 	Route(int, const rocksdb::Slice &) override {
 		if (dis_(gen_) >= prob_to_next_)
@@ -327,15 +327,18 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(int target_level, const char *path, double delta,
 			bool create_if_missing)
-	  : ac_(VisCntsOpen(path, delta, create_if_missing)),
-	  	target_level_(target_level),
-		accessed_(0),
-		retained_(0),
-		not_retained_(0) {}
+		:	ac_(VisCntsOpen(path, delta, create_if_missing)),
+			target_level_(target_level),
+			accessed_(0),
+			retained_(0),
+			not_retained_(0) {}
 	~RouterVisCnts() {
 		VisCntsClose(ac_);
 	}
-	void Access(const rocksdb::Slice& key, size_t vlen) override {
+	void Access(int level, const rocksdb::Slice &key, size_t vlen)
+			override {
+		if (level < target_level_)
+			return;
 		accessed_.fetch_add(1, std::memory_order_relaxed);
 		VisCntsAccess(ac_, key.data(), key.size(), vlen);
 	}
