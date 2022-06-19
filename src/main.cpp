@@ -5,6 +5,8 @@
 #include <set>
 #include <thread>
 #include <chrono>
+#include <shared_mutex>
+#include <deque>
 
 #include "rocksdb/db.h"
 
@@ -329,7 +331,6 @@ public:
 			bool create_if_missing)
 		:	ac_(VisCntsOpen(path, delta, create_if_missing)),
 			target_level_(target_level),
-			accessed_(0),
 			retained_(0),
 			not_retained_(0) {}
 	~RouterVisCnts() {
@@ -339,7 +340,19 @@ public:
 			override {
 		if (level < target_level_)
 			return;
-		accessed_.fetch_add(1, std::memory_order_relaxed);
+		lock_.lock_shared();
+		if (accessed_.size() <= (size_t)level) {
+			lock_.unlock_shared();
+			// TODO: Is starvation possible here?
+			lock_.lock();
+			if (accessed_.size() <= (size_t)level) {
+				accessed_.resize(level + 1);
+			}
+			lock_.unlock();
+			lock_.lock_shared();
+		}
+		accessed_[level].fetch_add(1, std::memory_order_relaxed);
+		lock_.unlock_shared();
 		VisCntsAccess(ac_, key.data(), key.size(), vlen);
 	}
 	rocksdb::CompactionRouter::Decision
@@ -357,8 +370,13 @@ public:
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
-	size_t accessed() const {
-		return accessed_.load(std::memory_order_relaxed);
+	std::vector<size_t> accessed() {
+		std::shared_lock<std::shared_mutex> read_lock(lock_);
+		std::vector<size_t> ret;
+		for (auto& x : accessed_) {
+			ret.push_back(x.load(std::memory_order_relaxed));
+		}
+		return ret;
 	}
 	size_t retained() const {
 		return retained_.load(std::memory_order_relaxed);
@@ -369,7 +387,10 @@ public:
 private:
 	void *ac_;
 	int target_level_;
-	std::atomic<size_t> accessed_;
+
+	std::shared_mutex lock_;
+	std::deque<std::atomic<size_t> > accessed_;
+
 	std::atomic<size_t> retained_;
 	std::atomic<size_t> not_retained_;
 };
@@ -511,7 +532,13 @@ int main(int argc, char **argv) {
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
 
-	std::cout << "Accessed: " << router->accessed() << std::endl;
+	auto accessed = router->accessed();
+	std::cout << "Accessed: {";
+	for (size_t level = 0; level < accessed.size(); ++level) {
+		std::cout << level << ':' << accessed[level] << ',';
+	}
+	std::cout << "}\n";
+
 	std::cout << "Retained: " << router->retained() << std::endl;
 	std::cout << "Not retained: " << router->not_retained() << std::endl;
 
