@@ -287,8 +287,9 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 }
 
 extern void *VisCntsOpen(const rocksdb::Comparator *ucmp, const char *path,
-	double delta, bool createIfMissing);
-extern int VisCntsAccess(void *ac, const rocksdb::Slice *key, size_t vlen);
+	bool createIfMissing);
+extern double VisCntsAccess(void *ac, const rocksdb::Slice *key, size_t vlen);
+double VisCntsDecay(void *ac);
 extern void *VisCntsNewIter(void *ac);
 // key must not decrease
 extern bool VisCntsIsHot(void *iter, const rocksdb::Slice *key);
@@ -298,13 +299,19 @@ extern int VisCntsClose(void *ac);
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
-			const char *path, double delta, bool create_if_missing)
-		:	ac_(VisCntsOpen(ucmp, path, delta, create_if_missing)),
+			const char *dir, double weight_sum_max, bool create_if_missing)
+		:	ucmp_(ucmp),
+			dir_(dir),
+			create_if_missing_(create_if_missing),
 			target_level_(target_level),
+			weight_sum_max_(weight_sum_max),
+			weight_sum_(0),
 			retained_(0),
 			not_retained_(0) {}
 	~RouterVisCnts() {
-		VisCntsClose(ac_);
+		for (auto vc : vcs_) {
+			VisCntsClose(vc);
+		}
 	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
@@ -323,13 +330,26 @@ public:
 		}
 		accessed_[level].fetch_add(1, std::memory_order_relaxed);
 		lock_.unlock_shared();
-		VisCntsAccess(ac_, key, vlen);
+
+		while (vcs_.size() <= (size_t)level) {
+			std::string path = std::string(dir_) + std::to_string(vcs_.size());
+			void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
+			vcs_.push_back(vc);
+		}
+		void *vc = vcs_[level];
+		weight_sum_ += VisCntsAccess(vc, key, vlen);
+		if (weight_sum_ >= weight_sum_max_) {
+			weight_sum_ = 0;
+			for (void *vc : vcs_) {
+				weight_sum_ += VisCntsDecay(vc);
+			}
+		}
 	}
 	void *NewIter(int level) override {
 		if (level < target_level_) {
 			return NULL;
 		}
-		return VisCntsNewIter(ac_);
+		return VisCntsNewIter(vcs_[level]);
 	}
 	void DelIter(void *iter) override {
 		if (iter) {
@@ -366,8 +386,13 @@ public:
 		return not_retained_.load(std::memory_order_relaxed);
 	}
 private:
-	void *ac_;
+	std::vector<void *> vcs_;
+	const rocksdb::Comparator *ucmp_;
+	const char *dir_;
+	bool create_if_missing_;
 	int target_level_;
+	double weight_sum_max_;
+	double weight_sum_;
 
 	std::shared_mutex lock_;
 	std::deque<std::atomic<size_t> > accessed_;
