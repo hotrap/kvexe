@@ -286,40 +286,6 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
-class RouterTrivial : public rocksdb::CompactionRouter {
-	void Access(int, const rocksdb::Slice&, size_t) override {}
-	rocksdb::CompactionRouter::Decision
-	Route(int, const rocksdb::Slice&) override {
-		return rocksdb::CompactionRouter::Decision::kNextLevel;
-	}
-	const char *Name() const override {
-		return "RouterTrivial";
-	}
-};
-
-class RouterProb : public rocksdb::CompactionRouter {
-public:
-	RouterProb(float prob_to_next, unsigned int seed)
-	  : prob_to_next_(prob_to_next),
-		gen_(seed),
-		dis_(0, 1) {}
-	void Access(int, const rocksdb::Slice&, size_t) override {}
-	rocksdb::CompactionRouter::Decision
-	Route(int, const rocksdb::Slice &) override {
-		if (dis_(gen_) >= prob_to_next_)
-			return rocksdb::CompactionRouter::Decision::kNextLevel;
-		else
-			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
-	}
-	const char *Name() const override {
-		return "RouterProb";
-	}
-private:
-	float prob_to_next_;
-	std::mt19937 gen_;
-	std::uniform_real_distribution<float> dis_;
-};
-
 extern void *VisCntsOpen(const char *path, double delta, bool createIfMissing);
 extern int VisCntsAccess(void *ac, const char *key, size_t klen, size_t vlen);
 extern bool VisCntsIsHot(void *ac, const char *key, size_t klen);
