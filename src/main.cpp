@@ -323,7 +323,7 @@ public:
 	}
 	rocksdb::CompactionRouter::Decision
 	Route(int level, const rocksdb::Slice& key) override {
-		if (level != target_level_)
+		if (level < target_level_)
 			return rocksdb::CompactionRouter::Decision::kNextLevel;
 		if (VisCntsIsHot(ac_, key.data(), key.size())) {
 			retained_.fetch_add(1, std::memory_order_relaxed);
