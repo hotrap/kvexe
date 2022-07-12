@@ -286,23 +286,27 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
-extern void *VisCntsOpen(const char *path, double delta, bool createIfMissing);
-extern int VisCntsAccess(void *ac, const char *key, size_t klen, size_t vlen);
-extern bool VisCntsIsHot(void *ac, const char *key, size_t klen);
+extern void *VisCntsOpen(const rocksdb::Comparator *ucmp, const char *path,
+	double delta, bool createIfMissing);
+extern int VisCntsAccess(void *ac, const rocksdb::Slice *key, size_t vlen);
+extern void *VisCntsNewIter(void *ac);
+// key must not decrease
+extern bool VisCntsIsHot(void *iter, const rocksdb::Slice *key);
+extern void VisCntsDelIter(void *iter);
 extern int VisCntsClose(void *ac);
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
-	RouterVisCnts(int target_level, const char *path, double delta,
-			bool create_if_missing)
-		:	ac_(VisCntsOpen(path, delta, create_if_missing)),
+	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
+			const char *path, double delta, bool create_if_missing)
+		:	ac_(VisCntsOpen(ucmp, path, delta, create_if_missing)),
 			target_level_(target_level),
 			retained_(0),
 			not_retained_(0) {}
 	~RouterVisCnts() {
 		VisCntsClose(ac_);
 	}
-	void Access(int level, const rocksdb::Slice &key, size_t vlen)
+	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
 		if (level < target_level_)
 			return;
@@ -319,13 +323,24 @@ public:
 		}
 		accessed_[level].fetch_add(1, std::memory_order_relaxed);
 		lock_.unlock_shared();
-		VisCntsAccess(ac_, key.data(), key.size(), vlen);
+		VisCntsAccess(ac_, key, vlen);
+	}
+	void *NewIter(int level) override {
+		if (level < target_level_) {
+			return NULL;
+		}
+		return VisCntsNewIter(ac_);
+	}
+	void DelIter(void *iter) override {
+		if (iter) {
+			VisCntsDelIter(iter);
+		}
 	}
 	rocksdb::CompactionRouter::Decision
-	Route(int level, const rocksdb::Slice& key) override {
-		if (level < target_level_)
+	Route(void *iter, const rocksdb::Slice *key) override {
+		if (iter == NULL)
 			return rocksdb::CompactionRouter::Decision::kNextLevel;
-		if (VisCntsIsHot(ac_, key.data(), key.size())) {
+		if (VisCntsIsHot(iter, key)) {
 			retained_.fetch_add(1, std::memory_order_relaxed);
 			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
 		} else {
@@ -458,7 +473,8 @@ int main(int argc, char **argv) {
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
 	auto router =
-		new RouterVisCnts(first_cd_level - 1, viscnts_path, delta, true);
+		new RouterVisCnts(options.comparator, first_cd_level - 1, viscnts_path,
+			delta, true);
 	options.compaction_router = router;
 
 	std::ifstream in(kvops_path);
