@@ -1,0 +1,3 @@
+[submodule "rcu_vector"]
+	path = rcu_vector
+	url = https://github.com/seekstar/rcu_vector.git
