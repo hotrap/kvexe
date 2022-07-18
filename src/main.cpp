@@ -7,6 +7,7 @@
 #include <chrono>
 #include <shared_mutex>
 #include <deque>
+#include <queue>
 
 #include "rocksdb/db.h"
 
@@ -290,11 +291,64 @@ extern void *VisCntsOpen(const rocksdb::Comparator *ucmp, const char *path,
 	bool createIfMissing);
 extern double VisCntsAccess(void *ac, const rocksdb::Slice *key, size_t vlen);
 double VisCntsDecay(void *ac);
-extern void *VisCntsNewIter(void *ac);
-// key must not decrease
-extern bool VisCntsIsHot(void *iter, const rocksdb::Slice *key);
+extern void *VisCntsNewIter(void *ac, const rocksdb::Slice *key);
+// The returned slice will stay valid until the next call to this function
+extern const rocksdb::Slice *VisCntsNext(void *iter);
 extern void VisCntsDelIter(void *iter);
 extern int VisCntsClose(void *ac);
+
+class RouterVisCntsIters {
+public:
+	RouterVisCntsIters() = delete;
+	RouterVisCntsIters(std::vector<void *> iters,
+			const rocksdb::Comparator *ucmp)
+		:	iters_(iters), ucmp_(ucmp), pq_(Compare(ucmp)) {
+		for (size_t i = 0; i < iters_.size(); ++i) {
+			const rocksdb::Slice *slice = VisCntsNext(iters_[i]);
+			if (slice != NULL) {
+				pq_.emplace(slice, i);
+			}
+		}
+	}
+	~RouterVisCntsIters() {
+		assert(pq_.empty());
+	}
+	std::vector<void *>& iters() { return iters_; }
+	// Must not decrease
+	bool IsHot(const rocksdb::Slice *key) {
+		while (!pq_.empty() && ucmp_->Compare(*pq_.top().slice, *key) < 0) {
+			size_t index = pq_.top().index;
+			pq_.pop();
+			const rocksdb::Slice *slice = VisCntsNext(iters_[index]);
+			if (slice != NULL) {
+				pq_.emplace(slice, index);
+			}
+		}
+		if (pq_.empty()) {
+			return false;
+		} else {
+			return ucmp_->Compare(*pq_.top().slice, *key) == 0;
+		}
+	}
+private:
+	struct Item {
+		const rocksdb::Slice *slice;
+		size_t index;
+		Item(const rocksdb::Slice *s, size_t i) : slice(s), index(i) {}
+	};
+	class Compare {
+	public:
+		Compare(const rocksdb::Comparator *ucmp) : ucmp_(ucmp) {}
+		bool operator () (const Item& a, const Item& b)
+				const {
+			return ucmp_->Compare(*a.slice, *b.slice) > 0;
+		}
+		const rocksdb::Comparator *ucmp_;
+	};
+	std::vector<void *> iters_;
+	const rocksdb::Comparator *ucmp_;
+	std::priority_queue<Item, std::vector<Item>, Compare> pq_;
+};
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
@@ -331,36 +385,57 @@ public:
 		accessed_[level].fetch_add(1, std::memory_order_relaxed);
 		lock_.unlock_shared();
 
+		vcs_lock_.lock_shared();
 		while (vcs_.size() <= (size_t)level) {
+			vcs_lock_.unlock_shared();
+			// TODO: Is starvation possible here?
+			vcs_lock_.lock();
 			std::string path = std::string(dir_) + std::to_string(vcs_.size());
 			void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
 			vcs_.push_back(vc);
+			vcs_lock_.unlock();
+			vcs_lock_.lock_shared();
 		}
 		void *vc = vcs_[level];
+		vcs_lock_.unlock_shared();
+
 		weight_sum_ += VisCntsAccess(vc, key, vlen);
 		if (weight_sum_ >= weight_sum_max_) {
 			weight_sum_ = 0;
+			vcs_lock_.lock_shared();
 			for (void *vc : vcs_) {
 				weight_sum_ += VisCntsDecay(vc);
 			}
+			vcs_lock_.unlock_shared();
 		}
 	}
-	void *NewIter(int level) override {
-		if (level < target_level_) {
-			return NULL;
-		}
-		return VisCntsNewIter(vcs_[level]);
+	bool MightRetain(int level) override {
+		return level >= target_level_;
 	}
-	void DelIter(void *iter) override {
-		if (iter) {
+	void *NewIters(const std::vector<int>& levels,
+			const rocksdb::Slice *smallest) override {
+		std::vector<void *> iters;
+		vcs_lock_.lock_shared();
+		for (size_t i = 0; i < levels.size(); ++i) {
+			if (levels[i] < (int)vcs_.size()) {
+				iters.push_back(VisCntsNewIter(vcs_[levels[i]], smallest));
+			}
+		}
+		vcs_lock_.unlock_shared();
+		return new RouterVisCntsIters(iters, ucmp_);
+	}
+	void DelIters(void *iters) override {
+		if (iters == NULL)
+			return;
+		auto iters_class = reinterpret_cast<RouterVisCntsIters *>(iters);
+		for (void *iter : iters_class->iters()) {
 			VisCntsDelIter(iter);
 		}
 	}
 	rocksdb::CompactionRouter::Decision
-	Route(void *iter, const rocksdb::Slice *key) override {
-		if (iter == NULL)
-			return rocksdb::CompactionRouter::Decision::kNextLevel;
-		if (VisCntsIsHot(iter, key)) {
+	Route(void *iters, const rocksdb::Slice *key) override {
+		auto iters_class = reinterpret_cast<RouterVisCntsIters *>(iters);
+		if (iters_class->IsHot(key)) {
 			retained_.fetch_add(1, std::memory_order_relaxed);
 			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
 		} else {
@@ -386,6 +461,7 @@ public:
 		return not_retained_.load(std::memory_order_relaxed);
 	}
 private:
+	std::shared_mutex vcs_lock_;
 	std::vector<void *> vcs_;
 	const rocksdb::Comparator *ucmp_;
 	const char *dir_;
