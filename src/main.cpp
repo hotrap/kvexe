@@ -5,8 +5,6 @@
 #include <set>
 #include <thread>
 #include <chrono>
-#include <shared_mutex>
-#include <deque>
 #include <queue>
 
 #include "rocksdb/db.h"
@@ -364,28 +362,27 @@ public:
 			retained_(0),
 			not_retained_(0) {}
 	~RouterVisCnts() {
-		size_t size = vcs_.size();
+		size_t size = vcs_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
-			VisCntsClose(vcs_.read_copy(i));
+			VisCntsClose(vcs_.ref_locked(i));
+		}
+		size = accessed_.size_locked();
+		for (size_t i = 0; i < size; ++i) {
+			delete accessed_.ref_locked(i);
 		}
 	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
 		if (level < target_level_)
 			return;
-		lock_.lock_shared();
 		if (accessed_.size() <= (size_t)level) {
-			lock_.unlock_shared();
-			// TODO: Is starvation possible here?
-			lock_.lock();
-			if (accessed_.size() <= (size_t)level) {
-				accessed_.resize(level + 1);
+			accessed_.lock();
+			while (accessed_.size_locked() <= (size_t)level) {
+				accessed_.push_back_locked(new std::atomic<size_t>(0));
 			}
-			lock_.unlock();
-			lock_.lock_shared();
+			accessed_.unlock();
 		}
-		accessed_[level].fetch_add(1, std::memory_order_relaxed);
-		lock_.unlock_shared();
+		accessed_.read_copy(level)->fetch_add(1, std::memory_order_relaxed);
 
 		if (vcs_.size() <= (size_t)level) {
 			vcs_.lock();
@@ -447,10 +444,11 @@ public:
 		return "RouterVisCnts";
 	}
 	std::vector<size_t> accessed() {
-		std::shared_lock<std::shared_mutex> read_lock(lock_);
+		size_t size = accessed_.size();
 		std::vector<size_t> ret;
-		for (auto& x : accessed_) {
-			ret.push_back(x.load(std::memory_order_relaxed));
+		for (size_t i = 0; i < size; ++i) {
+			auto val = accessed_.read_copy(i);
+			ret.push_back(val->load(std::memory_order_relaxed));
 		}
 		return ret;
 	}
@@ -469,9 +467,7 @@ private:
 	double weight_sum_max_;
 	double weight_sum_;
 
-	std::shared_mutex lock_;
-	std::deque<std::atomic<size_t> > accessed_;
-
+	rcu_vector<std::atomic<size_t> *> accessed_;
 	std::atomic<size_t> retained_;
 	std::atomic<size_t> not_retained_;
 };
