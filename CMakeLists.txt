@@ -10,6 +10,8 @@ IF (CMAKE_BUILD_TYPE STREQUAL Debug)
     ADD_DEFINITIONS(-DDEBUG)
 ENDIF()
 
+add_subdirectory(rcu_vector)
+
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
@@ -23,5 +25,7 @@ target_link_libraries(${PROJECT_NAME}
 	PUBLIC
         rocksdb
         viscnts
+    PRIVATE
+        rcu_vector
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)

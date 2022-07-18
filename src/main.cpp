@@ -10,6 +10,7 @@
 #include <queue>
 
 #include "rocksdb/db.h"
+#include "rcu_vector.hpp"
 
 #define crash_if(cond, msg) do { \
 	if (cond) { \
@@ -363,8 +364,9 @@ public:
 			retained_(0),
 			not_retained_(0) {}
 	~RouterVisCnts() {
-		for (auto vc : vcs_) {
-			VisCntsClose(vc);
+		size_t size = vcs_.size();
+		for (size_t i = 0; i < size; ++i) {
+			VisCntsClose(vcs_.read_copy(i));
 		}
 	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
@@ -385,28 +387,26 @@ public:
 		accessed_[level].fetch_add(1, std::memory_order_relaxed);
 		lock_.unlock_shared();
 
-		vcs_lock_.lock_shared();
-		while (vcs_.size() <= (size_t)level) {
-			vcs_lock_.unlock_shared();
-			// TODO: Is starvation possible here?
-			vcs_lock_.lock();
-			std::string path = std::string(dir_) + std::to_string(vcs_.size());
-			void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
-			vcs_.push_back(vc);
-			vcs_lock_.unlock();
-			vcs_lock_.lock_shared();
+		if (vcs_.size() <= (size_t)level) {
+			vcs_.lock();
+			while (vcs_.size_locked() <= (size_t)level) {
+				std::string path =
+					std::string(dir_) + std::to_string(vcs_.size_locked());
+				void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
+				vcs_.push_back_locked(vc);
+			}
+			vcs_.unlock();
 		}
-		void *vc = vcs_[level];
-		vcs_lock_.unlock_shared();
+		void *vc = vcs_.read_copy(level);
 
 		weight_sum_ += VisCntsAccess(vc, key, vlen);
 		if (weight_sum_ >= weight_sum_max_) {
 			weight_sum_ = 0;
-			vcs_lock_.lock_shared();
-			for (void *vc : vcs_) {
+			size_t size = vcs_.size();
+			for (size_t i = 0; i < size; ++i) {
+				vc = vcs_.read_copy(i);
 				weight_sum_ += VisCntsDecay(vc);
 			}
-			vcs_lock_.unlock_shared();
 		}
 	}
 	bool MightRetain(int level) override {
@@ -415,13 +415,13 @@ public:
 	void *NewIters(const std::vector<int>& levels,
 			const rocksdb::Slice *smallest) override {
 		std::vector<void *> iters;
-		vcs_lock_.lock_shared();
+		size_t vcs_size = vcs_.size();
 		for (size_t i = 0; i < levels.size(); ++i) {
-			if (levels[i] < (int)vcs_.size()) {
-				iters.push_back(VisCntsNewIter(vcs_[levels[i]], smallest));
+			if (levels[i] < (int)vcs_size) {
+				void *vc = vcs_.read_copy(levels[i]);
+				iters.push_back(VisCntsNewIter(vc, smallest));
 			}
 		}
-		vcs_lock_.unlock_shared();
 		return new RouterVisCntsIters(iters, ucmp_);
 	}
 	void DelIters(void *iters) override {
@@ -461,8 +461,7 @@ public:
 		return not_retained_.load(std::memory_order_relaxed);
 	}
 private:
-	std::shared_mutex vcs_lock_;
-	std::vector<void *> vcs_;
+	rcu_vector<void *> vcs_;
 	const rocksdb::Comparator *ucmp_;
 	const char *dir_;
 	bool create_if_missing_;
