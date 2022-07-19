@@ -460,6 +460,8 @@ public:
 	}
 private:
 	rcu_vector_bp<void *> vcs_;
+	static_assert(!decltype(vcs_)::need_register_thread());
+	static_assert(!decltype(vcs_)::need_unregister_thread());
 	const rocksdb::Comparator *ucmp_;
 	const char *dir_;
 	bool create_if_missing_;
@@ -468,6 +470,8 @@ private:
 	double weight_sum_;
 
 	rcu_vector_bp<std::atomic<size_t> *> accessed_;
+	static_assert(!decltype(accessed_)::need_register_thread());
+	static_assert(!decltype(accessed_)::need_unregister_thread());
 	std::atomic<size_t> retained_;
 	std::atomic<size_t> not_retained_;
 };
