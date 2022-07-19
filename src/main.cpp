@@ -8,7 +8,7 @@
 #include <queue>
 
 #include "rocksdb/db.h"
-#include "rcu_vector.hpp"
+#include "rcu_vector_bp.hpp"
 
 #define crash_if(cond, msg) do { \
 	if (cond) { \
@@ -459,7 +459,7 @@ public:
 		return not_retained_.load(std::memory_order_relaxed);
 	}
 private:
-	rcu_vector<void *> vcs_;
+	rcu_vector_bp<void *> vcs_;
 	const rocksdb::Comparator *ucmp_;
 	const char *dir_;
 	bool create_if_missing_;
@@ -467,7 +467,7 @@ private:
 	double weight_sum_max_;
 	double weight_sum_;
 
-	rcu_vector<std::atomic<size_t> *> accessed_;
+	rcu_vector_bp<std::atomic<size_t> *> accessed_;
 	std::atomic<size_t> retained_;
 	std::atomic<size_t> not_retained_;
 };
