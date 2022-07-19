@@ -26,6 +26,6 @@ target_link_libraries(${PROJECT_NAME}
         rocksdb
         viscnts
     PRIVATE
-        rcu_vector
+        rcu_vector_bp
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
