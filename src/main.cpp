@@ -10,6 +10,8 @@
 #include "rocksdb/db.h"
 #include "rcu_vector_bp.hpp"
 
+#include "viscnts.h"
+
 #define crash_if(cond, msg) do { \
 	if (cond) { \
 		fprintf(stderr, "crash_if: %s:%u: %s: Crashes due to %s: %s", \
@@ -286,67 +288,97 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
-extern void *VisCntsOpen(const rocksdb::Comparator *ucmp, const char *path,
-	bool createIfMissing);
-extern double VisCntsAccess(void *ac, const rocksdb::Slice *key, size_t vlen);
-double VisCntsDecay(void *ac);
-extern void *VisCntsNewIter(void *ac, const rocksdb::Slice *key);
-// The returned slice will stay valid until the next call to this function
-extern const rocksdb::Slice *VisCntsNext(void *iter);
-extern void VisCntsDelIter(void *iter);
-extern int VisCntsClose(void *ac);
+static rocksdb::Slice clone(const rocksdb::Slice *s) {
+	char *data = new char[s->size()];
+	memcpy(data, s->data(), s->size());
+	return rocksdb::Slice(data, s->size());
+}
+static void free(const rocksdb::Slice *s) {
+	delete[] s->data();
+}
 
 class RouterVisCntsIters {
 public:
 	RouterVisCntsIters() = delete;
-	RouterVisCntsIters(std::vector<void *> iters,
-			const rocksdb::Comparator *ucmp)
-		:	iters_(iters), ucmp_(ucmp), pq_(Compare(ucmp)) {
+	RouterVisCntsIters(const std::vector<int>& levels, rcu_vector_bp<void *>& vcs,
+			const rocksdb::Comparator *ucmp, const rocksdb::Slice *smallest)
+		:	ucmp_(ucmp),
+			pq_(Compare(ucmp)),
+			smallest_(clone(smallest)),
+			last_hot_(NULL, 0) {
+		size_t vcs_size = vcs.size();
+		for (size_t i = 0; i < levels.size(); ++i) {
+			if (levels[i] < (int)vcs_size) {
+				vcs_.push_back(vcs.read_copy(levels[i]));
+			}
+		}
+		for (void *vc : vcs_) {
+			iters_.push_back(VisCntsNewIter(vc, smallest));
+		}
 		for (size_t i = 0; i < iters_.size(); ++i) {
-			const rocksdb::Slice *slice = VisCntsNext(iters_[i]);
-			if (slice != NULL) {
-				pq_.emplace(slice, i);
+			const VisCntsValueType *v = VisCntsNext(iters_[i]);
+			if (v != NULL) {
+				pq_.emplace(v, i);
 			}
 		}
 	}
 	~RouterVisCntsIters() {
-		assert(pq_.empty());
+		for (void *iter : iters_) {
+			VisCntsDelIter(iter);
+		}
+		if (last_hot_.data() != NULL) {
+			for (void *vc : vcs_) {
+				VisCntsRangeDel(vc, &smallest_, &last_hot_);
+			}
+		}
+		free(&smallest_);
+		free(&last_hot_);
 	}
-	std::vector<void *>& iters() { return iters_; }
 	// Must not decrease
 	bool IsHot(const rocksdb::Slice *key) {
-		while (!pq_.empty() && ucmp_->Compare(*pq_.top().slice, *key) < 0) {
+		while (!pq_.empty() && ucmp_->Compare(pq_.top().v->slice, *key) < 0) {
 			size_t index = pq_.top().index;
 			pq_.pop();
-			const rocksdb::Slice *slice = VisCntsNext(iters_[index]);
-			if (slice != NULL) {
-				pq_.emplace(slice, index);
+			const VisCntsValueType *v = VisCntsNext(iters_[index]);
+			if (v != NULL) {
+				pq_.emplace(v, index);
 			}
 		}
 		if (pq_.empty()) {
-			return false;
+			return NULL;
+		}
+		auto v = pq_.top().v;
+		if (ucmp_->Compare(v->slice, *key) == 0) {
+			free(&last_hot_);
+			last_hot_ = clone(&v->slice);
+			void *vc_start_level = vcs_[0];
+			VisCntsAccess(vc_start_level, key, v->vlen, v->count);
+			return v;
 		} else {
-			return ucmp_->Compare(*pq_.top().slice, *key) == 0;
+			return NULL;
 		}
 	}
 private:
 	struct Item {
-		const rocksdb::Slice *slice;
+		const VisCntsValueType *v;
 		size_t index;
-		Item(const rocksdb::Slice *s, size_t i) : slice(s), index(i) {}
+		Item(const VisCntsValueType *_v, size_t i) : v(_v), index(i) {}
 	};
 	class Compare {
 	public:
 		Compare(const rocksdb::Comparator *ucmp) : ucmp_(ucmp) {}
 		bool operator () (const Item& a, const Item& b)
 				const {
-			return ucmp_->Compare(*a.slice, *b.slice) > 0;
+			return ucmp_->Compare(a.v->slice, b.v->slice) > 0;
 		}
 		const rocksdb::Comparator *ucmp_;
 	};
+	std::vector<void *> vcs_;
 	std::vector<void *> iters_;
 	const rocksdb::Comparator *ucmp_;
 	std::priority_queue<Item, std::vector<Item>, Compare> pq_;
+	rocksdb::Slice smallest_;
+	rocksdb::Slice last_hot_;
 };
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
@@ -396,7 +428,7 @@ public:
 		}
 		void *vc = vcs_.read_copy(level);
 
-		weight_sum_ += VisCntsAccess(vc, key, vlen);
+		weight_sum_ += VisCntsAccess(vc, key, vlen, 1);
 		if (weight_sum_ >= weight_sum_max_) {
 			weight_sum_ = 0;
 			size_t size = vcs_.size();
@@ -409,25 +441,16 @@ public:
 	bool MightRetain(int level) override {
 		return level >= target_level_;
 	}
+	// levels[0] should be the start level.
 	void *NewIters(const std::vector<int>& levels,
 			const rocksdb::Slice *smallest) override {
-		std::vector<void *> iters;
-		size_t vcs_size = vcs_.size();
-		for (size_t i = 0; i < levels.size(); ++i) {
-			if (levels[i] < (int)vcs_size) {
-				void *vc = vcs_.read_copy(levels[i]);
-				iters.push_back(VisCntsNewIter(vc, smallest));
-			}
-		}
-		return new RouterVisCntsIters(iters, ucmp_);
+		return new RouterVisCntsIters(levels, vcs_, ucmp_, smallest);
 	}
-	void DelIters(void *iters) override {
-		if (iters == NULL)
+	void DelIters(void *iters_p) override {
+		if (iters_p == NULL)
 			return;
-		auto iters_class = reinterpret_cast<RouterVisCntsIters *>(iters);
-		for (void *iter : iters_class->iters()) {
-			VisCntsDelIter(iter);
-		}
+		auto iters = reinterpret_cast<RouterVisCntsIters *>(iters_p);
+		delete iters;
 	}
 	rocksdb::CompactionRouter::Decision
 	Route(void *iters, const rocksdb::Slice *key) override {
