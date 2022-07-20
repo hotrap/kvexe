@@ -327,8 +327,8 @@ public:
 			VisCntsDelIter(iter);
 		}
 		if (last_hot_.data() != NULL) {
-			for (void *vc : vcs_) {
-				VisCntsRangeDel(vc, &smallest_, &last_hot_);
+			for (size_t i = 1; i < vcs_.size(); ++i) {
+				VisCntsRangeDel(vcs_[i], &smallest_, &last_hot_);
 			}
 		}
 		free(&smallest_);
