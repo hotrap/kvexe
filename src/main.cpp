@@ -288,99 +288,6 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
-static rocksdb::Slice clone(const rocksdb::Slice *s) {
-	char *data = new char[s->size()];
-	memcpy(data, s->data(), s->size());
-	return rocksdb::Slice(data, s->size());
-}
-static void free(const rocksdb::Slice *s) {
-	delete[] s->data();
-}
-
-class RouterVisCntsIters {
-public:
-	RouterVisCntsIters() = delete;
-	RouterVisCntsIters(const std::vector<int>& levels, rcu_vector_bp<void *>& vcs,
-			const rocksdb::Comparator *ucmp, const rocksdb::Slice *smallest)
-		:	ucmp_(ucmp),
-			pq_(Compare(ucmp)),
-			smallest_(clone(smallest)),
-			last_hot_(NULL, 0) {
-		size_t vcs_size = vcs.size();
-		for (size_t i = 0; i < levels.size(); ++i) {
-			if (levels[i] < (int)vcs_size) {
-				vcs_.push_back(vcs.read_copy(levels[i]));
-			}
-		}
-		for (void *vc : vcs_) {
-			iters_.push_back(VisCntsNewIter(vc, smallest));
-		}
-		for (size_t i = 0; i < iters_.size(); ++i) {
-			const VisCntsValueType *v = VisCntsNext(iters_[i]);
-			if (v != NULL) {
-				pq_.emplace(v, i);
-			}
-		}
-	}
-	~RouterVisCntsIters() {
-		for (void *iter : iters_) {
-			VisCntsDelIter(iter);
-		}
-		if (last_hot_.data() != NULL) {
-			for (size_t i = 1; i < vcs_.size(); ++i) {
-				VisCntsRangeDel(vcs_[i], &smallest_, &last_hot_);
-			}
-		}
-		free(&smallest_);
-		free(&last_hot_);
-	}
-	// Must not decrease
-	bool IsHot(const rocksdb::Slice *key) {
-		while (!pq_.empty() && ucmp_->Compare(pq_.top().v->slice, *key) < 0) {
-			size_t index = pq_.top().index;
-			pq_.pop();
-			const VisCntsValueType *v = VisCntsNext(iters_[index]);
-			if (v != NULL) {
-				pq_.emplace(v, index);
-			}
-		}
-		if (pq_.empty()) {
-			return NULL;
-		}
-		auto v = pq_.top().v;
-		if (ucmp_->Compare(v->slice, *key) == 0) {
-			free(&last_hot_);
-			last_hot_ = clone(&v->slice);
-			void *vc_start_level = vcs_[0];
-			VisCntsAccess(vc_start_level, key, v->vlen, v->count);
-			return v;
-		} else {
-			return NULL;
-		}
-	}
-private:
-	struct Item {
-		const VisCntsValueType *v;
-		size_t index;
-		Item(const VisCntsValueType *_v, size_t i) : v(_v), index(i) {}
-	};
-	class Compare {
-	public:
-		Compare(const rocksdb::Comparator *ucmp) : ucmp_(ucmp) {}
-		bool operator () (const Item& a, const Item& b)
-				const {
-			return ucmp_->Compare(a.v->slice, b.v->slice) > 0;
-		}
-		const rocksdb::Comparator *ucmp_;
-	};
-	std::vector<void *> vcs_;
-	std::vector<void *> iters_;
-	const rocksdb::Comparator *ucmp_;
-	std::priority_queue<Item, std::vector<Item>, Compare> pq_;
-	rocksdb::Slice smallest_;
-	rocksdb::Slice last_hot_;
-};
-
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
@@ -391,8 +298,8 @@ public:
 			target_level_(target_level),
 			weight_sum_max_(weight_sum_max),
 			weight_sum_(0),
-			retained_(0),
-			not_retained_(0) {}
+			new_iter_cnt_(0),
+			hot_taken_(0) {}
 	~RouterVisCnts() {
 		size_t size = vcs_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
@@ -403,18 +310,17 @@ public:
 			delete accessed_.ref_locked(i);
 		}
 	}
+	void AddHotness(int level, const rocksdb::Slice *key, size_t vlen,
+			double weight) override {
+		assert(level >= target_level_);
+		add(add_hotness_cnts_, (size_t)level, (size_t)1);
+		addHotness(level, key, vlen, weight);
+	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
 		if (level < target_level_)
 			return;
-		if (accessed_.size() <= (size_t)level) {
-			accessed_.lock();
-			while (accessed_.size_locked() <= (size_t)level) {
-				accessed_.push_back_locked(new std::atomic<size_t>(0));
-			}
-			accessed_.unlock();
-		}
-		accessed_.read_copy(level)->fetch_add(1, std::memory_order_relaxed);
+		add(accessed_, (size_t)level, (size_t)1);
 
 		if (vcs_.size() <= (size_t)level) {
 			vcs_.lock();
@@ -426,62 +332,131 @@ public:
 			}
 			vcs_.unlock();
 		}
-		void *vc = vcs_.read_copy(level);
-
-		weight_sum_ += VisCntsAccess(vc, key, vlen, 1);
-		if (weight_sum_ >= weight_sum_max_) {
-			weight_sum_ = 0;
-			size_t size = vcs_.size();
-			for (size_t i = 0; i < size; ++i) {
-				vc = vcs_.read_copy(i);
-				weight_sum_ += VisCntsDecay(vc);
-			}
-		}
+		addHotness(level, key, vlen, 1);
 	}
 	bool MightRetain(int level) override {
 		return level >= target_level_;
 	}
-	// levels[0] should be the start level.
-	void *NewIters(const std::vector<int>& levels,
-			const rocksdb::Slice *smallest) override {
-		return new RouterVisCntsIters(levels, vcs_, ucmp_, smallest);
+	void *NewIter(int level) override {
+		if (vcs_.size() <= (size_t)level)
+			return NULL;
+		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
+		void *vc = vcs_.read_copy(level);
+		return VisCntsNewIter(vc);
 	}
-	void DelIters(void *iters_p) override {
-		if (iters_p == NULL)
-			return;
-		auto iters = reinterpret_cast<RouterVisCntsIters *>(iters_p);
-		delete iters;
+	// The returned pointer will stay valid until the next call to Seek or
+	// NextHot with this iterator
+	const rocksdb::HotRecInfo *Seek(void *iter, const rocksdb::Slice *key)
+			override {
+		if (iter == NULL)
+			return NULL;
+		return VisCntsSeek(iter, key);
 	}
-	rocksdb::CompactionRouter::Decision
-	Route(void *iters, const rocksdb::Slice *key) override {
-		auto iters_class = reinterpret_cast<RouterVisCntsIters *>(iters);
-		if (iters_class->IsHot(key)) {
-			retained_.fetch_add(1, std::memory_order_relaxed);
-			return rocksdb::CompactionRouter::Decision::kCurrentLevel;
-		} else {
-			not_retained_.fetch_add(1, std::memory_order_relaxed);
-			return rocksdb::CompactionRouter::Decision::kNextLevel;
+	const rocksdb::HotRecInfo *NextHot(void *iter) override {
+		if (iter == NULL)
+			return NULL;
+		const rocksdb::HotRecInfo *ret = VisCntsNext(iter);
+		if (ret) {
+			hot_taken_.fetch_add(1, std::memory_order_relaxed);
 		}
+		return ret;
+	}
+	void DelIter(void *iter) override {
+		if (iter == NULL)
+			return;
+		VisCntsDelIter(iter);
+	}
+	void DelRange(int level, const rocksdb::Slice *smallest,
+			const rocksdb::Slice *largest) override {
+		if (vcs_.size() <= (size_t)level)
+			return;
+		weight_sum_ += VisCntsRangeDel(vcs_.read_copy(level), smallest, largest);
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
 	std::vector<size_t> accessed() {
 		size_t size = accessed_.size();
-		std::vector<size_t> ret;
+		std::vector<size_t> ret(size);
 		for (size_t i = 0; i < size; ++i) {
 			auto val = accessed_.read_copy(i);
-			ret.push_back(val->load(std::memory_order_relaxed));
+			ret[i] = val->load(std::memory_order_relaxed);
 		}
 		return ret;
 	}
-	size_t retained() const {
-		return retained_.load(std::memory_order_relaxed);
+	size_t new_iter_cnt() {
+		return new_iter_cnt_.load(std::memory_order_relaxed);
 	}
-	size_t not_retained() const {
-		return not_retained_.load(std::memory_order_relaxed);
+	size_t hot_taken() {
+		return hot_taken_.load(std::memory_order_relaxed);
+	}
+	std::vector<size_t> add_hotness_cnts() {
+		size_t size = add_hotness_cnts_.size();
+		std::vector<size_t> ret(size);
+		for (size_t i = 0; i < size; ++i) {
+			auto val = add_hotness_cnts_.read_copy(i);
+			ret[i] = val->load(std::memory_order_relaxed);
+		}
+		return ret;
+	}
+	std::string sprint_viscnts() {
+		std::stringstream out;
+		size_t size = vcs_.size();
+		out << "[";
+		for (size_t i = 0; i < size; ++i) {
+			void *iter = NewIter(i);
+			if (iter == NULL)
+				continue;
+			out << "{" << "\"level\": " << i << ", \"hot\": [";
+			VisCntsSeekToFirst(iter);
+			while (1) {
+				auto info = VisCntsNext(iter);
+				if (info == NULL)
+					break;
+				out << "{\"key\": \"" << info->slice.ToString() << '"' <<
+					", \"count\": " << info->count <<
+					", \"vlen\": " << info->vlen << "},";
+			}
+			DelIter(iter);
+			out << "]},";
+		}
+		out << "]";
+		return out.str();
 	}
 private:
+	template <typename T>
+	void prepare(rcu_vector_bp<std::atomic<T> *>& v, size_t i) {
+		if (v.size() <= i) {
+			v.lock();
+			while (v.size_locked() <= i) {
+				v.push_back_locked(new std::atomic<T>(0));
+			}
+			v.unlock();
+		}
+	}
+	template <typename T>
+	void add(rcu_vector_bp<std::atomic<T> *>& v, size_t i, T val) {
+		prepare(v, i);
+		v.read_copy(i)->fetch_add(val, std::memory_order_relaxed);
+	}
+	void addHotness(int level, const rocksdb::Slice *key, size_t vlen,
+			double weight) {
+		void *vc = vcs_.read_copy(level);
+		weight_sum_ += VisCntsAccess(vc, key, vlen, weight);
+		if (weight_sum_ >= weight_sum_max_) {
+			std::ostringstream out;
+			out << "Decay: " << weight_sum_ << " -> ";
+			weight_sum_ = 0;
+			size_t size = vcs_.size();
+			for (size_t i = 0; i < size; ++i) {
+				vc = vcs_.read_copy(i);
+				weight_sum_ += VisCntsDecay(vc);
+			}
+			out << weight_sum_;
+			std::cout << out.str() << std::endl;
+		}
+	}
+
 	rcu_vector_bp<void *> vcs_;
 	static_assert(!decltype(vcs_)::need_register_thread());
 	static_assert(!decltype(vcs_)::need_unregister_thread());
@@ -495,8 +470,9 @@ private:
 	rcu_vector_bp<std::atomic<size_t> *> accessed_;
 	static_assert(!decltype(accessed_)::need_register_thread());
 	static_assert(!decltype(accessed_)::need_unregister_thread());
-	std::atomic<size_t> retained_;
-	std::atomic<size_t> not_retained_;
+	std::atomic<size_t> new_iter_cnt_;
+	std::atomic<size_t> hot_taken_;
+	rcu_vector_bp<std::atomic<size_t> *> add_hotness_cnts_;
 };
 
 bool has_background_work(rocksdb::DB *db) {
@@ -545,6 +521,15 @@ void wait_for_background_work(rocksdb::DB *db) {
 			break;
 		}
 	}
+}
+
+template <typename T>
+void print_vector(const std::vector<T>& v) {
+	std::cout << "{";
+	for (size_t i = 0; i < v.size(); ++i) {
+		std::cout << i << ':' << v[i] << ',';
+	}
+	std::cout << "}";
 }
 
 int main(int argc, char **argv) {
@@ -635,14 +620,20 @@ int main(int argc, char **argv) {
 		" second(s) waiting for background work\n";
 
 	auto accessed = router->accessed();
-	std::cout << "Accessed: {";
-	for (size_t level = 0; level < accessed.size(); ++level) {
-		std::cout << level << ':' << accessed[level] << ',';
-	}
-	std::cout << "}\n";
+	std::cout << "Accessed: ";
+	print_vector(accessed);
+	std::cout << std::endl;
 
-	std::cout << "Retained: " << router->retained() << std::endl;
-	std::cout << "Not retained: " << router->not_retained() << std::endl;
+	std::cout << "Hot taken: " << router->hot_taken() << std::endl;
+	std::cout << "New iterator count: " << router->new_iter_cnt() << std::endl;
+
+	auto add_hotness_cnts = router->add_hotness_cnts();
+	std::cout << "Add hotness counts: ";
+	print_vector(add_hotness_cnts);
+	std::cout << std::endl;
+
+	std::ofstream viscnts_out("viscnts.json");
+	viscnts_out << router->sprint_viscnts() << std::endl;
 
 	delete db;
 	delete router;
