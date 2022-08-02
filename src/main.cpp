@@ -295,7 +295,7 @@ public:
 		:	ucmp_(ucmp),
 			dir_(dir),
 			create_if_missing_(create_if_missing),
-			target_level_(target_level),
+			tier0_last_level_(target_level),
 			weight_sum_max_(weight_sum_max),
 			weight_sum_(0),
 			new_iter_cnt_(0),
@@ -310,21 +310,28 @@ public:
 			delete accessed_.ref_locked(i);
 		}
 	}
-	void AddHotness(int level, const rocksdb::Slice *key, size_t vlen,
+	size_t Tier(int level) override {
+		if (level <= tier0_last_level_) {
+			return 0;
+		} else {
+			return 1;
+		}
+	}
+	void AddHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) override {
-		assert(level >= target_level_);
-		add(add_hotness_cnts_, (size_t)level, (size_t)1);
-		addHotness(level, key, vlen, weight);
+		add(add_hotness_cnts_, tier, (size_t)1);
+		addHotness(tier, key, vlen, weight);
 	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
-		if (level < target_level_)
+		if (level < tier0_last_level_)
 			return;
 		add(accessed_, (size_t)level, (size_t)1);
 
-		if (vcs_.size() <= (size_t)level) {
+		size_t tier = Tier(level);
+		if (vcs_.size() <= (size_t)tier) {
 			vcs_.lock();
-			while (vcs_.size_locked() <= (size_t)level) {
+			while (vcs_.size_locked() <= (size_t)tier) {
 				std::string path =
 					std::string(dir_) + std::to_string(vcs_.size_locked());
 				void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
@@ -332,16 +339,13 @@ public:
 			}
 			vcs_.unlock();
 		}
-		addHotness(level, key, vlen, 1);
+		addHotness(tier, key, vlen, 1);
 	}
-	bool MightRetain(int level) override {
-		return level >= target_level_;
-	}
-	void *NewIter(int level) override {
-		if (vcs_.size() <= (size_t)level)
+	void *NewIter(size_t tier) override {
+		if (vcs_.size() <= tier)
 			return NULL;
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
-		void *vc = vcs_.read_copy(level);
+		void *vc = vcs_.read_copy(tier);
 		return VisCntsNewIter(vc);
 	}
 	// The returned pointer will stay valid until the next call to Seek or
@@ -366,11 +370,11 @@ public:
 			return;
 		VisCntsDelIter(iter);
 	}
-	void DelRange(int level, const rocksdb::Slice *smallest,
+	void DelRange(size_t tier, const rocksdb::Slice *smallest,
 			const rocksdb::Slice *largest) override {
-		if (vcs_.size() <= (size_t)level)
+		if (vcs_.size() <= tier)
 			return;
-		weight_sum_ += VisCntsRangeDel(vcs_.read_copy(level), smallest, largest);
+		weight_sum_ += VisCntsRangeDel(vcs_.read_copy(tier), smallest, largest);
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
@@ -439,9 +443,9 @@ private:
 		prepare(v, i);
 		v.read_copy(i)->fetch_add(val, std::memory_order_relaxed);
 	}
-	void addHotness(int level, const rocksdb::Slice *key, size_t vlen,
+	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) {
-		void *vc = vcs_.read_copy(level);
+		void *vc = vcs_.read_copy(tier);
 		weight_sum_ += VisCntsAccess(vc, key, vlen, weight);
 		if (weight_sum_ >= weight_sum_max_) {
 			std::ostringstream out;
@@ -463,7 +467,7 @@ private:
 	const rocksdb::Comparator *ucmp_;
 	const char *dir_;
 	bool create_if_missing_;
-	int target_level_;
+	int tier0_last_level_;
 	double weight_sum_max_;
 	double weight_sum_;
 
