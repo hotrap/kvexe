@@ -298,9 +298,12 @@ public:
 			tier0_last_level_(target_level),
 			weight_sum_max_(weight_sum_max),
 			weight_sum_(0),
+			delayed_weight_(0),
 			new_iter_cnt_(0),
 			hot_taken_(0) {}
 	~RouterVisCnts() {
+		std::cout << "weight_sum: " << weight_sum_ << std::endl;
+		std::cout << "delayed_weight: " << delayed_weight_ << std::endl;
 		size_t size = vcs_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
 			VisCntsClose(vcs_.ref_locked(i));
@@ -320,7 +323,11 @@ public:
 	void AddHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) override {
 		add(add_hotness_cnts_, tier, (size_t)1);
-		addHotness(tier, key, vlen, weight);
+		void *vc = vcs_.read_copy(tier);
+		double delta = VisCntsAccess(vc, key, vlen, weight);
+		lock_.lock();
+		delayed_weight_ += delta;
+		lock_.unlock();
 	}
 	void Access(int level, const rocksdb::Slice *key, size_t vlen)
 			override {
@@ -376,7 +383,12 @@ public:
 			return;
 		double delta = VisCntsRangeDel(vcs_.read_copy(tier), smallest, largest);
 		lock_.lock();
-		weight_sum_ += delta;
+		if (delayed_weight_ + delta >= 0) {
+			delayed_weight_ += delta;
+		} else {
+			weight_sum_ += delta + delayed_weight_;
+			delayed_weight_ = 0;
+		}
 		lock_.unlock();
 	}
 	const char *Name() const override {
@@ -478,6 +490,8 @@ private:
 
 	std::mutex lock_;
 	double weight_sum_;
+	// To avoid unnecessary decay when transferring counters between tiers.
+	double delayed_weight_;
 
 	rcu_vector_bp<std::atomic<size_t> *> accessed_;
 	static_assert(!decltype(accessed_)::need_register_thread());
