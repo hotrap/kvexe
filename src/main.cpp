@@ -374,7 +374,10 @@ public:
 			const rocksdb::Slice *largest) override {
 		if (vcs_.size() <= tier)
 			return;
-		weight_sum_ += VisCntsRangeDel(vcs_.read_copy(tier), smallest, largest);
+		double delta = VisCntsRangeDel(vcs_.read_copy(tier), smallest, largest);
+		lock_.lock();
+		weight_sum_ += delta;
+		lock_.unlock();
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
@@ -446,7 +449,9 @@ private:
 	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) {
 		void *vc = vcs_.read_copy(tier);
-		weight_sum_ += VisCntsAccess(vc, key, vlen, weight);
+		double delta = VisCntsAccess(vc, key, vlen, weight);
+		lock_.lock();
+		weight_sum_ += delta;
 		if (weight_sum_ >= weight_sum_max_) {
 			std::ostringstream out;
 			out << "Decay: " << weight_sum_ << " -> ";
@@ -459,6 +464,7 @@ private:
 			out << weight_sum_;
 			std::cout << out.str() << std::endl;
 		}
+		lock_.unlock();
 	}
 
 	rcu_vector_bp<void *> vcs_;
@@ -469,6 +475,8 @@ private:
 	bool create_if_missing_;
 	int tier0_last_level_;
 	double weight_sum_max_;
+
+	std::mutex lock_;
 	double weight_sum_;
 
 	rcu_vector_bp<std::atomic<size_t> *> accessed_;
