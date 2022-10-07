@@ -7,6 +7,7 @@
 
 #include "rocksdb/db.h"
 
+#ifndef crash_if
 #define crash_if(cond, msg) do { \
 	if (cond) { \
 		fprintf(stderr, "crash_if: %s:%u: %s: Crashes due to %s: %s", \
@@ -14,6 +15,7 @@
 		abort(); \
 	} \
 } while (0)
+#endif
 
 std::vector<rocksdb::DbPath>
 decode_db_paths(std::string db_paths) {
