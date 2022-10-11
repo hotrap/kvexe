@@ -6,6 +6,7 @@
 #include <thread>
 #include <chrono>
 #include <queue>
+#include <atomic>
 
 #include "rocksdb/db.h"
 #include "rcu_vector_bp.hpp"
