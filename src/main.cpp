@@ -335,8 +335,8 @@ public:
 		if (vcs_.size() <= (size_t)tier) {
 			vcs_.lock();
 			while (vcs_.size_locked() <= (size_t)tier) {
-				std::string path =
-					std::string(dir_) + std::to_string(vcs_.size_locked());
+				std::filesystem::path dir(dir_);
+				auto path = dir / std::to_string(vcs_.size_locked());
 				void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
 				vcs_.push_back_locked(vc);
 			}
