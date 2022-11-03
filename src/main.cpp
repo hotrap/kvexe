@@ -300,7 +300,7 @@ public:
 			create_if_missing_(create_if_missing),
 			tier0_last_level_(target_level),
 			weight_sum_max_(weight_sum_max),
-			weight_sum_(0),
+			notify_weight_change_(2),
 			new_iter_cnt_(0),
 			hot_taken_(0) {}
 	~RouterVisCnts() {
@@ -338,7 +338,8 @@ public:
 				std::filesystem::path dir(dir_);
 				auto path = dir / std::to_string(vcs_.size_locked());
 				vcs_.push_back_locked(
-					new VisCnts(ucmp_, path.c_str(), create_if_missing_));
+					new VisCnts(ucmp_, path.c_str(), create_if_missing_,
+						&notify_weight_change_));
 			}
 			vcs_.unlock();
 		}
@@ -379,10 +380,7 @@ public:
 			const rocksdb::Slice *largest) override {
 		if (vcs_.size() <= tier)
 			return;
-		double delta = vcs_.read_copy(tier)->RangeDel(smallest, largest);
-		lock_.lock();
-		weight_sum_ += delta;
-		lock_.unlock();
+		vcs_.read_copy(tier)->RangeDel(smallest, largest);
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
@@ -452,25 +450,36 @@ private:
 		prepare(v, i);
 		v.read_copy(i)->fetch_add(val, std::memory_order_relaxed);
 	}
+	double weightSum() {
+		double sum = 0;
+		vcs_.read_lock();
+		for (size_t i = 0; i < vcs_.size_locked(); ++i) {
+			sum += vcs_.ref_locked(i)->WeightSum();
+		}
+		vcs_.read_unlock();
+		return sum;
+	}
+	void decayAll() {
+		size_t size = vcs_.size();
+		for (size_t i = 0; i < size; ++i) {
+			vcs_.read_copy(i)->Decay();
+		}
+	}
+	void updateWeightSum() {
+		double sum = weightSum();
+		if (sum >= weight_sum_max_) {
+			std::cout << "Decay: " << sum << std::endl;
+		}
+	}
 	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) {
 		VisCnts* vc = vcs_.read_copy(tier);
-		double delta = vc->Access(key, vlen, weight);
-		lock_.lock();
-		weight_sum_ += delta;
-		if (weight_sum_ >= weight_sum_max_) {
-			std::ostringstream out;
-			out << "Decay: " << weight_sum_ << " -> ";
-			weight_sum_ = 0;
-			size_t size = vcs_.size();
-			for (size_t i = 0; i < size; ++i) {
-				vc = vcs_.read_copy(i);
-				weight_sum_ += vc->Decay();
-			}
-			out << weight_sum_;
-			std::cout << out.str() << std::endl;
+		vc->Access(key, vlen, weight);
+		std::tuple<> v;
+		auto status = notify_weight_change_.try_pop(v);
+		if (boost::fibers::channel_op_status::success == status) {
+			updateWeightSum();
 		}
-		lock_.unlock();
 	}
 
 	rcu_vector_bp<VisCnts*> vcs_;
@@ -481,9 +490,7 @@ private:
 	bool create_if_missing_;
 	int tier0_last_level_;
 	double weight_sum_max_;
-
-	std::mutex lock_;
-	double weight_sum_;
+	boost::fibers::buffered_channel<std::tuple<>> notify_weight_change_;
 
 	rcu_vector_bp<std::atomic<size_t> *> accessed_;
 	static_assert(!decltype(accessed_)::need_register_thread());
