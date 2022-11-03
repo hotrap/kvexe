@@ -306,7 +306,7 @@ public:
 	~RouterVisCnts() {
 		size_t size = vcs_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
-			VisCntsClose(vcs_.ref_locked(i));
+			delete vcs_.ref_locked(i);
 		}
 		size = accessed_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
@@ -337,8 +337,8 @@ public:
 			while (vcs_.size_locked() <= (size_t)tier) {
 				std::filesystem::path dir(dir_);
 				auto path = dir / std::to_string(vcs_.size_locked());
-				void *vc = VisCntsOpen(ucmp_, path.c_str(), create_if_missing_);
-				vcs_.push_back_locked(vc);
+				vcs_.push_back_locked(
+					new VisCnts(ucmp_, path.c_str(), create_if_missing_));
 			}
 			vcs_.unlock();
 		}
@@ -348,8 +348,8 @@ public:
 		if (vcs_.size() <= tier)
 			return NULL;
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
-		void *vc = vcs_.read_copy(tier);
-		return VisCntsNewIter(vc);
+		VisCnts* vc = vcs_.read_copy(tier);
+		return new VisCnts::Iter(vc);
 	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
@@ -357,12 +357,14 @@ public:
 			override {
 		if (iter == NULL)
 			return NULL;
-		return VisCntsSeek(iter, key);
+		auto it = (VisCnts::Iter*)iter;
+		return it->Seek(key);
 	}
 	const rocksdb::HotRecInfo *NextHot(void *iter) override {
 		if (iter == NULL)
 			return NULL;
-		const rocksdb::HotRecInfo *ret = VisCntsNext(iter);
+		auto it = (VisCnts::Iter*)iter;
+		const rocksdb::HotRecInfo *ret = it->Next();
 		if (ret) {
 			hot_taken_.fetch_add(1, std::memory_order_relaxed);
 		}
@@ -371,13 +373,13 @@ public:
 	void DelIter(void *iter) override {
 		if (iter == NULL)
 			return;
-		VisCntsDelIter(iter);
+		delete (VisCnts::Iter*)iter;
 	}
 	void DelRange(size_t tier, const rocksdb::Slice *smallest,
 			const rocksdb::Slice *largest) override {
 		if (vcs_.size() <= tier)
 			return;
-		double delta = VisCntsRangeDel(vcs_.read_copy(tier), smallest, largest);
+		double delta = vcs_.read_copy(tier)->RangeDel(smallest, largest);
 		lock_.lock();
 		weight_sum_ += delta;
 		lock_.unlock();
@@ -418,9 +420,10 @@ public:
 			if (iter == NULL)
 				continue;
 			out << "{" << "\"level\": " << i << ", \"hot\": [";
-			VisCntsSeekToFirst(iter);
+			auto it = (VisCnts::Iter*)iter;
+			it->SeekToFirst();
 			while (1) {
-				auto info = VisCntsNext(iter);
+				auto info = it->Next();
 				if (info == NULL)
 					break;
 				out << "{\"key\": \"" << info->slice.ToString() << '"' <<
@@ -451,8 +454,8 @@ private:
 	}
 	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
 			double weight) {
-		void *vc = vcs_.read_copy(tier);
-		double delta = VisCntsAccess(vc, key, vlen, weight);
+		VisCnts* vc = vcs_.read_copy(tier);
+		double delta = vc->Access(key, vlen, weight);
 		lock_.lock();
 		weight_sum_ += delta;
 		if (weight_sum_ >= weight_sum_max_) {
@@ -462,7 +465,7 @@ private:
 			size_t size = vcs_.size();
 			for (size_t i = 0; i < size; ++i) {
 				vc = vcs_.read_copy(i);
-				weight_sum_ += VisCntsDecay(vc);
+				weight_sum_ += vc->Decay();
 			}
 			out << weight_sum_;
 			std::cout << out.str() << std::endl;
@@ -470,7 +473,7 @@ private:
 		lock_.unlock();
 	}
 
-	rcu_vector_bp<void *> vcs_;
+	rcu_vector_bp<VisCnts*> vcs_;
 	static_assert(!decltype(vcs_)::need_register_thread());
 	static_assert(!decltype(vcs_)::need_unregister_thread());
 	const rocksdb::Comparator *ucmp_;
