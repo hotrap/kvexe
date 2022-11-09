@@ -469,6 +469,7 @@ private:
 		double sum = weightSum();
 		if (sum >= weight_sum_max_) {
 			std::cout << "Decay: " << sum << std::endl;
+			decayAll();
 		}
 	}
 	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
