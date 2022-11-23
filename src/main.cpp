@@ -28,7 +28,7 @@ decode_db_paths(std::string db_paths) {
 	std::istringstream in(db_paths);
 	std::vector<rocksdb::DbPath> ret;
 	crash_if(in.get() != '{', "Invalid db_paths");
-	char c = in.get();
+	char c = static_cast<char>(in.get());
 	if (c == '}')
 		return ret;
 	crash_if(c != '{', "Invalid db_paths");
@@ -39,14 +39,14 @@ decode_db_paths(std::string db_paths) {
 			in >> std::quoted(path);
 			crash_if(in.get() != ',', "Invalid db_paths");
 		} else {
-			while ((c = in.get()) != ',')
+			while ((c = static_cast<char>(in.get())) != ',')
 				path.push_back(c);
 		}
 		in >> size;
 		// std::cout << path << "," << size << std::endl;
 		ret.emplace_back(std::move(path), size);
 		crash_if(in.get() != '}', "Invalid db_paths");
-		c = in.get();
+		c = static_cast<char>(in.get());
 		if (c != ',')
 			break;
 		crash_if(in.get() != '{', "Invalid db_paths");
@@ -102,10 +102,12 @@ int predict_level_assignment(const rocksdb::Options& options) {
 				// Still, adding this check to avoid accidentally using
 				// max_bytes_for_level_multiplier_additional
 				level_size = static_cast<uint64_t>(
-					level_size * options.max_bytes_for_level_multiplier);
+					static_cast<double>(level_size) *
+						options.max_bytes_for_level_multiplier);
 			} else {
 				level_size = static_cast<uint64_t>(
-					level_size * options.max_bytes_for_level_multiplier *
+					static_cast<double>(level_size) *
+						options.max_bytes_for_level_multiplier *
 						MaxBytesMultiplerAdditional(options, cur_level));
 			}
 		}
@@ -137,7 +139,7 @@ read_field_values(std::istream& in) {
 	std::vector<std::pair<std::vector<char>, std::vector<char> > > ret;
 	char c;
 	do {
-		c = in.get();
+		c = static_cast<char>(in.get());
 	} while (isspace(c));
 	crash_if(c != '[', "Invalid KV trace!");
 	crash_if(in.get() != ' ', "Invalid KV trace!");
@@ -145,7 +147,7 @@ read_field_values(std::istream& in) {
 		constexpr size_t vallen = 100;
 		std::vector<char> field;
 		std::vector<char> value(vallen);
-		while ((c = in.get()) != '=') {
+		while ((c = static_cast<char>(in.get())) != '=') {
 			field.push_back(c);
 		}
 		crash_if(!in.read(value.data(), vallen), "Invalid KV trace!");
@@ -171,7 +173,7 @@ void serialize_field_values(std::ostream& out, const T& fvs) {
 std::set<std::string> read_fields(std::istream& in) {
 	char c;
 	do {
-		c = in.get();
+		c = static_cast<char>(in.get());
 	} while (isspace(c));
 	crash_if(c != '[', "Invalid KV trace!");
 	std::string s;
@@ -248,9 +250,11 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			auto result = deserialize_values(value_in, fields);
 			ans_out << "[ ";
 			for (const auto& field_value : result) {
-				ans_out.write(field_value.first.data(), field_value.first.size());
+				ans_out.write(field_value.first.data(),
+					static_cast<std::streamsize>(field_value.first.size()));
 				ans_out << ' ';
-				ans_out.write(field_value.second.data(), field_value.second.size());
+				ans_out.write(field_value.second.data(),
+					static_cast<std::streamsize>(field_value.second.size()));
 				ans_out << ' ';
 			}
 			ans_out << "]\n";
