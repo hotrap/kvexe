@@ -386,6 +386,12 @@ public:
 			return;
 		vcs_.read_copy(tier)->RangeDel(smallest, largest);
 	}
+	size_t RangeHotSize(size_t tier, const rocksdb::Slice& smallest,
+			const rocksdb::Slice& largest) override {
+		if (vcs_.size() <= tier)
+			return 0;
+		return vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
+	}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
@@ -563,36 +569,51 @@ void print_vector(const std::vector<T>& v) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 9) {
+	if (argc != 10) {
 		std::cout << argc << std::endl;
 		std::cout << "Usage:\n";
 		std::cout << "Arg 1: Whether to empty the directories.\n";
 		std::cout << "\t1: Empty the directories first.\n";
 		std::cout << "\t0: Leave the directories as they are.\n";
-		std::cout << "Arg 2: Use O_DIRECT for user and compaction reads?\n";
+		std::cout << "Arg 2: Method to pick SST to compact\n";
+		std::cout << "\t0: kByCompensatedSize\n";
+		std::cout << "\t1: kOldestLargestSeqFirst\n";
+		std::cout << "\t2: kOldestSmallestSeqFirst\n";
+		std::cout << "\t3: kMinOverlappingRatio (Default of RocksDB)\n";
+		std::cout << "\t4: kStaticEstimatedHotSize\n";
+		std::cout << "\t5: kAccurateHotSize\n";
+		std::cout << "Arg 3: Delta in bytes\n";
+		std::cout << "Arg 4: Use O_DIRECT for user and compaction reads?\n";
 		std::cout << "\t1: Yes\n";
 		std::cout << "\t0: No\n";
-		std::cout << "Arg 3: Path to database\n";
-		std::cout << "Arg 4: db_paths, for example: "
+		std::cout << "Arg 5: Path to database\n";
+		std::cout << "Arg 6: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cout << "Arg 5: Path to KV operation trace file\n";
-		std::cout << "Arg 6: Path to save output\n";
-		std::cout << "Arg 7: Path to VisCnts\n";
-		std::cout << "Arg 8: Delta in bytes\n";
+		std::cout << "Arg 7: Path to KV operation trace file\n";
+		std::cout << "Arg 8: Path to save output\n";
+		std::cout << "Arg 9: Path to VisCnts\n";
 		return -1;
 	}
 	rocksdb::Options options;
 
 	bool empty_directories_first = (argv[1][0] == '1');
-	options.use_direct_reads = (argv[2][0] == '1');
-	std::string db_path = std::string(argv[3]);
-	std::string db_paths(argv[4]);
-	std::string kvops_path = std::string(argv[5]);
-	std::string ans_out_path = std::string(argv[6]);
-	const char *viscnts_path = argv[7];
-	double delta = atof(argv[8]);
+
+	char compaction_pri = argv[2][0];
+	crash_if(argv[2][1] != 0);
+	crash_if(compaction_pri < '0' || compaction_pri > '5');
+	compaction_pri -= '0';
+
+	double delta = atof(argv[3]);
+	options.use_direct_reads = (argv[4][0] == '1');
+	std::string db_path = std::string(argv[5]);
+	std::string db_paths(argv[6]);
+	std::string kvops_path = std::string(argv[7]);
+	std::string ans_out_path = std::string(argv[8]);
+	const char *viscnts_path = argv[9];
 
 	options.db_paths = decode_db_paths(db_paths);
+	options.compaction_pri =
+		static_cast<rocksdb::CompactionPri>(compaction_pri);
 
 	if (empty_directories_first) {
 		std::cout << "Emptying directories\n";
