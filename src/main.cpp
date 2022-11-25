@@ -575,13 +575,8 @@ int main(int argc, char **argv) {
 		std::cout << "Arg 1: Whether to empty the directories.\n";
 		std::cout << "\t1: Empty the directories first.\n";
 		std::cout << "\t0: Leave the directories as they are.\n";
-		std::cout << "Arg 2: Method to pick SST to compact\n";
-		std::cout << "\t0: kByCompensatedSize\n";
-		std::cout << "\t1: kOldestLargestSeqFirst\n";
-		std::cout << "\t2: kOldestSmallestSeqFirst\n";
-		std::cout << "\t3: kMinOverlappingRatio (Default of RocksDB)\n";
-		std::cout << "\t4: kStaticEstimatedHotSize\n";
-		std::cout << "\t5: kAccurateHotSize\n";
+		std::cout << "Arg 2: Method to pick SST to compact"
+			" (rocksdb::CompactionPri)\n";
 		std::cout << "Arg 3: Delta in bytes\n";
 		std::cout << "Arg 4: Use O_DIRECT for user and compaction reads?\n";
 		std::cout << "\t1: Yes\n";
@@ -600,7 +595,7 @@ int main(int argc, char **argv) {
 
 	char compaction_pri = argv[2][0];
 	crash_if(argv[2][1] != 0);
-	crash_if(compaction_pri < '0' || compaction_pri > '5');
+	crash_if(compaction_pri < '0');
 	compaction_pri -= '0';
 
 	double delta = atof(argv[3]);
