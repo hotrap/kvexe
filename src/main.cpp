@@ -324,12 +324,12 @@ public:
 			return 1;
 		}
 	}
-	void AddHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
+	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
 			double weight) override {
 		add(add_hotness_cnts_, tier, (size_t)1);
 		addHotness(tier, key, vlen, weight);
 	}
-	void Access(int level, const rocksdb::Slice *key, size_t vlen)
+	void Access(int level, const rocksdb::Slice& key, size_t vlen)
 			override {
 		if (level < tier0_last_level_)
 			return;
@@ -358,7 +358,7 @@ public:
 	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
-	const rocksdb::HotRecInfo *Seek(void *iter, const rocksdb::Slice *key)
+	const rocksdb::HotRecInfo *Seek(void *iter, const rocksdb::Slice& key)
 			override {
 		if (iter == NULL)
 			return NULL;
@@ -380,8 +380,8 @@ public:
 			return;
 		delete (VisCnts::Iter*)iter;
 	}
-	void DelRange(size_t tier, const rocksdb::Slice *smallest,
-			const rocksdb::Slice *largest) override {
+	void DelRange(size_t tier, const rocksdb::Slice& smallest,
+			const rocksdb::Slice& largest) override {
 		if (vcs_.size() <= tier)
 			return;
 		vcs_.read_copy(tier)->RangeDel(smallest, largest);
@@ -476,7 +476,7 @@ private:
 			decayAll();
 		}
 	}
-	void addHotness(size_t tier, const rocksdb::Slice *key, size_t vlen,
+	void addHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
 			double weight) {
 		VisCnts* vc = vcs_.read_copy(tier);
 		vc->Access(key, vlen, weight);
