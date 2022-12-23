@@ -517,7 +517,7 @@ private:
 	void updateWeightSum() {
 		double sum = weightSum();
 		if (sum >= weight_sum_max_) {
-			std::cout << "Decay: " << sum << std::endl;
+			std::cerr << "Decay: " << sum << std::endl;
 			decayAll();
 		}
 	}
@@ -600,31 +600,31 @@ void wait_for_background_work(rocksdb::DB *db) {
 
 template <typename T>
 void print_vector(const std::vector<T>& v) {
-	std::cout << "{";
+	std::cerr << "{";
 	for (size_t i = 0; i < v.size(); ++i) {
-		std::cout << i << ':' << v[i] << ',';
+		std::cerr << i << ':' << v[i] << ',';
 	}
-	std::cout << "}";
+	std::cerr << "}";
 }
 
 int main(int argc, char **argv) {
 	if (argc != 9) {
-		std::cout << argc << std::endl;
-		std::cout << "Usage:\n";
+		std::cerr << argc << std::endl;
+		std::cerr << "Usage:\n";
 		std::cerr << "Arg 1: Trace format: plain/ycsb\n";
-		std::cout << "Arg 2: Whether to empty the directories.\n";
-		std::cout << "\t1: Empty the directories first.\n";
-		std::cout << "\t0: Leave the directories as they are.\n";
-		std::cout << "Arg 3: Method to pick SST to compact"
+		std::cerr << "Arg 2: Whether to empty the directories.\n";
+		std::cerr << "\t1: Empty the directories first.\n";
+		std::cerr << "\t0: Leave the directories as they are.\n";
+		std::cerr << "Arg 3: Method to pick SST to compact"
 			" (rocksdb::CompactionPri)\n";
-		std::cout << "Arg 4: Delta in bytes\n";
-		std::cout << "Arg 5: Use O_DIRECT for user and compaction reads?\n";
-		std::cout << "\t1: Yes\n";
-		std::cout << "\t0: No\n";
-		std::cout << "Arg 6: Path to database\n";
-		std::cout << "Arg 7: db_paths, for example: "
+		std::cerr << "Arg 4: Delta in bytes\n";
+		std::cerr << "Arg 5: Use O_DIRECT for user and compaction reads?\n";
+		std::cerr << "\t1: Yes\n";
+		std::cerr << "\t0: No\n";
+		std::cerr << "Arg 6: Path to database\n";
+		std::cerr << "Arg 7: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cout << "Arg 8: Path to VisCnts\n";
+		std::cerr << "Arg 8: Path to VisCnts\n";
 		return -1;
 	}
 	rocksdb::Options options;
@@ -699,17 +699,17 @@ int main(int argc, char **argv) {
 		" second(s) waiting for background work\n";
 
 	auto accessed = router->accessed();
-	std::cout << "Accessed: ";
+	std::cerr << "Accessed: ";
 	print_vector(accessed);
-	std::cout << std::endl;
+	std::cerr << std::endl;
 
-	std::cout << "Hot taken: " << router->hot_taken() << std::endl;
-	std::cout << "New iterator count: " << router->new_iter_cnt() << std::endl;
+	std::cerr << "Hot taken: " << router->hot_taken() << std::endl;
+	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
 
 	auto add_hotness_cnts = router->add_hotness_cnts();
-	std::cout << "Add hotness counts: ";
+	std::cerr << "Add hotness counts: ";
 	print_vector(add_hotness_cnts);
-	std::cout << std::endl;
+	std::cerr << std::endl;
 
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
