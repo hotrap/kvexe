@@ -37,7 +37,6 @@ decode_db_paths(std::string db_paths) {
 				path.push_back(c);
 		}
 		in >> size;
-		// std::cout << path << "," << size << std::endl;
 		ret.emplace_back(std::move(path), size);
 		crash_if(in.get() != '}', "Invalid db_paths");
 		c = static_cast<char>(in.get());
@@ -62,7 +61,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 	int level = 0;
 	assert(!options.db_paths.empty());
 
-	std::cout << "Predicted level assignment:\n";
+	std::cerr << "Predicted level assignment:\n";
 
 	// size remaining in the most recent path
 	uint64_t current_path_size = options.db_paths[0].target_size;
@@ -83,7 +82,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		if (cur_level == level) {
 			// Does desired level fit in this path?
-			std::cout << level << ' ' << options.db_paths[p].path << ' ' <<
+			std::cerr << level << ' ' << options.db_paths[p].path << ' ' <<
 				level_size << std::endl;
 			++level;
 		}
@@ -107,7 +106,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 		}
 		cur_level++;
 	}
-	std::cout << level << "+ " << options.db_paths[p].path << ' ' << level_size << std::endl;
+	std::cerr << level << "+ " << options.db_paths[p].path << ' ' << level_size << std::endl;
 	return level;
 }
 
@@ -225,7 +224,7 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				rocksdb::Slice(value.c_str(), value.size());
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
 			if (!s.ok()) {
-				std::cout << "INSERT failed with error: " << s.ToString() << std::endl;
+				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 		} else if (op == "READ") {
@@ -237,7 +236,7 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			std::string value;
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
 			if (!s.ok()) {
-				std::cout << "GET failed with error: " << s.ToString() << std::endl;
+				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 			std::istringstream value_in(value);
@@ -261,7 +260,7 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			std::string value;
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
 			if (!s.ok()) {
-				std::cout << "GET failed with error: " << s.ToString() << std::endl;
+				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 			std::istringstream value_in(value);
@@ -276,14 +275,14 @@ int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				rocksdb::Slice(value.c_str(), value.size());
 			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
 			if (!s.ok()) {
-				std::cout << "UPDATE failed with error: " << s.ToString() << std::endl;
+				std::cerr << "UPDATE failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 		}
 		else {
-			std::cout << "Ignore line: " << op;
+			std::cerr << "Ignore line: " << op;
 			std::getline(in, op); // Skip the rest of the line
-			std::cout << op << std::endl;
+			std::cerr << op << std::endl;
 		}
 	}
 	return 0;
@@ -331,27 +330,25 @@ void wait_for_background_work(rocksdb::DB *db) {
 			}
 		}
 		if (i == 20) {
-			std::cout << "There is no background work detected for more than 2 seconds. Exiting...\n";
+			// std::cerr << "There is no background work detected for more than 2 seconds. Exiting...\n";
 			break;
 		}
 	}
 }
 
 int main(int argc, char **argv) {
-	if (argc != 7) {
-		std::cout << argc << std::endl;
-		std::cout << "Usage:\n";
-		std::cout << "Arg 1: Whether to empty the directories.\n";
-		std::cout << "\t1: Empty the directories first.\n";
-		std::cout << "\t0: Leave the directories as they are.\n";
-		std::cout << "Arg 2: Use O_DIRECT for user and compaction reads?\n";
-		std::cout << "\t1: Yes\n";
-		std::cout << "\t0: No\n";
-		std::cout << "Arg 3: Path to database\n";
-		std::cout << "Arg 4: db_paths, for example: "
+	if (argc != 5) {
+		std::cerr << argc << std::endl;
+		std::cerr << "Usage:\n";
+		std::cerr << "Arg 1: Whether to empty the directories.\n";
+		std::cerr << "\t1: Empty the directories first.\n";
+		std::cerr << "\t0: Leave the directories as they are.\n";
+		std::cerr << "Arg 2: Use O_DIRECT for user and compaction reads?\n";
+		std::cerr << "\t1: Yes\n";
+		std::cerr << "\t0: No\n";
+		std::cerr << "Arg 3: Path to database\n";
+		std::cerr << "Arg 4: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cout << "Arg 5: Path to KV operation trace file\n";
-		std::cout << "Arg 6: Path to save output\n";
 		return -1;
 	}
 	rocksdb::Options options;
@@ -360,13 +357,11 @@ int main(int argc, char **argv) {
 	options.use_direct_reads = (argv[2][0] == '1');
 	std::string db_path = std::string(argv[3]);
 	std::string db_paths(argv[4]);
-	std::string kvops_path = std::string(argv[5]);
-	std::string ans_out_path = std::string(argv[6]);
 
 	options.db_paths = decode_db_paths(db_paths);
 
 	if (empty_directories_first) {
-		std::cout << "Emptying directories\n";
+		std::cerr << "Emptying directories\n";
 		empty_directory(db_path);
 		for (auto path : options.db_paths) {
 			empty_directory(path.path);
@@ -374,40 +369,28 @@ int main(int argc, char **argv) {
 	}
 	predict_level_assignment(options);
 
-	std::ifstream in(kvops_path);
-	if (!in) {
-		std::cout << "Fail to open " << kvops_path << std::endl;
-		return -1;
-	}
-
-	std::ofstream ans_out(ans_out_path);
-	if (!ans_out) {
-		std::cout << "Fail to open " << ans_out_path << std::endl;
-		return -1;
-	}
-
 	rocksdb::DB *db;
 	auto s = rocksdb::DB::Open(options, db_path, &db);
 	if (!s.ok()) {
-		std::cout << "Creating database\n";
+		std::cerr << "Creating database\n";
 		options.create_if_missing = true;
 		s = rocksdb::DB::Open(options, db_path, &db);
 		if (!s.ok()) {
-			std::cout << s.ToString() << std::endl;
+			std::cerr << s.ToString() << std::endl;
 			return -1;
 		}
 	}
 
 	auto start = std::chrono::steady_clock::now();
-	int ret = work(db, in, ans_out);
+	int ret = work(db, std::cin, std::cout);
 	auto end = std::chrono::steady_clock::now();
-	std::cout << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
+	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 << " second(s) for work\n";
 
 	start = std::chrono::steady_clock::now();
 	wait_for_background_work(db);
 	end = std::chrono::steady_clock::now();
-	std::cout << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
+	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
 
