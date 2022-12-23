@@ -121,6 +121,46 @@ bool is_empty_directory(std::string dir_path) {
 	return it == std::filesystem::end(it);
 }
 
+int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
+	while (1) {
+		std::string op;
+		in >> op;
+		if (!in) {
+			break;
+		}
+		if (op == "INSERT") {
+			std::string key, value;
+			in >> key >> value;
+			rocksdb::Slice key_slice(key);
+			rocksdb::Slice value_slice(value);
+			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			if (!s.ok()) {
+				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
+				return -1;
+			}
+		} else if (op == "READ") {
+			std::string key;
+			in >> key;
+			rocksdb::Slice key_slice(key);
+			std::string value;
+			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			if (!s.ok()) {
+				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
+				return -1;
+			}
+			ans_out << value << '\n';
+		} else if (op == "UPDATE") {
+			std::cerr << "UPDATE in plain format is not supported\n";
+			return -1;
+		} else {
+			std::cerr << "Ignore line: " << op;
+			std::getline(in, op); // Skip the rest of the line
+			std::cerr << op << std::endl;
+		}
+	}
+	return 0;
+}
+
 void handle_table_name(std::istream& in) {
 	std::string table;
 	in >> table;
@@ -204,7 +244,7 @@ deserialize_values(std::istream& in,
 	return result;
 }
 
-int work(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
+int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
 		std::string op;
 		in >> op;
@@ -337,26 +377,28 @@ void wait_for_background_work(rocksdb::DB *db) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 5) {
+	if (argc != 6) {
 		std::cerr << argc << std::endl;
 		std::cerr << "Usage:\n";
-		std::cerr << "Arg 1: Whether to empty the directories.\n";
+		std::cerr << "Arg 1: Trace format: plain/ycsb\n";
+		std::cerr << "Arg 2: Whether to empty the directories.\n";
 		std::cerr << "\t1: Empty the directories first.\n";
 		std::cerr << "\t0: Leave the directories as they are.\n";
-		std::cerr << "Arg 2: Use O_DIRECT for user and compaction reads?\n";
+		std::cerr << "Arg 3: Use O_DIRECT for user and compaction reads?\n";
 		std::cerr << "\t1: Yes\n";
 		std::cerr << "\t0: No\n";
-		std::cerr << "Arg 3: Path to database\n";
-		std::cerr << "Arg 4: db_paths, for example: "
+		std::cerr << "Arg 4: Path to database\n";
+		std::cerr << "Arg 5: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
 		return -1;
 	}
 	rocksdb::Options options;
 
-	bool empty_directories_first = (argv[1][0] == '1');
-	options.use_direct_reads = (argv[2][0] == '1');
-	std::string db_path = std::string(argv[3]);
-	std::string db_paths(argv[4]);
+	std::string format(argv[1]);
+	bool empty_directories_first = (argv[2][0] == '1');
+	options.use_direct_reads = (argv[3][0] == '1');
+	std::string db_path = std::string(argv[4]);
+	std::string db_paths(argv[5]);
 
 	options.db_paths = decode_db_paths(db_paths);
 
@@ -381,8 +423,16 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	int ret;
 	auto start = std::chrono::steady_clock::now();
-	int ret = work(db, std::cin, std::cout);
+	if (format == "plain") {
+		ret = work_plain(db, std::cin, std::cout);
+	} else if (format == "ycsb") {
+		ret = work_ycsb(db, std::cin, std::cout);
+	} else {
+		std::cerr << "Unrecognized format: " << format << std::endl;
+		ret = -1;
+	}
 	auto end = std::chrono::steady_clock::now();
 	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 << " second(s) for work\n";
