@@ -358,6 +358,9 @@ public:
 			delete accessed_.ref_locked(i);
 		}
 	}
+	const char *Name() const override {
+		return "RouterVisCnts";
+	}
 	size_t Tier(int level) override {
 		if (level <= tier0_last_level_) {
 			return 0;
@@ -432,9 +435,6 @@ public:
 		if (vcs_.size() <= tier)
 			return 0;
 		return vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
-	}
-	const char *Name() const override {
-		return "RouterVisCnts";
 	}
 	std::vector<size_t> accessed() {
 		size_t size = accessed_.size();
