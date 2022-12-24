@@ -14,12 +14,14 @@
 #include "viscnts.h"
 
 #ifndef crash_if
-#define crash_if(cond, msg) do { \
-	if (cond) { \
-		fprintf(stderr, "crash_if: %s:%u: %s: Crashes due to %s: %s", \
-			__FILE__, __LINE__, __func__, #cond, msg); \
-		abort(); \
-	} \
+#define panic(...) do { \
+    fprintf(stderr, "panic: %s:%u: %s:", \
+        __FILE__, __LINE__, __func__); \
+    fprintf(stderr, " " __VA_ARGS__);   \
+    abort(); \
+} while (0)
+#define crash_if(cond, ...) do { \
+    if (cond) { panic(__VA_ARGS__); }   \
 } while (0)
 #endif
 
