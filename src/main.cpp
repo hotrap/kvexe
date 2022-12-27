@@ -720,6 +720,12 @@ int main(int argc, char **argv) {
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
 
+	auto timers = router->TimerCollect();
+	for (const auto& timer : timers) {
+		std::cerr << timer.name << ": count " << timer.count << ", total " <<
+			timer.nsec << "ns\n";
+	}
+
 	delete db;
 	delete router;
 
