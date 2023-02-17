@@ -1,12 +1,12 @@
+#include "timers.h"
+
 #include <iostream>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <set>
 #include <thread>
-#include <chrono>
 #include <queue>
-#include <atomic>
 
 #include "rocksdb/db.h"
 #include "rcu_vector_bp.hpp"
@@ -336,6 +336,15 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
+enum class TimerType {
+	kRangeHotSize,
+	kEnd,
+};
+const char *timer_names[] = {
+	"RangeHotSize",
+};
+TypedTimers<TimerType, timer_names> timers;
+
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
@@ -434,7 +443,10 @@ public:
 			const rocksdb::Slice& largest) override {
 		if (vcs_.size() <= tier)
 			return 0;
-		return vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
+		auto start = timers.Start();
+		size_t ret = vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
+		timers.Stop(TimerType::kRangeHotSize, start);
+		return ret;
 	}
 	std::vector<size_t> accessed() {
 		size_t size = accessed_.size();
@@ -716,11 +728,13 @@ int main(int argc, char **argv) {
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
 
-	auto timers = router->TimerCollect();
-	for (const auto& timer : timers) {
+	auto router_timers = router->TimerCollect();
+	for (const auto& timer : router_timers) {
 		std::cerr << timer.name << ": count " << timer.count << ", total " <<
 			timer.nsec << "ns\n";
 	}
+
+	timers.Print(std::cerr);
 
 	delete db;
 	delete router;
