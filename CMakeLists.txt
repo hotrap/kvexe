@@ -20,13 +20,17 @@ target_include_directories(${PROJECT_NAME}
 	PRIVATE
 		${PROJECT_SOURCE_DIR}/include
 )
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB} ${VISCNTS_LIB})
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
         rocksdb
-        viscnts
     PRIVATE
         rcu_vector_bp
         boost_fiber
 )
+IF (DEFINED VISCNTS_LIB)
+    target_link_directories(${PROJECT_NAME} PUBLIC ${VISCNTS_LIB})
+    target_link_libraries(${PROJECT_NAME} PUBLIC viscnts)
+ENDIF()
+
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
