@@ -729,10 +729,16 @@ int main(int argc, char **argv) {
 	viscnts_out << router->sprint_viscnts() << std::endl;
 
 	auto router_timers = router->TimerCollect();
-	for (const auto& timer : router_timers) {
-		std::cerr << timer.name << ": count " << timer.count << ", total " <<
-			timer.nsec << "ns\n";
+	std::cerr << "[";
+	for (size_t level = 0; level < router_timers.size(); ++level) {
+		std::cerr << "{level: " << level << ", timers: [\n";
+		for (const auto& timer : router_timers[level]) {
+			std::cerr << timer.name << ": count " << timer.count <<
+				", total " << timer.nsec << "ns,\n";
+		}
+		std::cerr << "]},";
 	}
+	std::cerr << "]\n";
 
 	timers.Print(std::cerr);
 
