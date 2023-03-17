@@ -732,17 +732,22 @@ int main(int argc, char **argv) {
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
 
-	auto router_timers = router->TimerCollect();
-	std::cerr << "[";
-	for (size_t level = 0; level < router_timers.size(); ++level) {
+	auto router_timers = router->CollectTimers();
+	for (const auto& timer : router_timers) {
+		std::cerr << timer.name << ": count " << timer.count <<
+			", total " << timer.nsec << "ns,\n";
+	}
+
+	auto router_timers_per_level = router->CollectTimersInAllLevels();
+	for (size_t level = 0; level < router_timers_per_level.size(); ++level) {
 		std::cerr << "{level: " << level << ", timers: [\n";
-		for (const auto& timer : router_timers[level]) {
+		for (const auto& timer : router_timers_per_level[level]) {
 			std::cerr << timer.name << ": count " << timer.count <<
 				", total " << timer.nsec << "ns,\n";
 		}
 		std::cerr << "]},";
 	}
-	std::cerr << "]\n";
+	std::cerr << std::endl;
 
 	timers.Print(std::cerr);
 
