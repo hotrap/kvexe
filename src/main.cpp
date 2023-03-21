@@ -338,12 +338,30 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 
 enum class TimerType {
 	kRangeHotSize,
+	kDecay,
 	kEnd,
 };
 const char *timer_names[] = {
 	"RangeHotSize",
+	"Decay",
 };
 TypedTimers<TimerType, timer_names> timers;
+
+enum class PerLevelTimerType {
+	kAccess,
+	kEnd,
+};
+const char *per_level_timer_names[] = {
+	"Access",
+};
+
+enum class PerTierTimerType {
+	kAddHostness,
+	kEnd,
+};
+const char *per_tier_timer_names[] = {
+	"AddHotness",
+};
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
@@ -362,10 +380,6 @@ public:
 		for (size_t i = 0; i < size; ++i) {
 			delete vcs_.ref_locked(i);
 		}
-		size = accessed_.size_locked();
-		for (size_t i = 0; i < size; ++i) {
-			delete accessed_.ref_locked(i);
-		}
 	}
 	const char *Name() const override {
 		return "RouterVisCnts";
@@ -379,15 +393,15 @@ public:
 	}
 	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
 			double weight) override {
-		add(add_hotness_cnts_, tier, (size_t)1);
+		auto start = Timers::Start();
 		addHotness(tier, key, vlen, weight);
+		per_tier_timers_.Stop(tier, PerTierTimerType::kAddHostness, start);
 	}
 	void Access(int level, const rocksdb::Slice& key, size_t vlen)
 			override {
 		if (level < tier0_last_level_)
 			return;
-		add(accessed_, (size_t)level, (size_t)1);
-
+		auto start = Timers::Start();
 		size_t tier = Tier(level);
 		if (vcs_.size() <= (size_t)tier) {
 			vcs_.lock();
@@ -401,6 +415,7 @@ public:
 			vcs_.unlock();
 		}
 		addHotness(tier, key, vlen, 1);
+		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
 	}
 	void *NewIter(size_t tier) override {
 		if (vcs_.size() <= tier)
@@ -443,34 +458,22 @@ public:
 			const rocksdb::Slice& largest) override {
 		if (vcs_.size() <= tier)
 			return 0;
-		auto start = timers.Start();
+		auto start = Timers::Start();
 		size_t ret = vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
 		timers.Stop(TimerType::kRangeHotSize, start);
 		return ret;
 	}
-	std::vector<size_t> accessed() {
-		size_t size = accessed_.size();
-		std::vector<size_t> ret(size);
-		for (size_t i = 0; i < size; ++i) {
-			auto val = accessed_.read_copy(i);
-			ret[i] = val->load(std::memory_order_relaxed);
-		}
-		return ret;
+	std::vector<std::vector<Timers::Status>> per_level_timers() {
+		return per_level_timers_.Collect();
+	}
+	std::vector<std::vector<Timers::Status>> per_tier_timers() {
+		return per_tier_timers_.Collect();
 	}
 	size_t new_iter_cnt() {
 		return new_iter_cnt_.load(std::memory_order_relaxed);
 	}
 	size_t hot_taken() {
 		return hot_taken_.load(std::memory_order_relaxed);
-	}
-	std::vector<size_t> add_hotness_cnts() {
-		size_t size = add_hotness_cnts_.size();
-		std::vector<size_t> ret(size);
-		for (size_t i = 0; i < size; ++i) {
-			auto val = add_hotness_cnts_.read_copy(i);
-			ret[i] = val->load(std::memory_order_relaxed);
-		}
-		return ret;
 	}
 	std::string sprint_viscnts() {
 		std::stringstream out;
@@ -508,11 +511,6 @@ private:
 			v.unlock();
 		}
 	}
-	template <typename T>
-	void add(rcu_vector_bp<std::atomic<T> *>& v, size_t i, T val) {
-		prepare(v, i);
-		v.read_copy(i)->fetch_add(val, std::memory_order_relaxed);
-	}
 	double weightSum() {
 		double sum = 0;
 		vcs_.read_lock();
@@ -532,7 +530,9 @@ private:
 		double sum = weightSum();
 		if (sum >= weight_sum_max_) {
 			std::cerr << "Decay: " << sum << std::endl;
+			auto start = Timers::Start();
 			decayAll();
+			timers.Stop(TimerType::kDecay, start);
 		}
 	}
 	void addHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
@@ -556,12 +556,12 @@ private:
 	double weight_sum_max_;
 	boost::fibers::buffered_channel<std::tuple<>> notify_weight_change_;
 
-	rcu_vector_bp<std::atomic<size_t> *> accessed_;
-	static_assert(!decltype(accessed_)::need_register_thread());
-	static_assert(!decltype(accessed_)::need_unregister_thread());
 	std::atomic<size_t> new_iter_cnt_;
 	std::atomic<size_t> hot_taken_;
-	rcu_vector_bp<std::atomic<size_t> *> add_hotness_cnts_;
+	TypedTimersPerLevel<PerLevelTimerType>
+		per_level_timers_;
+	TypedTimersPerLevel<PerTierTimerType>
+		per_tier_timers_;
 };
 
 bool has_background_work(rocksdb::DB *db) {
@@ -712,18 +712,8 @@ int main(int argc, char **argv) {
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
 
-	auto accessed = router->accessed();
-	std::cerr << "Accessed: ";
-	print_vector(accessed);
-	std::cerr << std::endl;
-
 	std::cerr << "Hot taken: " << router->hot_taken() << std::endl;
 	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
-
-	auto add_hotness_cnts = router->add_hotness_cnts();
-	std::cerr << "Add hotness counts: ";
-	print_vector(add_hotness_cnts);
-	std::cerr << std::endl;
 
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
@@ -734,12 +724,38 @@ int main(int argc, char **argv) {
 			", total " << timer.nsec << "ns,\n";
 	}
 
-	auto router_timers_per_level = router->CollectTimersInAllLevels();
-	for (size_t level = 0; level < router_timers_per_level.size(); ++level) {
+	auto per_tier_timers = router->per_tier_timers();
+	for (size_t tier = 0; tier < per_tier_timers.size(); ++tier) {
+		std::cerr << "{tier: " << tier << ", timers: [\n";
+		const auto& timers = per_tier_timers[tier];
+		for (size_t type = 0; type < timers.size(); ++type) {
+			std::cerr << per_tier_timer_names[tier] << ": "
+				"count " << timers[type].count << ", "
+				"total " << timers[type].nsec << "ns,\n";
+		}
+		std::cerr << "]},";
+	}
+	std::cerr << std::endl;
+
+	auto rocksdb_per_level_timers = router->CollectTimersInAllLevels();
+	auto router_per_level_timers = router->per_level_timers();
+	size_t num_levels = std::max(
+		rocksdb_per_level_timers.size(), router_per_level_timers.size());
+	for (size_t level = 0; level < num_levels; ++level) {
 		std::cerr << "{level: " << level << ", timers: [\n";
-		for (const auto& timer : router_timers_per_level[level]) {
-			std::cerr << timer.name << ": count " << timer.count <<
-				", total " << timer.nsec << "ns,\n";
+		if (level < rocksdb_per_level_timers.size()) {
+			for (const auto& timer : rocksdb_per_level_timers[level]) {
+				std::cerr << timer.name << ": count " << timer.count <<
+					", total " << timer.nsec << "ns,\n";
+			}
+		}
+		if (level < router_per_level_timers.size()) {
+			const auto& timers = router_per_level_timers[level];
+			for (size_t type = 0; type < timers.size(); ++type) {
+				std::cerr << per_level_timer_names[type] << ": "
+					"count " <<  timers[type].count << ", "
+					"total " << timers[type].nsec << "ns,\n";
+			}
 		}
 		std::cerr << "]},";
 	}
