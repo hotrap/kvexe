@@ -1,5 +1,8 @@
+#include "rocksdb/compaction_router.h"
 #include "timers.h"
 
+#include <atomic>
+#include <cstdlib>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -362,19 +365,23 @@ enum class PerTierTimerType {
 const char *per_tier_timer_names[] = {
 	"AddHotness",
 };
+static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
-			const char *dir, double weight_sum_max, bool create_if_missing)
-		:	ucmp_(ucmp),
+			const char *dir, double weight_sum_max, bool create_if_missing,
+			uint64_t switches)
+		:	switches_(switches),
+			ucmp_(ucmp),
 			dir_(dir),
 			create_if_missing_(create_if_missing),
 			tier0_last_level_(target_level),
 			weight_sum_max_(weight_sum_max),
 			notify_weight_change_(2),
 			new_iter_cnt_(0),
-			hot_taken_(0) {}
+			hot_taken_(0),
+			count_access_hot_per_tier_{0, 0} {}
 	~RouterVisCnts() {
 		size_t size = vcs_.size_locked();
 		for (size_t i = 0; i < size; ++i) {
@@ -416,6 +423,15 @@ public:
 		}
 		addHotness(tier, key, vlen, 1);
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
+		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+			size_t num_tiers = vcs_.size();
+			assert(num_tiers <= 2);
+			for (size_t i = 0; i < num_tiers; ++i) {
+				VisCnts *vc = vcs_.read_copy(i);
+				if (vc->IsHot(key))
+					count_access_hot_per_tier_[i].fetch_add(1);
+			}
+		}
 	}
 	void *NewIter(size_t tier) override {
 		if (vcs_.size() <= tier)
@@ -474,6 +490,13 @@ public:
 	}
 	size_t hot_taken() {
 		return hot_taken_.load(std::memory_order_relaxed);
+	}
+	std::vector<size_t> hit_count() {
+		std::vector<size_t> ret;
+		for (size_t i = 0; i < 2; ++i)
+			ret.push_back(count_access_hot_per_tier_[i].load(
+				std::memory_order_relaxed));
+		return ret;
 	}
 	std::string sprint_viscnts() {
 		std::stringstream out;
@@ -546,6 +569,7 @@ private:
 		}
 	}
 
+	const uint64_t switches_;
 	rcu_vector_bp<VisCnts*> vcs_;
 	static_assert(!decltype(vcs_)::need_register_thread());
 	static_assert(!decltype(vcs_)::need_unregister_thread());
@@ -558,6 +582,7 @@ private:
 
 	std::atomic<size_t> new_iter_cnt_;
 	std::atomic<size_t> hot_taken_;
+	std::atomic<size_t> count_access_hot_per_tier_[2];
 	TypedTimersPerLevel<PerLevelTimerType>
 		per_level_timers_;
 	TypedTimersPerLevel<PerTierTimerType>
@@ -621,8 +646,47 @@ void print_vector(const std::vector<T>& v) {
 	std::cerr << "}";
 }
 
+auto AggregateTimers(
+	const std::vector<std::vector<rocksdb::TimerStatus>>& timers_per_level
+) -> std::vector<rocksdb::TimerStatus> {
+	size_t num_levels = timers_per_level.size();
+	if (num_levels == 0)
+		return std::vector<rocksdb::TimerStatus>();
+	size_t num_timers = timers_per_level[0].size();
+	std::vector<rocksdb::TimerStatus> ret = timers_per_level[0];
+	for (size_t level = 1; level < num_levels; ++level) {
+		const auto& timers = timers_per_level[level];
+		assert(timers.size() == num_timers);
+		for (size_t i = 0; i < num_timers; ++i) {
+			assert(strcmp(ret[i].name, timers[i].name) == 0);
+			ret[i].count += timers[i].count;
+			ret[i].nsec += timers[i].nsec;
+		}
+	}
+	return ret;
+}
+
+auto AggregateTimers(
+	const std::vector<std::vector<Timers::Status>>& timers_per_level
+) -> std::vector<Timers::Status> {
+	size_t num_levels = timers_per_level.size();
+	if (num_levels == 0)
+		return std::vector<Timers::Status>();
+	size_t num_timers = timers_per_level[0].size();
+	std::vector<Timers::Status> ret = timers_per_level[0];
+	for (size_t level = 1; level < num_levels; ++level) {
+		const auto& timers = timers_per_level[level];
+		for (size_t i = 0; i < num_timers; ++i) {
+			assert(strcmp(ret[i].name, timers[i].name) == 0);
+			ret[i].count += timers[i].count;
+			ret[i].nsec += timers[i].nsec;
+		}
+	}
+	return ret;
+}
+
 int main(int argc, char **argv) {
-	if (argc != 9) {
+	if (argc < 9 || argc > 10) {
 		std::cerr << argc << std::endl;
 		std::cerr << "Usage:\n";
 		std::cerr << "Arg 1: Trace format: plain/ycsb\n";
@@ -639,6 +703,8 @@ int main(int argc, char **argv) {
 		std::cerr << "Arg 7: db_paths, for example: "
 			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
 		std::cerr << "Arg 8: Path to VisCnts\n";
+		std::cerr << "Arg 9: Switch mask (default is 0)\n";
+		std::cerr << "\t0x1: count access hot per tier\n";
 		return -1;
 	}
 	rocksdb::Options options;
@@ -656,6 +722,11 @@ int main(int argc, char **argv) {
 	std::string db_path = std::string(argv[6]);
 	std::string db_paths(argv[7]);
 	const char *viscnts_path = argv[8];
+	uint64_t switches;
+	if (argc < 10)
+		switches = 0;
+	else
+		switches = strtoul(argv[9], NULL, 0);
 
 	options.db_paths = decode_db_paths(db_paths);
 	options.compaction_pri =
@@ -676,7 +747,7 @@ int main(int argc, char **argv) {
 	// options.compaction_router = new RouterProb(0.5, 233);
 	auto router =
 		new RouterVisCnts(options.comparator, first_cd_level - 1, viscnts_path,
-			delta, true);
+			delta, true, switches);
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
@@ -714,6 +785,12 @@ int main(int argc, char **argv) {
 
 	std::cerr << "Hot taken: " << router->hot_taken() << std::endl;
 	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
+	if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+		auto counters = router->hit_count();
+		assert(counters.size() == 2);
+		std::cerr << "Access hot per tier: " << counters[0] << ' ' <<
+			counters[1] << std::endl;
+	}
 
 	std::ofstream viscnts_out("viscnts.json");
 	viscnts_out << router->sprint_viscnts() << std::endl;
@@ -760,6 +837,22 @@ int main(int argc, char **argv) {
 		std::cerr << "]},";
 	}
 	std::cerr << std::endl;
+
+	std::cerr << "In all levels: [\n";
+	std::vector<rocksdb::TimerStatus> rocksdb_timers_in_all_levels =
+		AggregateTimers(rocksdb_per_level_timers);
+	for (const rocksdb::TimerStatus& timer : rocksdb_timers_in_all_levels) {
+		std::cerr << timer.name << ": count " << timer.count <<
+			", total " << timer.nsec << "ns,\n";
+	}
+	std::vector<Timers::Status> router_timers_in_all_levels =
+		AggregateTimers(router_per_level_timers);
+	for (size_t i = 0; i < router_timers_in_all_levels.size(); ++i) {
+		std::cerr << per_level_timer_names[i] << ": "
+			"count " << router_timers_in_all_levels[i].count << ", "
+			"total " << router_timers_in_all_levels[i].nsec << "ns,\n";
+	}
+	std::cerr << "]\n";
 
 	timers.Print(std::cerr);
 
