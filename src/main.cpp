@@ -340,8 +340,8 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	return 0;
 }
 
-enum class TimerType {
-	kRangeHotSize,
+enum class TimerType : size_t {
+	kRangeHotSize = 0,
 	kDecay,
 	kEnd,
 };
@@ -351,16 +351,16 @@ const char *timer_names[] = {
 };
 TypedTimers<TimerType, timer_names> timers;
 
-enum class PerLevelTimerType {
-	kAccess,
+enum class PerLevelTimerType : size_t {
+	kAccess = 0,
 	kEnd,
 };
 const char *per_level_timer_names[] = {
 	"Access",
 };
 
-enum class PerTierTimerType {
-	kAddHostness,
+enum class PerTierTimerType : size_t {
+	kAddHostness = 0,
 	kEnd,
 };
 const char *per_tier_timer_names[] = {
