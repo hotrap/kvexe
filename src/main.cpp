@@ -12,6 +12,7 @@
 #include <queue>
 
 #include "rocksdb/db.h"
+#include "rocksdb/statistics.h"
 #include "rcu_vector_bp.hpp"
 
 #include "viscnts.h"
@@ -731,6 +732,7 @@ int main(int argc, char **argv) {
 	options.db_paths = decode_db_paths(db_paths);
 	options.compaction_pri =
 		static_cast<rocksdb::CompactionPri>(compaction_pri);
+	options.statistics = rocksdb::CreateDBStatistics();
 
 	if (empty_directories_first) {
 		std::cerr << "Emptying directories\n";
@@ -782,6 +784,16 @@ int main(int argc, char **argv) {
 	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
+
+	std::cerr << "rocksdb.memtable.hit: " <<
+		options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << std::endl;
+	std::cerr << "rocksdb.l0.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << std::endl;
+	std::cerr << "rocksdb.l1.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << std::endl;
+	std::cerr << "rocksdb.rocksdb.l2andup.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) <<
+		std::endl;
 
 	std::cerr << "Hot taken: " << router->hot_taken() << std::endl;
 	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
