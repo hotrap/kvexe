@@ -407,9 +407,11 @@ public:
 	}
 	void Access(int level, const rocksdb::Slice& key, size_t vlen)
 			override {
-		if (level < tier0_last_level_)
-			return;
 		auto start = Timers::Start();
+		if (level < tier0_last_level_) {
+			per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
+			return;
+		}
 		size_t tier = Tier(level);
 		if (vcs_.size() <= (size_t)tier) {
 			vcs_.lock();
