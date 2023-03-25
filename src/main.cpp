@@ -343,11 +343,13 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 enum class TimerType : size_t {
 	kRangeHotSize = 0,
 	kDecay,
+	kNextHot,
 	kEnd,
 };
 const char *timer_names[] = {
 	"RangeHotSize",
 	"Decay",
+	"NextHot",
 };
 TypedTimers<TimerType, timer_names> timers;
 
@@ -381,7 +383,6 @@ public:
 			weight_sum_max_(weight_sum_max),
 			notify_weight_change_(2),
 			new_iter_cnt_(0),
-			hot_taken_(0),
 			count_access_hot_per_tier_{0, 0} {}
 	~RouterVisCnts() {
 		size_t size = vcs_.size_locked();
@@ -455,11 +456,10 @@ public:
 	const rocksdb::HotRecInfo *NextHot(void *iter) override {
 		if (iter == NULL)
 			return NULL;
+		auto start_time = Timers::Start();
 		auto it = (VisCnts::Iter*)iter;
 		const rocksdb::HotRecInfo *ret = it->Next();
-		if (ret) {
-			hot_taken_.fetch_add(1, std::memory_order_relaxed);
-		}
+		timers.Stop(TimerType::kNextHot, start_time);
 		return ret;
 	}
 	void DelIter(void *iter) override {
@@ -490,9 +490,6 @@ public:
 	}
 	size_t new_iter_cnt() {
 		return new_iter_cnt_.load(std::memory_order_relaxed);
-	}
-	size_t hot_taken() {
-		return hot_taken_.load(std::memory_order_relaxed);
 	}
 	std::vector<size_t> hit_count() {
 		std::vector<size_t> ret;
@@ -584,7 +581,6 @@ private:
 	boost::fibers::buffered_channel<std::tuple<>> notify_weight_change_;
 
 	std::atomic<size_t> new_iter_cnt_;
-	std::atomic<size_t> hot_taken_;
 	std::atomic<size_t> count_access_hot_per_tier_[2];
 	TypedTimersPerLevel<PerLevelTimerType>
 		per_level_timers_;
@@ -800,7 +796,6 @@ int main(int argc, char **argv) {
 	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
 	std::cerr << rocksdb_stats << std::endl;
 
-	std::cerr << "Hot taken: " << router->hot_taken() << std::endl;
 	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
 	if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 		auto counters = router->hit_count();
