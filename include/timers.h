@@ -21,10 +21,10 @@ public:
 		timers_[type].add(nsec);
 	}
 	static auto Start() {
-	    return std::chrono::steady_clock().now();
+	    return std::chrono::steady_clock::now();
 	}
 	void Stop(size_t type, std::chrono::steady_clock::time_point start_time) {
-		auto end_time = std::chrono::steady_clock().now();
+		auto end_time = std::chrono::steady_clock::now();
 		auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(
 				end_time - start_time).count();
 		Add(type, nsec);
