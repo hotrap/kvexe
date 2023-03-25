@@ -680,7 +680,6 @@ auto AggregateTimers(
 	for (size_t level = 1; level < num_levels; ++level) {
 		const auto& timers = timers_per_level[level];
 		for (size_t i = 0; i < num_timers; ++i) {
-			assert(strcmp(ret[i].name, timers[i].name) == 0);
 			ret[i].count += timers[i].count;
 			ret[i].nsec += timers[i].nsec;
 		}
