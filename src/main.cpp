@@ -456,6 +456,10 @@ int main(int argc, char **argv) {
 		options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) <<
 		std::endl;
 
+	std::string rocksdb_stats;
+	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
+	std::cerr << rocksdb_stats << std::endl;
+
 	delete db;
 
 	return ret;
