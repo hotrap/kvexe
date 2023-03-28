@@ -133,6 +133,37 @@ bool is_empty_directory(std::string dir_path) {
 	return it == std::filesystem::end(it);
 }
 
+enum class TimerType : size_t {
+	kInsert = 0,
+	kRead,
+	kUpdate,
+	kPut,
+	kGet,
+	kInput,
+	kOutput,
+	kSerialize,
+	kDeserialize,
+	kRangeHotSize,
+	kDecay,
+	kNextHot,
+	kEnd,
+};
+const char *timer_names[] = {
+	"Insert",
+	"Read",
+	"Update",
+	"Put",
+	"Get",
+	"Input",
+	"Output",
+	"Serialize",
+	"Deserialize",
+	"RangeHotSize",
+	"Decay",
+	"NextHot",
+};
+TypedTimers<TimerType, timer_names> timers;
+
 int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
 		std::string op;
@@ -205,6 +236,7 @@ read_field_values(std::istream& in) {
 
 template <typename T>
 void serialize_field_values(std::ostream& out, const T& fvs) {
+	auto start_time = Timers::Start();
 	for (const auto& fv : fvs) {
 		size_t len = fv.first.size();
 		out.write((char *)&len, sizeof(len));
@@ -213,6 +245,7 @@ void serialize_field_values(std::ostream& out, const T& fvs) {
 		out.write((char *)&len, sizeof(len));
 		out.write(fv.second.data(), len);
 	}
+	timers.Stop(TimerType::kSerialize, start_time);
 }
 
 std::set<std::string> read_fields(std::istream& in) {
@@ -241,6 +274,7 @@ std::vector<char> read_len_bytes(std::istream& in) {
 std::map<std::vector<char>, std::vector<char> >
 deserialize_values(std::istream& in,
 		const std::set<std::string>& fields) {
+	auto start_time = Timers::Start();
 	crash_if(!fields.empty(), "Getting specific fields is not supported yet.");
 	std::map<std::vector<char>, std::vector<char> > result;
 	while (1) {
@@ -253,6 +287,7 @@ deserialize_values(std::istream& in,
 		crash_if(result.insert(std::make_pair(field, value)).second == false,
 			"Duplicate field!");
 	}
+	timers.Stop(TimerType::kDeserialize, start_time);
 	return result;
 }
 
@@ -264,35 +299,48 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			break;
 		}
 		if (op == "INSERT") {
+			auto insert_start = Timers::Start();
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
+			auto field_values = read_field_values(in);
+			timers.Stop(TimerType::kInput, input_start);
 			std::ostringstream value_out;
-			serialize_field_values(value_out, read_field_values(in));
+			serialize_field_values(value_out, field_values);
 			// TODO: Avoid the copy
 			std::string value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
+			auto put_start = Timers::Start();
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
 				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
+			timers.Stop(TimerType::kInsert, insert_start);
 		} else if (op == "READ") {
+			auto read_start = Timers::Start();
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto fields = read_fields(in);
+			timers.Stop(TimerType::kInput, input_start);
 			std::string value;
+			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 			std::istringstream value_in(value);
 			auto result = deserialize_values(value_in, fields);
+			auto output_start = Timers::Start();
 			ans_out << "[ ";
 			for (const auto& field_value : result) {
 				ans_out.write(field_value.first.data(),
@@ -303,14 +351,21 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				ans_out << ' ';
 			}
 			ans_out << "]\n";
+			timers.Stop(TimerType::kOutput, output_start);
+			timers.Stop(TimerType::kRead, read_start);
 		} else if (op == "UPDATE") {
+			auto update_start = Timers::Start();
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto updates = read_field_values(in);
+			timers.Stop(TimerType::kInput, input_start);
 			std::string value;
+			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
@@ -325,11 +380,14 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
+			auto put_start = Timers::Start();
 			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
 				std::cerr << "UPDATE failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
+			timers.Stop(TimerType::kUpdate, update_start);
 		}
 		else {
 			std::cerr << "Ignore line: " << op;
@@ -339,19 +397,6 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	}
 	return 0;
 }
-
-enum class TimerType : size_t {
-	kRangeHotSize = 0,
-	kDecay,
-	kNextHot,
-	kEnd,
-};
-const char *timer_names[] = {
-	"RangeHotSize",
-	"Decay",
-	"NextHot",
-};
-TypedTimers<TimerType, timer_names> timers;
 
 enum class PerLevelTimerType : size_t {
 	kAccess = 0,
