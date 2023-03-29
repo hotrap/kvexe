@@ -146,6 +146,7 @@ enum class TimerType : size_t {
 	kRangeHotSize,
 	kDecay,
 	kNextHot,
+	kCountAccessHotPerTier,
 	kEnd,
 };
 const char *timer_names[] = {
@@ -161,6 +162,7 @@ const char *timer_names[] = {
 	"RangeHotSize",
 	"Decay",
 	"NextHot",
+	"CountAccessHotPerTier",
 };
 TypedTimers<TimerType, timer_names> timers;
 
@@ -473,6 +475,7 @@ public:
 		addHotness(tier, key, vlen, 1);
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+			auto start_time = Timers::Start();
 			size_t num_tiers = vcs_.size();
 			assert(num_tiers <= 2);
 			for (size_t i = 0; i < num_tiers; ++i) {
@@ -480,6 +483,7 @@ public:
 				if (vc->IsHot(key))
 					count_access_hot_per_tier_[i].fetch_add(1);
 			}
+			timers.Stop(TimerType::kCountAccessHotPerTier, start_time);
 		}
 	}
 	void *NewIter(size_t tier) override {
