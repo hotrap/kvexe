@@ -153,7 +153,7 @@ const char *timer_names[] = {
 	"Serialize",
 	"Deserialize",
 };
-TypedTimers<TimerType, timer_names> timers;
+TypedTimers<TimerType> timers;
 
 int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
@@ -526,7 +526,20 @@ int main(int argc, char **argv) {
 	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
 	std::cerr << rocksdb_stats << std::endl;
 
-	timers.Print(std::cerr);
+	auto timers_status = timers.Collect();
+	for (size_t i = 0; i < static_cast<size_t>(TimerType::kEnd); ++i) {
+		std::cerr << timer_names[i] << ": count " << timers_status[i].count <<
+			", total " << timers_status[i].nsec << "ns\n";
+	}
+	std::cerr << "In summary: [\n";
+	Timers::Status input_time =
+		timers_status[static_cast<size_t>(TimerType::kInputOperation)] +
+			timers_status[static_cast<size_t>(TimerType::kInputInsert)] +
+			timers_status[static_cast<size_t>(TimerType::kInputRead)] +
+			timers_status[static_cast<size_t>(TimerType::kInputUpdate)];
+	std::cerr << "\tInput: count " << input_time.count << ", total " <<
+		input_time.nsec << "ns\n";
+	std::cerr << "]\n";
 
 	delete db;
 

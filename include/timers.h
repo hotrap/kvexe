@@ -13,6 +13,12 @@ public:
 	struct Status {
 		uint64_t count;
 		uint64_t nsec;
+		Status operator+(const Status& rhs) const {
+			return Status{
+				.count = count + rhs.count,
+				.nsec = nsec + rhs.nsec,
+			};
+		}
 	};
 	Timers(size_t num) : timers_(num) {}
 	void Add(size_t type, uint64_t nsec) {
@@ -27,7 +33,7 @@ public:
 				end_time - start_time).count();
 		Add(type, nsec);
 	}
-	std::vector<Status> TimerCollect() {
+	std::vector<Status> Collect() {
 		std::vector<Status> timers;
 		for (const Timer& timer : timers_)
 			timers.push_back(Status{timer.count(), timer.nsec()});
@@ -50,19 +56,15 @@ private:
 	std::vector<Timer> timers_;
 };
 
-template <typename Type, const char **names>
+template <typename Type>
 class TypedTimers {
 public:
 	TypedTimers() : timers_(NUM) {}
 	void Stop(Type type, std::chrono::steady_clock::time_point start_time) {
 		timers_.Stop(static_cast<size_t>(type), start_time);
 	}
-	void Print(std::ostream& out) {
-		auto timers = timers_.TimerCollect();
-		for (size_t i = 0; i < NUM; ++i) {
-			out << names[i] << ": count " << timers[i].count << ","
-				" total " << timers[i].nsec << "ns\n";
-		}
+	std::vector<Timers::Status> Collect() {
+		return timers_.Collect();
 	}
 private:
 	static constexpr size_t NUM = static_cast<size_t>(Type::kEnd);
