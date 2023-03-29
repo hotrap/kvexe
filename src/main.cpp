@@ -871,39 +871,22 @@ int main(int argc, char **argv) {
 	}
 	std::cerr << std::endl;
 
-	auto rocksdb_per_level_timers = router->CollectTimersInAllLevels();
-	auto router_per_level_timers = router->per_level_timers();
-	size_t num_levels = std::max(
-		rocksdb_per_level_timers.size(), router_per_level_timers.size());
-	for (size_t level = 0; level < num_levels; ++level) {
+	auto per_level_timers = router->per_level_timers();
+	for (size_t level = 0; level < per_level_timers.size(); ++level) {
 		std::cerr << "{level: " << level << ", timers: [\n";
-		if (level < rocksdb_per_level_timers.size()) {
-			for (const auto& timer : rocksdb_per_level_timers[level]) {
-				std::cerr << timer.name << ": count " << timer.count <<
-					", total " << timer.nsec << "ns,\n";
-			}
-		}
-		if (level < router_per_level_timers.size()) {
-			const auto& timers = router_per_level_timers[level];
-			for (size_t type = 0; type < timers.size(); ++type) {
-				std::cerr << per_level_timer_names[type] << ": "
-					"count " <<  timers[type].count << ", "
-					"total " << timers[type].nsec << "ns,\n";
-			}
+		const auto& timers = per_level_timers[level];
+		for (size_t type = 0; type < timers.size(); ++type) {
+			std::cerr << per_level_timer_names[type] << ": "
+				"count " <<  timers[type].count << ", "
+				"total " << timers[type].nsec << "ns,\n";
 		}
 		std::cerr << "]},";
 	}
 	std::cerr << std::endl;
 
 	std::cerr << "In all levels: [\n";
-	std::vector<rocksdb::TimerStatus> rocksdb_timers_in_all_levels =
-		AggregateTimers(rocksdb_per_level_timers);
-	for (const rocksdb::TimerStatus& timer : rocksdb_timers_in_all_levels) {
-		std::cerr << timer.name << ": count " << timer.count <<
-			", total " << timer.nsec << "ns,\n";
-	}
 	std::vector<Timers::Status> router_timers_in_all_levels =
-		AggregateTimers(router_per_level_timers);
+		AggregateTimers(per_level_timers);
 	for (size_t i = 0; i < router_timers_in_all_levels.size(); ++i) {
 		std::cerr << per_level_timer_names[i] << ": "
 			"count " << router_timers_in_all_levels[i].count << ", "
