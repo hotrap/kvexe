@@ -139,7 +139,10 @@ enum class TimerType : size_t {
 	kUpdate,
 	kPut,
 	kGet,
-	kInput,
+	kInputOperation,
+	kInputInsert,
+	kInputRead,
+	kInputUpdate,
 	kOutput,
 	kSerialize,
 	kDeserialize,
@@ -155,7 +158,10 @@ const char *timer_names[] = {
 	"Update",
 	"Put",
 	"Get",
-	"Input",
+	"InputOperation",
+	"InputInsert",
+	"InputRead",
+	"InputUpdate",
 	"Output",
 	"Serialize",
 	"Deserialize",
@@ -296,19 +302,22 @@ deserialize_values(std::istream& in,
 int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
 		std::string op;
+		auto input_op_start =  Timers::Start();
 		in >> op;
+		timers.Stop(TimerType::kInputOperation, input_op_start);
 		if (!in) {
 			break;
 		}
 		if (op == "INSERT") {
-			auto insert_start = Timers::Start();
 			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto field_values = read_field_values(in);
-			timers.Stop(TimerType::kInput, input_start);
+			timers.Stop(TimerType::kInputInsert, input_start);
+
+			auto insert_start = Timers::Start();
 			std::ostringstream value_out;
 			serialize_field_values(value_out, field_values);
 			// TODO: Avoid the copy
@@ -324,14 +333,15 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			}
 			timers.Stop(TimerType::kInsert, insert_start);
 		} else if (op == "READ") {
-			auto read_start = Timers::Start();
 			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto fields = read_fields(in);
-			timers.Stop(TimerType::kInput, input_start);
+			timers.Stop(TimerType::kInputRead, input_start);
+
+			auto read_start = Timers::Start();
 			std::string value;
 			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
@@ -342,6 +352,8 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			}
 			std::istringstream value_in(value);
 			auto result = deserialize_values(value_in, fields);
+			timers.Stop(TimerType::kRead, read_start);
+
 			auto output_start = Timers::Start();
 			ans_out << "[ ";
 			for (const auto& field_value : result) {
@@ -354,16 +366,16 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			}
 			ans_out << "]\n";
 			timers.Stop(TimerType::kOutput, output_start);
-			timers.Stop(TimerType::kRead, read_start);
 		} else if (op == "UPDATE") {
-			auto update_start = Timers::Start();
 			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto updates = read_field_values(in);
-			timers.Stop(TimerType::kInput, input_start);
+			timers.Stop(TimerType::kInputUpdate, input_start);
+
+			auto update_start = Timers::Start();
 			std::string value;
 			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
