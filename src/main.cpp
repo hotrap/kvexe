@@ -113,7 +113,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 	return level;
 }
 
-void empty_directory(std::string dir_path) {
+void empty_directory(std::filesystem::path dir_path) {
 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
 		std::filesystem::remove_all(path);
 	}
@@ -464,7 +464,7 @@ int main(int argc, char **argv) {
 	std::string format(argv[1]);
 	bool empty_directories_first = (argv[2][0] == '1');
 	options.use_direct_reads = (argv[3][0] == '1');
-	std::string db_path = std::string(argv[4]);
+	std::filesystem::path db_path(argv[4]);
 	std::string db_paths(argv[5]);
 
 	options.db_paths = decode_db_paths(db_paths);
@@ -480,11 +480,11 @@ int main(int argc, char **argv) {
 	predict_level_assignment(options);
 
 	rocksdb::DB *db;
-	auto s = rocksdb::DB::Open(options, db_path, &db);
+	auto s = rocksdb::DB::Open(options, db_path.string(), &db);
 	if (!s.ok()) {
 		std::cerr << "Creating database\n";
 		options.create_if_missing = true;
-		s = rocksdb::DB::Open(options, db_path, &db);
+		s = rocksdb::DB::Open(options, db_path.string(), &db);
 		if (!s.ok()) {
 			std::cerr << s.ToString() << std::endl;
 			return -1;
@@ -524,7 +524,7 @@ int main(int argc, char **argv) {
 
 	std::string rocksdb_stats;
 	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
-	std::cerr << rocksdb_stats << std::endl;
+	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
 	auto timers_status = timers.Collect();
 	for (size_t i = 0; i < static_cast<size_t>(TimerType::kEnd); ++i) {
