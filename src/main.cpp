@@ -122,7 +122,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 	return level;
 }
 
-void empty_directory(std::string dir_path) {
+void empty_directory(std::filesystem::path dir_path) {
 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
 		std::filesystem::remove_all(path);
 	}
@@ -778,7 +778,7 @@ int main(int argc, char **argv) {
 
 	double delta = atof(argv[4]);
 	options.use_direct_reads = (argv[5][0] == '1');
-	std::string db_path = std::string(argv[6]);
+	std::filesystem::path db_path(argv[6]);
 	std::string db_paths(argv[7]);
 	const char *viscnts_path = argv[8];
 	uint64_t switches;
@@ -811,11 +811,11 @@ int main(int argc, char **argv) {
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
-	auto s = rocksdb::DB::Open(options, db_path, &db);
+	auto s = rocksdb::DB::Open(options, db_path.string(), &db);
 	if (!s.ok()) {
 		std::cerr << "Creating database\n";
 		options.create_if_missing = true;
-		s = rocksdb::DB::Open(options, db_path, &db);
+		s = rocksdb::DB::Open(options, db_path.string(), &db);
 		if (!s.ok()) {
 			std::cerr << s.ToString() << std::endl;
 			return -1;
@@ -855,7 +855,7 @@ int main(int argc, char **argv) {
 
 	std::string rocksdb_stats;
 	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
-	std::cerr << rocksdb_stats << std::endl;
+	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
 	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
 	if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
