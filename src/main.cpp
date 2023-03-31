@@ -12,7 +12,9 @@
 #include <queue>
 
 #include "rocksdb/db.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/statistics.h"
+#include "rocksdb/table.h"
 #include "rcu_vector_bp.hpp"
 
 #include "viscnts.h"
@@ -791,6 +793,11 @@ int main(int argc, char **argv) {
 	options.compaction_pri =
 		static_cast<rocksdb::CompactionPri>(compaction_pri);
 	options.statistics = rocksdb::CreateDBStatistics();
+
+	rocksdb::BlockBasedTableOptions table_options;
+	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+	options.table_factory.reset(
+		rocksdb::NewBlockBasedTableFactory(table_options));
 
 	if (empty_directories_first) {
 		std::cerr << "Emptying directories\n";
