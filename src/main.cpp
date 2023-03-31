@@ -8,7 +8,9 @@
 #include <chrono>
 
 #include "rocksdb/db.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/statistics.h"
+#include "rocksdb/table.h"
 
 #ifndef crash_if
 #define crash_if(cond, msg) do { \
@@ -469,6 +471,11 @@ int main(int argc, char **argv) {
 
 	options.db_paths = decode_db_paths(db_paths);
 	options.statistics = rocksdb::CreateDBStatistics();
+
+	rocksdb::BlockBasedTableOptions table_options;
+	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+	options.table_factory.reset(
+		rocksdb::NewBlockBasedTableFactory(table_options));
 
 	if (empty_directories_first) {
 		std::cerr << "Emptying directories\n";
