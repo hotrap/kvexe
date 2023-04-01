@@ -519,16 +519,16 @@ int main(int argc, char **argv) {
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
 
-	std::cerr << "rocksdb.block.cache.data.miss"
+	std::cerr << "rocksdb.block.cache.data.miss: "
 		<< options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
 		<< std::endl;
-	std::cerr << "rocksdb.block.cache.data.hit"
+	std::cerr << "rocksdb.block.cache.data.hit: "
 		<< options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
 		<< std::endl;
-	std::cerr << "rocksdb.bloom.filter.useful"
+	std::cerr << "rocksdb.bloom.filter.useful: "
 		<< options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
 		<< std::endl;
-	std::cerr << "rocksdb.bloom.filter.full.positive"
+	std::cerr << "rocksdb.bloom.filter.full.positive: "
 		<< options.statistics->getTickerCount(
 			rocksdb::BLOOM_FILTER_FULL_POSITIVE)
 		<< std::endl;
