@@ -1,3 +1,5 @@
+#include "timers.h"
+
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -6,6 +8,9 @@
 #include <chrono>
 
 #include "rocksdb/db.h"
+#include "rocksdb/filter_policy.h"
+#include "rocksdb/statistics.h"
+#include "rocksdb/table.h"
 
 #ifndef crash_if
 #define crash_if(cond, msg) do { \
@@ -110,7 +115,7 @@ int predict_level_assignment(const rocksdb::Options& options) {
 	return level;
 }
 
-void empty_directory(std::string dir_path) {
+void empty_directory(std::filesystem::path dir_path) {
 	for (auto& path : std::filesystem::directory_iterator(dir_path)) {
 		std::filesystem::remove_all(path);
 	}
@@ -120,6 +125,37 @@ bool is_empty_directory(std::string dir_path) {
 	auto it = std::filesystem::directory_iterator(dir_path);
 	return it == std::filesystem::end(it);
 }
+
+enum class TimerType : size_t {
+	kInsert,
+	kRead,
+	kUpdate,
+	kPut,
+	kGet,
+	kInputOperation,
+	kInputInsert,
+	kInputRead,
+	kInputUpdate,
+	kOutput,
+	kSerialize,
+	kDeserialize,
+	kEnd,
+};
+const char *timer_names[] = {
+	"Insert",
+	"Read",
+	"Update",
+	"Put",
+	"Get",
+	"InputOperation",
+	"InputInsert",
+	"InputRead",
+	"InputUpdate",
+	"Output",
+	"Serialize",
+	"Deserialize",
+};
+TypedTimers<TimerType> timers;
 
 int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
@@ -193,6 +229,7 @@ read_field_values(std::istream& in) {
 
 template <typename T>
 void serialize_field_values(std::ostream& out, const T& fvs) {
+	auto start_time = Timers::Start();
 	for (const auto& fv : fvs) {
 		size_t len = fv.first.size();
 		out.write((char *)&len, sizeof(len));
@@ -201,6 +238,7 @@ void serialize_field_values(std::ostream& out, const T& fvs) {
 		out.write((char *)&len, sizeof(len));
 		out.write(fv.second.data(), len);
 	}
+	timers.Stop(TimerType::kSerialize, start_time);
 }
 
 std::set<std::string> read_fields(std::istream& in) {
@@ -229,6 +267,7 @@ std::vector<char> read_len_bytes(std::istream& in) {
 std::map<std::vector<char>, std::vector<char> >
 deserialize_values(std::istream& in,
 		const std::set<std::string>& fields) {
+	auto start_time = Timers::Start();
 	crash_if(!fields.empty(), "Getting specific fields is not supported yet.");
 	std::map<std::vector<char>, std::vector<char> > result;
 	while (1) {
@@ -241,46 +280,66 @@ deserialize_values(std::istream& in,
 		crash_if(result.insert(std::make_pair(field, value)).second == false,
 			"Duplicate field!");
 	}
+	timers.Stop(TimerType::kDeserialize, start_time);
 	return result;
 }
 
 int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	while (1) {
 		std::string op;
+		auto input_op_start =  Timers::Start();
 		in >> op;
+		timers.Stop(TimerType::kInputOperation, input_op_start);
 		if (!in) {
 			break;
 		}
 		if (op == "INSERT") {
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
+			auto field_values = read_field_values(in);
+			timers.Stop(TimerType::kInputInsert, input_start);
+
+			auto insert_start = Timers::Start();
 			std::ostringstream value_out;
-			serialize_field_values(value_out, read_field_values(in));
+			serialize_field_values(value_out, field_values);
 			// TODO: Avoid the copy
 			std::string value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
+			auto put_start = Timers::Start();
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
 				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
+			timers.Stop(TimerType::kInsert, insert_start);
 		} else if (op == "READ") {
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto fields = read_fields(in);
+			timers.Stop(TimerType::kInputRead, input_start);
+
+			auto read_start = Timers::Start();
 			std::string value;
+			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
 			std::istringstream value_in(value);
 			auto result = deserialize_values(value_in, fields);
+			timers.Stop(TimerType::kRead, read_start);
+
+			auto output_start = Timers::Start();
 			ans_out << "[ ";
 			for (const auto& field_value : result) {
 				ans_out.write(field_value.first.data(),
@@ -291,14 +350,21 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				ans_out << ' ';
 			}
 			ans_out << "]\n";
+			timers.Stop(TimerType::kOutput, output_start);
 		} else if (op == "UPDATE") {
+			auto input_start = Timers::Start();
 			handle_table_name(in);
 			std::string key;
 			in >> key;
 			rocksdb::Slice key_slice(key);
 			auto updates = read_field_values(in);
+			timers.Stop(TimerType::kInputUpdate, input_start);
+
+			auto update_start = Timers::Start();
 			std::string value;
+			auto get_start = Timers::Start();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
@@ -313,11 +379,14 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
+			auto put_start = Timers::Start();
 			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
 				std::cerr << "UPDATE failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
+			timers.Stop(TimerType::kUpdate, update_start);
 		}
 		else {
 			std::cerr << "Ignore line: " << op;
@@ -397,10 +466,16 @@ int main(int argc, char **argv) {
 	std::string format(argv[1]);
 	bool empty_directories_first = (argv[2][0] == '1');
 	options.use_direct_reads = (argv[3][0] == '1');
-	std::string db_path = std::string(argv[4]);
+	std::filesystem::path db_path(argv[4]);
 	std::string db_paths(argv[5]);
 
 	options.db_paths = decode_db_paths(db_paths);
+	options.statistics = rocksdb::CreateDBStatistics();
+
+	rocksdb::BlockBasedTableOptions table_options;
+	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+	options.table_factory.reset(
+		rocksdb::NewBlockBasedTableFactory(table_options));
 
 	options.write_buffer_size = 1 << 20;
 	options.target_file_size_base = 1 << 20;
@@ -416,11 +491,11 @@ int main(int argc, char **argv) {
 	predict_level_assignment(options);
 
 	rocksdb::DB *db;
-	auto s = rocksdb::DB::Open(options, db_path, &db);
+	auto s = rocksdb::DB::Open(options, db_path.string(), &db);
 	if (!s.ok()) {
 		std::cerr << "Creating database\n";
 		options.create_if_missing = true;
-		s = rocksdb::DB::Open(options, db_path, &db);
+		s = rocksdb::DB::Open(options, db_path.string(), &db);
 		if (!s.ok()) {
 			std::cerr << s.ToString() << std::endl;
 			return -1;
@@ -447,6 +522,48 @@ int main(int argc, char **argv) {
 	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
+
+	std::cerr << "rocksdb.block.cache.data.miss: "
+		<< options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
+		<< std::endl;
+	std::cerr << "rocksdb.block.cache.data.hit: "
+		<< options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
+		<< std::endl;
+	std::cerr << "rocksdb.bloom.filter.useful: "
+		<< options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
+		<< std::endl;
+	std::cerr << "rocksdb.bloom.filter.full.positive: "
+		<< options.statistics->getTickerCount(
+			rocksdb::BLOOM_FILTER_FULL_POSITIVE)
+		<< std::endl;
+	std::cerr << "rocksdb.memtable.hit: " <<
+		options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << std::endl;
+	std::cerr << "rocksdb.l0.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << std::endl;
+	std::cerr << "rocksdb.l1.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << std::endl;
+	std::cerr << "rocksdb.rocksdb.l2andup.hit: " <<
+		options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) <<
+		std::endl;
+
+	std::string rocksdb_stats;
+	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
+	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
+
+	auto timers_status = timers.Collect();
+	for (size_t i = 0; i < static_cast<size_t>(TimerType::kEnd); ++i) {
+		std::cerr << timer_names[i] << ": count " << timers_status[i].count <<
+			", total " << timers_status[i].nsec << "ns\n";
+	}
+	std::cerr << "In summary: [\n";
+	Timers::Status input_time =
+		timers_status[static_cast<size_t>(TimerType::kInputOperation)] +
+			timers_status[static_cast<size_t>(TimerType::kInputInsert)] +
+			timers_status[static_cast<size_t>(TimerType::kInputRead)] +
+			timers_status[static_cast<size_t>(TimerType::kInputUpdate)];
+	std::cerr << "\tInput: count " << input_time.count << ", total " <<
+		input_time.nsec << "ns\n";
+	std::cerr << "]\n";
 
 	delete db;
 
