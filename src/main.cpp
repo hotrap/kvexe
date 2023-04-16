@@ -6,6 +6,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <random>
 #include <set>
 #include <thread>
@@ -150,7 +151,6 @@ enum class TimerType : size_t {
 	kDeserialize,
 	kRangeHotSize,
 	kDecay,
-	kNextHot,
 	kCountAccessHotPerTier,
 	kEnd,
 };
@@ -433,115 +433,59 @@ static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
-	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
-			const char *dir, double weight_sum_max, bool create_if_missing,
-			uint64_t switches)
-		:	switches_(switches),
-			ucmp_(ucmp),
-			dir_(dir),
-			create_if_missing_(create_if_missing),
-			tier0_last_level_(target_level),
-			weight_sum_max_(weight_sum_max),
-			notify_weight_change_(2),
-			new_iter_cnt_(0),
-			count_access_hot_per_tier_{0, 0} {}
-	~RouterVisCnts() {
-		size_t size = vcs_.size_locked();
-		for (size_t i = 0; i < size; ++i) {
-			delete vcs_.ref_locked(i);
-		}
-	}
+	RouterVisCnts(
+		const rocksdb::Comparator *ucmp, const char *dir, int tier0_last_level,
+		size_t max_hot_set_size, uint64_t switches
+	) : switches_(switches),
+		vc_(ucmp, dir, tier0_last_level, max_hot_set_size),
+		new_iter_cnt_(0),
+		count_access_hot_per_tier_{0, 0} {}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
 	size_t Tier(int level) override {
-		if (level <= tier0_last_level_) {
-			return 0;
-		} else {
-			return 1;
-		}
+		return vc_.Tier(static_cast<size_t>(level));
 	}
 	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
 			double weight) override {
 		auto start = Timers::Start();
-		addHotness(tier, key, vlen, weight);
+		vc_.Access(tier, key, vlen, weight);
 		per_tier_timers_.Stop(tier, PerTierTimerType::kAddHostness, start);
 	}
-	void Access(int level, const rocksdb::Slice& key, size_t vlen)
-			override {
+	void Access(
+		int level, const rocksdb::Slice& key, size_t vlen
+	) override {
 		auto start = Timers::Start();
-		if (level < tier0_last_level_) {
-			per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
-			return;
-		}
-		size_t tier = Tier(level);
-		if (vcs_.size() <= (size_t)tier) {
-			vcs_.lock();
-			while (vcs_.size_locked() <= (size_t)tier) {
-				std::filesystem::path dir(dir_);
-				auto path = dir / std::to_string(vcs_.size_locked());
-				vcs_.push_back_locked(
-					new VisCnts(ucmp_, path.c_str(), create_if_missing_,
-						&notify_weight_change_));
-			}
-			vcs_.unlock();
-		}
-		addHotness(tier, key, vlen, 1);
+		vc_.Access(Tier(level), key, vlen);
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
+
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 			auto start_time = Timers::Start();
-			size_t num_tiers = vcs_.size();
+			size_t num_tiers = vc_.TierNum();
 			assert(num_tiers <= 2);
 			for (size_t i = 0; i < num_tiers; ++i) {
-				VisCnts *vc = vcs_.read_copy(i);
-				if (vc->IsHot(key))
+				if (vc_.IsHot(i, key))
 					count_access_hot_per_tier_[i].fetch_add(1);
 			}
 			timers.Stop(TimerType::kCountAccessHotPerTier, start_time);
 		}
 	}
-	void *NewIter(size_t tier) override {
-		if (vcs_.size() <= tier)
-			return NULL;
-		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
-		VisCnts* vc = vcs_.read_copy(tier);
-		return new VisCnts::Iter(vc);
-	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
-	const rocksdb::HotRecInfo *Seek(void *iter, const rocksdb::Slice& key)
-			override {
-		if (iter == NULL)
-			return NULL;
-		auto it = (VisCnts::Iter*)iter;
-		return it->Seek(key);
-	}
-	const rocksdb::HotRecInfo *NextHot(void *iter) override {
-		if (iter == NULL)
-			return NULL;
-		auto start_time = Timers::Start();
-		auto it = (VisCnts::Iter*)iter;
-		const rocksdb::HotRecInfo *ret = it->Next();
-		timers.Stop(TimerType::kNextHot, start_time);
-		return ret;
-	}
-	void DelIter(void *iter) override {
-		if (iter == NULL)
-			return;
-		delete (VisCnts::Iter*)iter;
+	std::unique_ptr<rocksdb::CompactionRouter::Iter> LowerBound(
+		size_t tier, const rocksdb::Slice& key
+	) override {
+		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
+		return vc_.LowerBound(tier, key);
 	}
 	void DelRange(size_t tier, const rocksdb::Slice& smallest,
 			const rocksdb::Slice& largest) override {
-		if (vcs_.size() <= tier)
-			return;
-		vcs_.read_copy(tier)->RangeDel(smallest, largest);
+		vc_.RangeDel(tier, smallest, largest);
 	}
 	size_t RangeHotSize(size_t tier, const rocksdb::Slice& smallest,
 			const rocksdb::Slice& largest) override {
-		if (vcs_.size() <= tier)
-			return 0;
 		auto start = Timers::Start();
-		size_t ret = vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
+		size_t ret = vc_.RangeHotSize(tier, smallest, largest);
 		timers.Stop(TimerType::kRangeHotSize, start);
 		return ret;
 	}
@@ -563,85 +507,29 @@ public:
 	}
 	std::string sprint_viscnts() {
 		std::stringstream out;
-		size_t size = vcs_.size();
+		size_t size = vc_.TierNum();
 		out << "[";
 		for (size_t i = 0; i < size; ++i) {
-			void *iter = NewIter(i);
+			auto iter = vc_.Begin(i);
 			if (iter == NULL)
 				continue;
 			out << "{" << "\"level\": " << i << ", \"hot\": [";
-			auto it = (VisCnts::Iter*)iter;
-			it->SeekToFirst();
 			while (1) {
-				auto info = it->Next();
+				auto info = iter->next();
 				if (info == NULL)
 					break;
 				out << "{\"key\": \"" << info->slice.ToString() << '"' <<
 					", \"count\": " << info->count <<
 					", \"vlen\": " << info->vlen << "},";
 			}
-			DelIter(iter);
 			out << "]},";
 		}
 		out << "]";
 		return out.str();
 	}
 private:
-	template <typename T>
-	void prepare(rcu_vector_bp<std::atomic<T> *>& v, size_t i) {
-		if (v.size() <= i) {
-			v.lock();
-			while (v.size_locked() <= i) {
-				v.push_back_locked(new std::atomic<T>(0));
-			}
-			v.unlock();
-		}
-	}
-	double weightSum() {
-		double sum = 0;
-		vcs_.read_lock();
-		for (size_t i = 0; i < vcs_.size_locked(); ++i) {
-			sum += vcs_.ref_locked(i)->WeightSum();
-		}
-		vcs_.read_unlock();
-		return sum;
-	}
-	void decayAll() {
-		size_t size = vcs_.size();
-		for (size_t i = 0; i < size; ++i) {
-			vcs_.read_copy(i)->Decay();
-		}
-	}
-	void updateWeightSum() {
-		double sum = weightSum();
-		if (sum >= weight_sum_max_) {
-			std::cerr << "Decay: " << sum << std::endl;
-			auto start = Timers::Start();
-			decayAll();
-			timers.Stop(TimerType::kDecay, start);
-		}
-	}
-	void addHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
-			double weight) {
-		VisCnts* vc = vcs_.read_copy(tier);
-		vc->Access(key, vlen, weight);
-		std::tuple<> v;
-		auto status = notify_weight_change_.try_pop(v);
-		if (boost::fibers::channel_op_status::success == status) {
-			updateWeightSum();
-		}
-	}
-
 	const uint64_t switches_;
-	rcu_vector_bp<VisCnts*> vcs_;
-	static_assert(!decltype(vcs_)::need_register_thread());
-	static_assert(!decltype(vcs_)::need_unregister_thread());
-	const rocksdb::Comparator *ucmp_;
-	const char *dir_;
-	bool create_if_missing_;
-	int tier0_last_level_;
-	double weight_sum_max_;
-	boost::fibers::buffered_channel<std::tuple<>> notify_weight_change_;
+	VisCnts vc_;
 
 	std::atomic<size_t> new_iter_cnt_;
 	std::atomic<size_t> count_access_hot_per_tier_[2];
@@ -795,6 +683,7 @@ int main(int argc, char **argv) {
 	options.statistics = rocksdb::CreateDBStatistics();
 
 	rocksdb::BlockBasedTableOptions table_options;
+	table_options.block_cache = rocksdb::NewLRUCache(0);
 	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
 	options.table_factory.reset(
 		rocksdb::NewBlockBasedTableFactory(table_options));
@@ -812,9 +701,8 @@ int main(int argc, char **argv) {
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
-	auto router =
-		new RouterVisCnts(options.comparator, first_cd_level - 1, viscnts_path,
-			delta, true, switches);
+	auto router = new RouterVisCnts(options.comparator, viscnts_path,
+		first_cd_level - 1, delta, switches);
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
