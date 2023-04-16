@@ -437,7 +437,7 @@ public:
 		const rocksdb::Comparator *ucmp, const char *dir, int tier0_last_level,
 		size_t max_hot_set_size, uint64_t switches
 	) : switches_(switches),
-		vc_(ucmp, dir, tier0_last_level, max_hot_set_size),
+		vc_(VisCnts::New(ucmp, dir, tier0_last_level, max_hot_set_size)),
 		new_iter_cnt_(0),
 		count_access_hot_per_tier_{0, 0} {}
 	const char *Name() const override {
