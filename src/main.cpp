@@ -505,28 +505,6 @@ public:
 				std::memory_order_relaxed));
 		return ret;
 	}
-	std::string sprint_viscnts() {
-		std::stringstream out;
-		size_t size = vc_.TierNum();
-		out << "[";
-		for (size_t i = 0; i < size; ++i) {
-			auto iter = vc_.Begin(i);
-			if (iter == NULL)
-				continue;
-			out << "{" << "\"level\": " << i << ", \"hot\": [";
-			while (1) {
-				auto info = iter->next();
-				if (info == NULL)
-					break;
-				out << "{\"key\": \"" << info->slice.ToString() << '"' <<
-					", \"count\": " << info->count <<
-					", \"vlen\": " << info->vlen << "},";
-			}
-			out << "]},";
-		}
-		out << "]";
-		return out.str();
-	}
 private:
 	const uint64_t switches_;
 	VisCnts vc_;
@@ -772,9 +750,6 @@ int main(int argc, char **argv) {
 		std::cerr << "Access hot per tier: " << counters[0] << ' ' <<
 			counters[1] << std::endl;
 	}
-
-	std::ofstream viscnts_out("viscnts.json");
-	viscnts_out << router->sprint_viscnts() << std::endl;
 
 	auto router_timers = router->CollectTimers();
 	for (const auto& timer : router_timers) {
