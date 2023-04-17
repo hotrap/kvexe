@@ -1,5 +1,9 @@
 #include "timers.h"
 
+#include <boost/program_options/errors.hpp>
+#include <boost/program_options/options_description.hpp>
+#include <boost/program_options/parsers.hpp>
+#include <boost/program_options/variables_map.hpp>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -446,38 +450,53 @@ void wait_for_background_work(rocksdb::DB *db) {
 }
 
 int main(int argc, char **argv) {
-	if (argc != 6) {
-		std::cerr << argc << std::endl;
-		std::cerr << "Usage:\n";
-		std::cerr << "Arg 1: Trace format: plain/ycsb\n";
-		std::cerr << "Arg 2: Whether to empty the directories.\n";
-		std::cerr << "\t1: Empty the directories first.\n";
-		std::cerr << "\t0: Leave the directories as they are.\n";
-		std::cerr << "Arg 3: Use O_DIRECT for user and compaction reads?\n";
-		std::cerr << "\t1: Yes\n";
-		std::cerr << "\t0: No\n";
-		std::cerr << "Arg 4: Path to database\n";
-		std::cerr << "Arg 5: db_paths, for example: "
-			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		return -1;
-	}
 	rocksdb::Options options;
 
-	std::string format(argv[1]);
-	bool empty_directories_first = (argv[2][0] == '1');
-	options.use_direct_reads = (argv[3][0] == '1');
-	std::filesystem::path db_path(argv[4]);
-	std::string db_paths(argv[5]);
+	namespace po = boost::program_options;
+	po::options_description desc("Available options");
+	std::string format;
+	std::string arg_db_path;
+	std::string arg_db_paths;
+	size_t cache_size;
+	desc.add_options()
+		("help", "Print help message")
+		("cleanup,c", "Empty the directories first.")
+		(
+			"format,f", po::value<std::string>(&format)->default_value("ycsb"),
+			"Trace format: plain/ycsb"
+		) (
+			"use_direct_reads",
+			po::value<bool>(&options.use_direct_reads)->default_value(true), ""
+		) (
+			"db_path", po::value<std::string>(&arg_db_path)->required(),
+			"Path to database"
+		) (
+			"db_paths", po::value<std::string>(&arg_db_paths)->required(),
+			"For example: \"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\""
+		) (
+			"cache_size",
+			po::value<size_t>(&cache_size)->default_value(8 << 20),
+			"Capacity of LRU block cache in bytes. Default: 8MiB"
+		);
+	po::variables_map vm;
+	po::store(po::parse_command_line(argc, argv, desc), vm);
+	if (vm.count("help")) {
+		std::cerr << desc << std::endl;
+		return 1;
+	}
+	po::notify(vm);
 
-	options.db_paths = decode_db_paths(db_paths);
+	std::filesystem::path db_path(arg_db_path);
+	options.db_paths = decode_db_paths(arg_db_paths);
 	options.statistics = rocksdb::CreateDBStatistics();
 
 	rocksdb::BlockBasedTableOptions table_options;
+	table_options.block_cache = rocksdb::NewLRUCache(cache_size);
 	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
 	options.table_factory.reset(
 		rocksdb::NewBlockBasedTableFactory(table_options));
 
-	if (empty_directories_first) {
+	if (vm.count("cleanup")) {
 		std::cerr << "Emptying directories\n";
 		empty_directory(db_path);
 		for (auto path : options.db_paths) {

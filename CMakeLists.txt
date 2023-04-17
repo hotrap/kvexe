@@ -22,5 +22,6 @@ target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
         rocksdb
+        boost_program_options
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
