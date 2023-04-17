@@ -26,7 +26,7 @@ target_link_libraries(${PROJECT_NAME}
         rocksdb
     PRIVATE
         rcu_vector_bp
-        boost_fiber
+        boost_program_options
 )
 IF (DEFINED VISCNTS_LIB)
     target_link_directories(${PROJECT_NAME} PUBLIC ${VISCNTS_LIB})
