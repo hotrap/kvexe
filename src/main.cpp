@@ -436,14 +436,19 @@ public:
 		const rocksdb::Comparator *ucmp, const char *dir, int tier0_last_level,
 		size_t max_hot_set_size, uint64_t switches
 	) : switches_(switches),
-		vc_(VisCnts::New(ucmp, dir, tier0_last_level, max_hot_set_size)),
+		vc_(VisCnts::New(ucmp, dir, max_hot_set_size)),
+		tier0_last_level_(tier0_last_level),
 		new_iter_cnt_(0),
 		count_access_hot_per_tier_{0, 0} {}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
 	size_t Tier(int level) override {
-		return vc_.Tier(static_cast<size_t>(level));
+		if (level <= tier0_last_level_) {
+			return 0;
+		} else {
+			return 1;
+		}
 	}
 	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
 			double weight) override {
@@ -507,6 +512,7 @@ public:
 private:
 	const uint64_t switches_;
 	VisCnts vc_;
+	int tier0_last_level_;
 
 	std::atomic<size_t> new_iter_cnt_;
 	std::atomic<size_t> count_access_hot_per_tier_[2];
