@@ -150,7 +150,6 @@ enum class TimerType : size_t {
 	kSerialize,
 	kDeserialize,
 	kRangeHotSize,
-	kDecay,
 	kCountAccessHotPerTier,
 	kEnd,
 };
@@ -168,10 +167,10 @@ const char *timer_names[] = {
 	"Serialize",
 	"Deserialize",
 	"RangeHotSize",
-	"Decay",
-	"NextHot",
 	"CountAccessHotPerTier",
 };
+static_assert(sizeof(timer_names) ==
+	static_cast<size_t>(TimerType::kEnd) * sizeof(const char *));
 TypedTimers<TimerType> timers;
 
 int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
