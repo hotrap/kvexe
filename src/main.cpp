@@ -463,18 +463,15 @@ public:
 	void Access(
 		int level, const rocksdb::Slice& key, size_t vlen
 	) override {
+		size_t tier = Tier(level);
 		auto start = Timers::Start();
-		vc_.Access(Tier(level), key, vlen);
+		vc_.Access(tier, key, vlen);
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
 
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 			auto start_time = Timers::Start();
-			size_t num_tiers = vc_.TierNum();
-			assert(num_tiers <= 2);
-			for (size_t i = 0; i < num_tiers; ++i) {
-				if (vc_.IsHot(i, key))
-					count_access_hot_per_tier_[i].fetch_add(1);
-			}
+			if (vc_.IsHot(tier, key))
+				count_access_hot_per_tier_[tier].fetch_add(1);
 			timers.Stop(TimerType::kCountAccessHotPerTier, start_time);
 		}
 	}
