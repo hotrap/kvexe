@@ -792,7 +792,7 @@ int main(int argc, char **argv) {
 		std::cerr << "{tier: " << tier << ", timers: [\n";
 		const auto& timers = per_tier_timers[tier];
 		for (size_t type = 0; type < timers.size(); ++type) {
-			std::cerr << per_tier_timer_names[tier] << ": "
+			std::cerr << per_tier_timer_names[type] << ": "
 				"count " << timers[type].count << ", "
 				"total " << timers[type].nsec << "ns,\n";
 		}
