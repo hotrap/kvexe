@@ -426,11 +426,11 @@ const char *per_level_timer_names[] = {
 };
 
 enum class PerTierTimerType : size_t {
-	kAddHostness = 0,
+	kTransferRange,
 	kEnd,
 };
 const char *per_tier_timer_names[] = {
-	"AddHotness",
+	"TransferRange",
 };
 static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 
@@ -453,12 +453,6 @@ public:
 		} else {
 			return 1;
 		}
-	}
-	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
-			double weight) override {
-		auto start = Timers::Start();
-		vc_.Access(tier, key, vlen, weight);
-		per_tier_timers_.Stop(tier, PerTierTimerType::kAddHostness, start);
 	}
 	void Access(
 		int level, const rocksdb::Slice& key, size_t vlen
@@ -483,9 +477,15 @@ public:
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
 		return vc_.LowerBound(tier, key);
 	}
-	void DelRange(size_t tier, const rocksdb::Slice& smallest,
-			const rocksdb::Slice& largest) override {
-		vc_.RangeDel(tier, smallest, largest);
+	void TransferRange(size_t target_tier, size_t source_tier,
+		const rocksdb::Slice& smallest, const rocksdb::Slice& largest
+	) override {
+		crash_if(target_tier != 0);
+		auto start = Timers::Start();
+		vc_.TransferRange(target_tier, source_tier, smallest, largest);
+		per_tier_timers_.Stop(
+			source_tier, PerTierTimerType::kTransferRange, start
+		);
 	}
 	size_t RangeHotSize(size_t tier, const rocksdb::Slice& smallest,
 			const rocksdb::Slice& largest) override {
