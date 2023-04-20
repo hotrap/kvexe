@@ -2,10 +2,15 @@
 #include "timers.h"
 
 #include <atomic>
+#include <boost/program_options/errors.hpp>
+#include <boost/program_options/options_description.hpp>
+#include <boost/program_options/parsers.hpp>
+#include <boost/program_options/variables_map.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <random>
 #include <set>
 #include <thread>
@@ -149,8 +154,6 @@ enum class TimerType : size_t {
 	kSerialize,
 	kDeserialize,
 	kRangeHotSize,
-	kDecay,
-	kNextHot,
 	kCountAccessHotPerTier,
 	kEnd,
 };
@@ -168,10 +171,10 @@ const char *timer_names[] = {
 	"Serialize",
 	"Deserialize",
 	"RangeHotSize",
-	"Decay",
-	"NextHot",
 	"CountAccessHotPerTier",
 };
+static_assert(sizeof(timer_names) ==
+	static_cast<size_t>(TimerType::kEnd) * sizeof(const char *));
 TypedTimers<TimerType> timers;
 
 int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
@@ -423,34 +426,24 @@ const char *per_level_timer_names[] = {
 };
 
 enum class PerTierTimerType : size_t {
-	kAddHostness = 0,
+	kTransferRange,
 	kEnd,
 };
 const char *per_tier_timer_names[] = {
-	"AddHotness",
+	"TransferRange",
 };
 static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
-	RouterVisCnts(const rocksdb::Comparator *ucmp, int target_level,
-			const char *dir, double weight_sum_max, bool create_if_missing,
-			uint64_t switches)
-		:	switches_(switches),
-			ucmp_(ucmp),
-			dir_(dir),
-			create_if_missing_(create_if_missing),
-			tier0_last_level_(target_level),
-			weight_sum_max_(weight_sum_max),
-			notify_weight_change_(2),
-			new_iter_cnt_(0),
-			count_access_hot_per_tier_{0, 0} {}
-	~RouterVisCnts() {
-		size_t size = vcs_.size_locked();
-		for (size_t i = 0; i < size; ++i) {
-			delete vcs_.ref_locked(i);
-		}
-	}
+	RouterVisCnts(
+		const rocksdb::Comparator *ucmp, const char *dir, int tier0_last_level,
+		size_t max_hot_set_size, uint64_t switches
+	) : switches_(switches),
+		vc_(VisCnts::New(ucmp, dir, max_hot_set_size)),
+		tier0_last_level_(tier0_last_level),
+		new_iter_cnt_(0),
+		count_access_hot_per_tier_{0, 0} {}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
@@ -461,87 +454,43 @@ public:
 			return 1;
 		}
 	}
-	void AddHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
-			double weight) override {
-		auto start = Timers::Start();
-		addHotness(tier, key, vlen, weight);
-		per_tier_timers_.Stop(tier, PerTierTimerType::kAddHostness, start);
-	}
-	void Access(int level, const rocksdb::Slice& key, size_t vlen)
-			override {
-		auto start = Timers::Start();
-		if (level < tier0_last_level_) {
-			per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
-			return;
-		}
+	void Access(
+		int level, const rocksdb::Slice& key, size_t vlen
+	) override {
 		size_t tier = Tier(level);
-		if (vcs_.size() <= (size_t)tier) {
-			vcs_.lock();
-			while (vcs_.size_locked() <= (size_t)tier) {
-				std::filesystem::path dir(dir_);
-				auto path = dir / std::to_string(vcs_.size_locked());
-				vcs_.push_back_locked(
-					new VisCnts(ucmp_, path.c_str(), create_if_missing_,
-						&notify_weight_change_));
-			}
-			vcs_.unlock();
-		}
-		addHotness(tier, key, vlen, 1);
+		auto start = Timers::Start();
+		vc_.Access(tier, key, vlen);
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
+
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 			auto start_time = Timers::Start();
-			size_t num_tiers = vcs_.size();
-			assert(num_tiers <= 2);
-			for (size_t i = 0; i < num_tiers; ++i) {
-				VisCnts *vc = vcs_.read_copy(i);
-				if (vc->IsHot(key))
-					count_access_hot_per_tier_[i].fetch_add(1);
-			}
+			if (vc_.IsHot(tier, key))
+				count_access_hot_per_tier_[tier].fetch_add(1);
 			timers.Stop(TimerType::kCountAccessHotPerTier, start_time);
 		}
 	}
-	void *NewIter(size_t tier) override {
-		if (vcs_.size() <= tier)
-			return NULL;
-		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
-		VisCnts* vc = vcs_.read_copy(tier);
-		return new VisCnts::Iter(vc);
-	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
-	const rocksdb::HotRecInfo *Seek(void *iter, const rocksdb::Slice& key)
-			override {
-		if (iter == NULL)
-			return NULL;
-		auto it = (VisCnts::Iter*)iter;
-		return it->Seek(key);
+	std::unique_ptr<rocksdb::CompactionRouter::Iter> LowerBound(
+		size_t tier, const rocksdb::Slice& key
+	) override {
+		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
+		return vc_.LowerBound(tier, key);
 	}
-	const rocksdb::HotRecInfo *NextHot(void *iter) override {
-		if (iter == NULL)
-			return NULL;
-		auto start_time = Timers::Start();
-		auto it = (VisCnts::Iter*)iter;
-		const rocksdb::HotRecInfo *ret = it->Next();
-		timers.Stop(TimerType::kNextHot, start_time);
-		return ret;
-	}
-	void DelIter(void *iter) override {
-		if (iter == NULL)
-			return;
-		delete (VisCnts::Iter*)iter;
-	}
-	void DelRange(size_t tier, const rocksdb::Slice& smallest,
-			const rocksdb::Slice& largest) override {
-		if (vcs_.size() <= tier)
-			return;
-		vcs_.read_copy(tier)->RangeDel(smallest, largest);
+	void TransferRange(size_t target_tier, size_t source_tier,
+		const rocksdb::Slice& smallest, const rocksdb::Slice& largest
+	) override {
+		crash_if(target_tier != 0);
+		auto start = Timers::Start();
+		vc_.TransferRange(target_tier, source_tier, smallest, largest);
+		per_tier_timers_.Stop(
+			source_tier, PerTierTimerType::kTransferRange, start
+		);
 	}
 	size_t RangeHotSize(size_t tier, const rocksdb::Slice& smallest,
 			const rocksdb::Slice& largest) override {
-		if (vcs_.size() <= tier)
-			return 0;
 		auto start = Timers::Start();
-		size_t ret = vcs_.read_copy(tier)->RangeHotSize(smallest, largest);
+		size_t ret = vc_.RangeHotSize(tier, smallest, largest);
 		timers.Stop(TimerType::kRangeHotSize, start);
 		return ret;
 	}
@@ -561,87 +510,10 @@ public:
 				std::memory_order_relaxed));
 		return ret;
 	}
-	std::string sprint_viscnts() {
-		std::stringstream out;
-		size_t size = vcs_.size();
-		out << "[";
-		for (size_t i = 0; i < size; ++i) {
-			void *iter = NewIter(i);
-			if (iter == NULL)
-				continue;
-			out << "{" << "\"level\": " << i << ", \"hot\": [";
-			auto it = (VisCnts::Iter*)iter;
-			it->SeekToFirst();
-			while (1) {
-				auto info = it->Next();
-				if (info == NULL)
-					break;
-				out << "{\"key\": \"" << info->slice.ToString() << '"' <<
-					", \"count\": " << info->count <<
-					", \"vlen\": " << info->vlen << "},";
-			}
-			DelIter(iter);
-			out << "]},";
-		}
-		out << "]";
-		return out.str();
-	}
 private:
-	template <typename T>
-	void prepare(rcu_vector_bp<std::atomic<T> *>& v, size_t i) {
-		if (v.size() <= i) {
-			v.lock();
-			while (v.size_locked() <= i) {
-				v.push_back_locked(new std::atomic<T>(0));
-			}
-			v.unlock();
-		}
-	}
-	double weightSum() {
-		double sum = 0;
-		vcs_.read_lock();
-		for (size_t i = 0; i < vcs_.size_locked(); ++i) {
-			sum += vcs_.ref_locked(i)->WeightSum();
-		}
-		vcs_.read_unlock();
-		return sum;
-	}
-	void decayAll() {
-		size_t size = vcs_.size();
-		for (size_t i = 0; i < size; ++i) {
-			vcs_.read_copy(i)->Decay();
-		}
-	}
-	void updateWeightSum() {
-		double sum = weightSum();
-		if (sum >= weight_sum_max_) {
-			std::cerr << "Decay: " << sum << std::endl;
-			auto start = Timers::Start();
-			decayAll();
-			timers.Stop(TimerType::kDecay, start);
-		}
-	}
-	void addHotness(size_t tier, const rocksdb::Slice& key, size_t vlen,
-			double weight) {
-		VisCnts* vc = vcs_.read_copy(tier);
-		vc->Access(key, vlen, weight);
-		std::tuple<> v;
-		auto status = notify_weight_change_.try_pop(v);
-		if (boost::fibers::channel_op_status::success == status) {
-			updateWeightSum();
-		}
-	}
-
 	const uint64_t switches_;
-	rcu_vector_bp<VisCnts*> vcs_;
-	static_assert(!decltype(vcs_)::need_register_thread());
-	static_assert(!decltype(vcs_)::need_unregister_thread());
-	const rocksdb::Comparator *ucmp_;
-	const char *dir_;
-	bool create_if_missing_;
+	VisCnts vc_;
 	int tier0_last_level_;
-	double weight_sum_max_;
-	boost::fibers::buffered_channel<std::tuple<>> notify_weight_change_;
 
 	std::atomic<size_t> new_iter_cnt_;
 	std::atomic<size_t> count_access_hot_per_tier_[2];
@@ -747,54 +619,79 @@ auto AggregateTimers(
 }
 
 int main(int argc, char **argv) {
-	if (argc < 9 || argc > 10) {
-		std::cerr << argc << std::endl;
-		std::cerr << "Usage:\n";
-		std::cerr << "Arg 1: Trace format: plain/ycsb\n";
-		std::cerr << "Arg 2: Whether to empty the directories.\n";
-		std::cerr << "\t1: Empty the directories first.\n";
-		std::cerr << "\t0: Leave the directories as they are.\n";
-		std::cerr << "Arg 3: Method to pick SST to compact"
-			" (rocksdb::CompactionPri)\n";
-		std::cerr << "Arg 4: Delta in bytes\n";
-		std::cerr << "Arg 5: Use O_DIRECT for user and compaction reads?\n";
-		std::cerr << "\t1: Yes\n";
-		std::cerr << "\t0: No\n";
-		std::cerr << "Arg 6: Path to database\n";
-		std::cerr << "Arg 7: db_paths, for example: "
-			"\"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"\n";
-		std::cerr << "Arg 8: Path to VisCnts\n";
-		std::cerr << "Arg 9: Switch mask (default is 0)\n";
-		std::cerr << "\t0x1: count access hot per tier\n";
-		return -1;
-	}
 	rocksdb::Options options;
 
-	std::string format(argv[1]);
-	bool empty_directories_first = (argv[2][0] == '1');
+	namespace po = boost::program_options;
+	po::options_description desc("Available options");
+	std::string format;
+	std::string arg_db_path;
+	std::string arg_db_paths;
+	std::string viscnts_path;
+	size_t cache_size;
+	int compaction_pri;
+	double arg_max_hot_set_size;
+	std::string arg_switches;
+	desc.add_options()
+		("help", "Print help message")
+		("cleanup,c", "Empty the directories first.")
+		(
+			"format,f", po::value<std::string>(&format)->default_value("ycsb"),
+			"Trace format: plain/ycsb"
+		) (
+			"use_direct_reads",
+			po::value<bool>(&options.use_direct_reads)->default_value(true), ""
+		) (
+			"db_path", po::value<std::string>(&arg_db_path)->required(),
+			"Path to database"
+		) (
+			"db_paths", po::value<std::string>(&arg_db_paths)->required(),
+			"For example: \"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\""
+		) (
+			"viscnts_path", po::value<std::string>(&viscnts_path)->required(),
+			"Path to VisCnts"
+		) (
+			"cache_size",
+			po::value<size_t>(&cache_size)->default_value(8 << 20),
+			"Capacity of LRU block cache in bytes. Default: 8MiB"
+		) (
+			"compaction_pri,p", po::value<int>(&compaction_pri)->required(),
+			"Method to pick SST to compact (rocksdb::CompactionPri)"
+		) (
+			"max_hot_set_size",
+			po::value<double>(&arg_max_hot_set_size)->required(),
+			"Max hot set size in bytes"
+		) (
+			"switches",
+			po::value<std::string>(&arg_switches)->default_value("none"),
+			"Switches for statistics: none/all/<hex value>\n"
+			"0x1: count access hot per tier"
+		);
+	po::variables_map vm;
+	po::store(po::parse_command_line(argc, argv, desc), vm);
+	if (vm.count("help")) {
+		std::cerr << desc << std::endl;
+		return 1;
+	}
+	po::notify(vm);
 
-	char compaction_pri = argv[3][0];
-	crash_if(argv[3][1] != 0);
-	crash_if(compaction_pri < '0');
-	compaction_pri -= '0';
-
-	double delta = atof(argv[4]);
-	options.use_direct_reads = (argv[5][0] == '1');
-	std::filesystem::path db_path(argv[6]);
-	std::string db_paths(argv[7]);
-	const char *viscnts_path = argv[8];
-	uint64_t switches;
-	if (argc < 10)
+	size_t max_hot_set_size = arg_max_hot_set_size;
+	size_t switches;
+	if (arg_switches == "none") {
 		switches = 0;
-	else
-		switches = strtoul(argv[9], NULL, 0);
+	} else if (arg_switches == "all") {
+		switches = 0x1;
+	} else {
+		std::istringstream in(std::move(arg_switches));
+		in >> std::hex >> switches;
+	}
 
-	options.db_paths = decode_db_paths(db_paths);
-	options.compaction_pri =
-		static_cast<rocksdb::CompactionPri>(compaction_pri);
+	std::filesystem::path db_path(arg_db_path);
+	options.db_paths = decode_db_paths(arg_db_paths);
+	options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
 	options.statistics = rocksdb::CreateDBStatistics();
 
 	rocksdb::BlockBasedTableOptions table_options;
+	table_options.block_cache = rocksdb::NewLRUCache(cache_size);
 	table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
 	options.table_factory.reset(
 		rocksdb::NewBlockBasedTableFactory(table_options));
@@ -803,7 +700,7 @@ int main(int argc, char **argv) {
 	options.target_file_size_base = 1 << 20;
 	options.max_bytes_for_level_base = 4 * options.target_file_size_base;
 
-	if (empty_directories_first) {
+	if (vm.count("cleanup")) {
 		std::cerr << "Emptying directories\n";
 		empty_directory(db_path);
 		for (auto path : options.db_paths) {
@@ -816,9 +713,8 @@ int main(int argc, char **argv) {
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
-	auto router =
-		new RouterVisCnts(options.comparator, first_cd_level - 1, viscnts_path,
-			delta, true, switches);
+	auto router = new RouterVisCnts(options.comparator, viscnts_path.c_str(),
+		first_cd_level - 1, max_hot_set_size, switches);
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
@@ -889,9 +785,6 @@ int main(int argc, char **argv) {
 			counters[1] << std::endl;
 	}
 
-	std::ofstream viscnts_out("viscnts.json");
-	viscnts_out << router->sprint_viscnts() << std::endl;
-
 	auto router_timers = router->CollectTimers();
 	for (const auto& timer : router_timers) {
 		std::cerr << timer.name << ": count " << timer.count <<
@@ -903,7 +796,7 @@ int main(int argc, char **argv) {
 		std::cerr << "{tier: " << tier << ", timers: [\n";
 		const auto& timers = per_tier_timers[tier];
 		for (size_t type = 0; type < timers.size(); ++type) {
-			std::cerr << per_tier_timer_names[tier] << ": "
+			std::cerr << per_tier_timer_names[type] << ": "
 				"count " << timers[type].count << ", "
 				"total " << timers[type].nsec << "ns,\n";
 		}
