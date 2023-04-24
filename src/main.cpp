@@ -20,7 +20,6 @@
 #include "rocksdb/filter_policy.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/table.h"
-#include "rcu_vector_bp.hpp"
 
 #include "viscnts.h"
 
