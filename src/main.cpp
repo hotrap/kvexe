@@ -443,9 +443,7 @@ public:
 			return 1;
 		}
 	}
-	void Access(
-		int level, const rocksdb::Slice& key, size_t vlen
-	) override {
+	void Access(int level, rocksdb::Slice key, size_t vlen) override {
 		size_t tier = Tier(level);
 
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
@@ -462,13 +460,13 @@ public:
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
 	std::unique_ptr<rocksdb::CompactionRouter::Iter> LowerBound(
-		size_t tier, const rocksdb::Slice& key
+		size_t tier, rocksdb::Slice key
 	) override {
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
 		return vc_.LowerBound(tier, key);
 	}
 	void TransferRange(size_t target_tier, size_t source_tier,
-		const rocksdb::Slice& smallest, const rocksdb::Slice& largest
+		rocksdb::Slice smallest, rocksdb::Slice largest
 	) override {
 		rusty_assert(target_tier == 0);
 		auto start = Timers::Start();
@@ -477,8 +475,9 @@ public:
 			source_tier, PerTierTimerType::kTransferRange, start
 		);
 	}
-	size_t RangeHotSize(size_t tier, const rocksdb::Slice& smallest,
-			const rocksdb::Slice& largest) override {
+	size_t RangeHotSize(
+		size_t tier, rocksdb::Slice smallest, rocksdb::Slice largest
+	) override {
 		auto start = Timers::Start();
 		size_t ret = vc_.RangeHotSize(tier, smallest, largest);
 		timers.Stop(TimerType::kRangeHotSize, start);
