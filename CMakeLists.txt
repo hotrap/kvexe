@@ -15,7 +15,11 @@ add_subdirectory(3rdparty/rcu_vector)
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
-include_directories(${ROCKSDB_INCLUDE} ${VISCNTS_INCLUDE})
+include_directories(
+    3rdparty/rusty-cpp/include
+    ${ROCKSDB_INCLUDE}
+    ${VISCNTS_INCLUDE}
+)
 target_include_directories(${PROJECT_NAME}
 	PRIVATE
 		${PROJECT_SOURCE_DIR}/include
