@@ -10,7 +10,7 @@ IF (CMAKE_BUILD_TYPE STREQUAL Debug)
     ADD_DEFINITIONS(-DDEBUG)
 ENDIF()
 
-add_subdirectory(rcu_vector)
+add_subdirectory(3rdparty/rcu_vector)
 
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
