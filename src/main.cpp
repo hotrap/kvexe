@@ -466,11 +466,11 @@ public:
 		return vc_.LowerBound(tier, key);
 	}
 	void TransferRange(size_t target_tier, size_t source_tier,
-		rocksdb::Slice smallest, rocksdb::Slice largest
+		rocksdb::RangeBounds range
 	) override {
 		rusty_assert(target_tier == 0);
 		auto start = Timers::Start();
-		vc_.TransferRange(target_tier, source_tier, smallest, largest);
+		vc_.TransferRange(target_tier, source_tier, range);
 		per_tier_timers_.Stop(
 			source_tier, PerTierTimerType::kTransferRange, start
 		);
@@ -478,9 +478,18 @@ public:
 	size_t RangeHotSize(
 		size_t tier, rocksdb::Slice smallest, rocksdb::Slice largest
 	) override {
-		auto start = Timers::Start();
-		size_t ret = vc_.RangeHotSize(tier, smallest, largest);
-		timers.Stop(TimerType::kRangeHotSize, start);
+		auto start_time = Timers::Start();
+		rocksdb::Bound start{
+			.user_key = smallest,
+			.excluded = false,
+		};
+		rocksdb::Bound end{
+			.user_key = largest,
+			.excluded = false,
+		};
+		rocksdb::RangeBounds range{.start = start, .end = end};
+		size_t ret = vc_.RangeHotSize(tier, range);
+		timers.Stop(TimerType::kRangeHotSize, start_time);
 		return ret;
 	}
 	std::vector<std::vector<Timers::Status>> per_level_timers() {
