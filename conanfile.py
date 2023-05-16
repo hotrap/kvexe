@@ -2,8 +2,8 @@ from conan import ConanFile
 from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout, CMakeDeps
 
 
-class kvexe_kvexeRecipe(ConanFile):
-    name = "kvexe-kvexe"
+class kvexe_rocksdbRecipe(ConanFile):
+    name = "kvexe-rocksdb"
     version = "0.1.0"
     package_type = "application"
 
