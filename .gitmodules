@@ -1,6 +1,3 @@
-[submodule "3rdparty/rcu_vector"]
-	path = 3rdparty/rcu_vector
-	url = https://github.com/seekstar/rcu_vector.git
 [submodule "3rdparty/rusty-cpp"]
 	path = 3rdparty/rusty-cpp
 	url = https://github.com/seekstar/rusty-cpp.git
