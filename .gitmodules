@@ -1,3 +1,0 @@
-[submodule "3rdparty/rusty-cpp"]
-	path = 3rdparty/rusty-cpp
-	url = https://github.com/seekstar/rusty-cpp.git

@@ -10,7 +10,6 @@ class kvexe_kvexeRecipe(ConanFile):
     # Optional metadata
     license = "GPLv3"
     author = "Jiansheng Qiu jianshengqiu.cs@gmail.com"
-    topics = ("<Put some tag here>", "<here>", "<and here>")
 
     # Binary configuration
     settings = "os", "compiler", "build_type", "arch"
@@ -26,6 +25,7 @@ class kvexe_kvexeRecipe(ConanFile):
     }
 
     def requirements(self):
+        self.requires("rusty-cpp/[~0.1]")
         self.requires("rcu-vector/[~0.1]")
 
     def layout(self):

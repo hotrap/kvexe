@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
+find_package(rusty-cpp CONFIG REQUIRED)
 find_package(rcu-vector CONFIG REQUIRED COMPONENTS rcu_vector_bp)
 
 add_compile_options(-Wall -Wextra -fexceptions)
@@ -12,7 +13,6 @@ aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
 include_directories(
-    3rdparty/rusty-cpp/include
     ${ROCKSDB_INCLUDE}
     ${VISCNTS_INCLUDE}
 )
@@ -22,6 +22,7 @@ target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		rocksdb
 	PRIVATE
+		rusty-cpp
 		rcu_vector_bp
 		boost_program_options
 )
