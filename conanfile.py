@@ -15,7 +15,7 @@ class kvexe_kvexeRecipe(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
 
     # Sources are located in the same place as this recipe, copy them to the recipe
-    exports_sources = "CMakeLists.txt", "src/*", "3rdparty/*"
+    exports_sources = "CMakeLists.txt", "src/*"
 
     options = {
         "ROCKSDB_INCLUDE": ["ANY"],
