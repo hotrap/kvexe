@@ -7,6 +7,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <rusty/macro.h>
 #include <set>
 #include <thread>
 #include <chrono>
@@ -16,44 +17,34 @@
 #include "rocksdb/statistics.h"
 #include "rocksdb/table.h"
 
-#ifndef crash_if
-#define crash_if(cond, msg) do { \
-	if (cond) { \
-		fprintf(stderr, "crash_if: %s:%u: %s: Crashes due to %s: %s", \
-			__FILE__, __LINE__, __func__, #cond, msg); \
-		abort(); \
-	} \
-} while (0)
-#endif
-
 std::vector<rocksdb::DbPath>
 decode_db_paths(std::string db_paths) {
 	std::istringstream in(db_paths);
 	std::vector<rocksdb::DbPath> ret;
-	crash_if(in.get() != '{', "Invalid db_paths");
+	rusty_assert(in.get() == '{', "Invalid db_paths");
 	char c = static_cast<char>(in.get());
 	if (c == '}')
 		return ret;
-	crash_if(c != '{', "Invalid db_paths");
+	rusty_assert(c == '{', "Invalid db_paths");
 	while (1) {
 		std::string path;
 		size_t size;
 		if (in.peek() == '"') {
 			in >> std::quoted(path);
-			crash_if(in.get() != ',', "Invalid db_paths");
+			rusty_assert(in.get() == ',', "Invalid db_paths");
 		} else {
 			while ((c = static_cast<char>(in.get())) != ',')
 				path.push_back(c);
 		}
 		in >> size;
 		ret.emplace_back(std::move(path), size);
-		crash_if(in.get() != '}', "Invalid db_paths");
+		rusty_assert(in.get() == '}', "Invalid db_paths");
 		c = static_cast<char>(in.get());
 		if (c != ',')
 			break;
-		crash_if(in.get() != '{', "Invalid db_paths");
+		rusty_assert(in.get() == '{', "Invalid db_paths");
 	}
-	crash_if(c != '}', "Invalid db_paths");
+	rusty_assert(c == '}', "Invalid db_paths");
 	return ret;
 }
 
@@ -204,7 +195,7 @@ int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 void handle_table_name(std::istream& in) {
 	std::string table;
 	in >> table;
-	crash_if(table != "usertable", "Column families not supported yet.");
+	rusty_assert(table == "usertable", "Column families not supported yet.");
 }
 
 std::vector<std::pair<std::vector<char>, std::vector<char> > >
@@ -214,8 +205,8 @@ read_field_values(std::istream& in) {
 	do {
 		c = static_cast<char>(in.get());
 	} while (isspace(c));
-	crash_if(c != '[', "Invalid KV trace!");
-	crash_if(in.get() != ' ', "Invalid KV trace!");
+	rusty_assert(c == '[', "Invalid KV trace!");
+	rusty_assert(in.get() == ' ', "Invalid KV trace!");
 	while (in.peek() != ']') {
 		constexpr size_t vallen = 100;
 		std::vector<char> field;
@@ -223,8 +214,8 @@ read_field_values(std::istream& in) {
 		while ((c = static_cast<char>(in.get())) != '=') {
 			field.push_back(c);
 		}
-		crash_if(!in.read(value.data(), vallen), "Invalid KV trace!");
-		crash_if(in.get() != ' ', "Invalid KV trace!");
+		rusty_assert(in.read(value.data(), vallen), "Invalid KV trace!");
+		rusty_assert(in.get() == ' ', "Invalid KV trace!");
 		ret.emplace_back(std::move(field), std::move(value));
 	}
 	in.get(); // ]
@@ -250,10 +241,10 @@ std::set<std::string> read_fields(std::istream& in) {
 	do {
 		c = static_cast<char>(in.get());
 	} while (isspace(c));
-	crash_if(c != '[', "Invalid KV trace!");
+	rusty_assert(c == '[', "Invalid KV trace!");
 	std::string s;
 	std::getline(in, s);
-	crash_if(s != " <all fields>]",
+	rusty_assert(s == " <all fields>]",
 		"Reading specific fields is not supported yet.");
 	return std::set<std::string>();
 }
@@ -264,7 +255,7 @@ std::vector<char> read_len_bytes(std::istream& in) {
 		return std::vector<char>();
 	}
 	std::vector<char> bytes(len);
-	crash_if(!in.read(bytes.data(), len), "Invalid KV trace!");
+	rusty_assert(in.read(bytes.data(), len), "Invalid KV trace!");
 	return bytes;
 }
 
@@ -272,7 +263,7 @@ std::map<std::vector<char>, std::vector<char> >
 deserialize_values(std::istream& in,
 		const std::set<std::string>& fields) {
 	auto start_time = Timers::Start();
-	crash_if(!fields.empty(), "Getting specific fields is not supported yet.");
+	rusty_assert(fields.empty(), "Getting specific fields is not supported yet.");
 	std::map<std::vector<char>, std::vector<char> > result;
 	while (1) {
 		auto field = read_len_bytes(in);
@@ -280,8 +271,8 @@ deserialize_values(std::istream& in,
 			break;
 		}
 		auto value = read_len_bytes(in);
-		crash_if(!in, "Invalid KV trace!");
-		crash_if(result.insert(std::make_pair(field, value)).second == false,
+		rusty_assert(in, "Invalid KV trace!");
+		rusty_assert(result.insert(std::make_pair(field, value)).second,
 			"Duplicate field!");
 	}
 	timers.Stop(TimerType::kDeserialize, start_time);
@@ -409,21 +400,17 @@ bool has_background_work(rocksdb::DB *db) {
 	bool ok =
 		db->GetIntProperty(
 			rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
-	// assert(ok);
-	crash_if(!ok, "");
+	rusty_assert(ok, "");
 	ok = db->GetIntProperty(
 			rocksdb::Slice("rocksdb.compaction-pending"), &compaction_pending);
-	// assert(ok);
-	crash_if(!ok, "");
+	rusty_assert(ok, "");
 	ok = db->GetIntProperty(
 			rocksdb::Slice("rocksdb.num-running-flushes"), &flush_running);
-	// assert(ok);
-	crash_if(!ok, "");
+	rusty_assert(ok, "");
 	ok = db->GetIntProperty(
 			rocksdb::Slice("rocksdb.num-running-compactions"),
 			&compaction_running);
-	// assert(ok);
-	crash_if(!ok, "");
+	rusty_assert(ok, "");
 	return flush_pending || compaction_pending || flush_running ||
 		compaction_running;
 }
@@ -562,7 +549,7 @@ int main(int argc, char **argv) {
 		std::endl;
 
 	std::string rocksdb_stats;
-	crash_if(!db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
+	rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
 	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
 	auto timers_status = timers.Collect();
