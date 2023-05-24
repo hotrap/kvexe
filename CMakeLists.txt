@@ -21,6 +21,7 @@ target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		rocksdb
+		pthread
 	PRIVATE
 		rusty-cpp
 		rcu_vector_bp
