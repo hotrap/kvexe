@@ -695,7 +695,8 @@ int main(int argc, char **argv) {
 			"switches",
 			po::value<std::string>(&arg_switches)->default_value("none"),
 			"Switches for statistics: none/all/<hex value>\n"
-			"0x1: count access hot per tier"
+			"0x1: count access hot per tier\n"
+			"0x2: Output progress"
 		);
 	po::variables_map vm;
 	po::store(po::parse_command_line(argc, argv, desc), vm);
