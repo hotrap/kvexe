@@ -152,7 +152,10 @@ const char *timer_names[] = {
 };
 TypedTimers<TimerType> timers;
 
-int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
+int work_plain(
+	rocksdb::DB *db, std::istream& in, std::ostream& ans_out,
+	std::atomic<size_t> *progress
+) {
 	while (1) {
 		std::string op;
 		in >> op;
@@ -169,6 +172,7 @@ int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
+			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			std::string key;
 			in >> key;
@@ -180,6 +184,7 @@ int work_plain(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				return -1;
 			}
 			ans_out << value << '\n';
+			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
 			std::cerr << "UPDATE in plain format is not supported\n";
 			return -1;
@@ -279,7 +284,10 @@ deserialize_values(std::istream& in,
 	return result;
 }
 
-int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
+int work_ycsb(
+	rocksdb::DB *db, std::istream& in, std::ostream& ans_out,
+	std::atomic<size_t> *progress
+) {
 	while (1) {
 		std::string op;
 		auto input_op_start =  Timers::Start();
@@ -312,6 +320,7 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				return -1;
 			}
 			timers.Stop(TimerType::kInsert, insert_start);
+			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			auto input_start = Timers::Start();
 			handle_table_name(in);
@@ -346,6 +355,7 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 			}
 			ans_out << "]\n";
 			timers.Stop(TimerType::kOutput, output_start);
+			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
 			auto input_start = Timers::Start();
 			handle_table_name(in);
@@ -382,6 +392,7 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 				return -1;
 			}
 			timers.Stop(TimerType::kUpdate, update_start);
+			progress->fetch_add(1, std::memory_order_relaxed);
 		}
 		else {
 			std::cerr << "Ignore line: " << op;
@@ -391,6 +402,8 @@ int work_ycsb(rocksdb::DB *db, std::istream& in, std::ostream& ans_out) {
 	}
 	return 0;
 }
+
+static constexpr uint64_t MASK_PROGRESS = 0x2;
 
 bool has_background_work(rocksdb::DB *db) {
 	uint64_t flush_pending;
@@ -436,6 +449,30 @@ void wait_for_background_work(rocksdb::DB *db) {
 	}
 }
 
+auto timestamp_ns() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::system_clock::now().time_since_epoch()
+	).count();
+}
+void bg_stat_printer(std::filesystem::path db_path, uint64_t switches,
+	std::atomic<bool> *should_stop, std::atomic<size_t> *progress
+) {
+	std::optional<std::ofstream> progress_out;
+	if (switches & MASK_PROGRESS) {
+		progress_out =
+			std::optional<std::ofstream>(std::ofstream(db_path / "progress"));
+		progress_out.value() << "Timestamp(ns) operations-executed\n";
+	}
+	while (!should_stop->load(std::memory_order_relaxed)) {
+		auto timestamp = timestamp_ns();
+		if (progress_out.has_value()) {
+			auto value = progress->load(std::memory_order_relaxed);
+			progress_out.value() << timestamp << ' ' << value << std::endl;
+		}
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+}
+
 int main(int argc, char **argv) {
 	rocksdb::Options options;
 
@@ -445,6 +482,7 @@ int main(int argc, char **argv) {
 	std::string arg_db_path;
 	std::string arg_db_paths;
 	size_t cache_size;
+	std::string arg_switches;
 	desc.add_options()
 		("help", "Print help message")
 		("cleanup,c", "Empty the directories first.")
@@ -464,6 +502,11 @@ int main(int argc, char **argv) {
 			"cache_size",
 			po::value<size_t>(&cache_size)->default_value(8 << 20),
 			"Capacity of LRU block cache in bytes. Default: 8MiB"
+		) (
+			"switches",
+			po::value<std::string>(&arg_switches)->default_value("none"),
+			"Switches for statistics: none/all/<hex value>\n"
+			"0x2: Output progress"
 		);
 	po::variables_map vm;
 	po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -472,6 +515,16 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	po::notify(vm);
+
+	uint64_t switches;
+	if (arg_switches == "none") {
+		switches = 0;
+	} else if (arg_switches == "all") {
+		switches = 0x1;
+	} else {
+		std::istringstream in(std::move(arg_switches));
+		in >> std::hex >> switches;
+	}
 
 	std::filesystem::path db_path(arg_db_path);
 	options.db_paths = decode_db_paths(arg_db_paths);
@@ -504,12 +557,18 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	std::atomic<bool> should_stop(false);
+	std::atomic<size_t> progress(0);
+	std::thread stat_printer(
+		bg_stat_printer, db_path, switches, &should_stop, &progress
+	);
+
 	int ret;
 	auto start = std::chrono::steady_clock::now();
 	if (format == "plain") {
-		ret = work_plain(db, std::cin, std::cout);
+		ret = work_plain(db, std::cin, std::cout, &progress);
 	} else if (format == "ycsb") {
-		ret = work_ycsb(db, std::cin, std::cout);
+		ret = work_ycsb(db, std::cin, std::cout, &progress);
 	} else {
 		std::cerr << "Unrecognized format: " << format << std::endl;
 		ret = -1;
@@ -524,6 +583,8 @@ int main(int argc, char **argv) {
 	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
 			end - start).count() / 1e9 <<
 		" second(s) waiting for background work\n";
+
+	should_stop.store(true, std::memory_order_relaxed);
 
 	std::cerr << "rocksdb.block.cache.data.miss: "
 		<< options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
@@ -567,6 +628,7 @@ int main(int argc, char **argv) {
 		input_time.nsec << "ns\n";
 	std::cerr << "]\n";
 
+	stat_printer.join();
 	delete db;
 
 	return ret;
