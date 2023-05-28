@@ -543,7 +543,11 @@ int main(int argc, char **argv) {
 			empty_directory(path.path);
 		}
 	}
-	predict_level_assignment(options);
+	int first_level_in_cd = predict_level_assignment(options);
+	{
+		std::ofstream out(db_path / "first-level-in-cd");
+		out << first_level_in_cd << std::endl;
+	}
 
 	rocksdb::DB *db;
 	auto s = rocksdb::DB::Open(options, db_path.string(), &db);
