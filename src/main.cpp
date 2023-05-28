@@ -737,12 +737,16 @@ int main(int argc, char **argv) {
 		empty_directory(viscnts_path);
 	}
 
-	int first_cd_level = predict_level_assignment(options);
+	int first_level_in_cd = predict_level_assignment(options);
+	{
+		std::ofstream out(db_path / "first-level-in-cd");
+		out << first_level_in_cd << std::endl;
+	}
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
 	auto router = new RouterVisCnts(options.comparator, viscnts_path.c_str(),
-		first_cd_level - 1, max_hot_set_size, switches);
+		first_level_in_cd - 1, max_hot_set_size, switches);
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
