@@ -435,17 +435,25 @@ const char *per_tier_timer_names[] = {
 };
 static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 static constexpr uint64_t MASK_PROGRESS = 0x2;
+static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x4;
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
 public:
 	RouterVisCnts(
-		const rocksdb::Comparator *ucmp, const char *dir, int tier0_last_level,
-		size_t max_hot_set_size, uint64_t switches
+		const rocksdb::Comparator *ucmp, std::filesystem::path dir,
+		int tier0_last_level, size_t max_hot_set_size, uint64_t switches
 	) : switches_(switches),
-		vc_(VisCnts::New(ucmp, dir, max_hot_set_size)),
+		vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size)),
 		tier0_last_level_(tier0_last_level),
 		new_iter_cnt_(0),
-		count_access_hot_per_tier_{0, 0} {}
+		count_access_hot_per_tier_{0, 0}
+	{
+		if (switches_ & MASK_KEY_HIT_LEVEL) {
+			log_key_hit_level_ = std::optional<std::ofstream>(
+				std::ofstream(dir / "key_hit_level")
+			);
+		}
+	}
 	const char *Name() const override {
 		return "RouterVisCnts";
 	}
@@ -468,6 +476,10 @@ public:
 
 		auto start = Timers::Start();
 		vc_.Access(tier, key, vlen);
+		if (log_key_hit_level_.has_value()) {
+			log_key_hit_level_.value() << key.ToStringView() << ' ' << level
+				<< std::endl;
+		}
 		per_level_timers_.Stop(level, PerLevelTimerType::kAccess, start);
 	}
 	// The returned pointer will stay valid until the next call to Seek or
@@ -532,6 +544,8 @@ private:
 		per_level_timers_;
 	TypedTimersPerLevel<PerTierTimerType>
 		per_tier_timers_;
+
+	std::optional<std::ofstream> log_key_hit_level_;
 };
 
 bool has_background_work(rocksdb::DB *db) {
@@ -696,7 +710,8 @@ int main(int argc, char **argv) {
 			po::value<std::string>(&arg_switches)->default_value("none"),
 			"Switches for statistics: none/all/<hex value>\n"
 			"0x1: count access hot per tier\n"
-			"0x2: Output progress"
+			"0x2: Output progress\n"
+			"0x4: Log key and the level hit"
 		);
 	po::variables_map vm;
 	po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -745,7 +760,7 @@ int main(int argc, char **argv) {
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
-	auto router = new RouterVisCnts(options.comparator, viscnts_path.c_str(),
+	auto router = new RouterVisCnts(options.comparator, viscnts_path,
 		first_level_in_cd - 1, max_hot_set_size, switches);
 	options.compaction_router = router;
 
