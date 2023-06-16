@@ -152,19 +152,16 @@ const char *timer_names[] = {
 };
 TypedTimers<TimerType> timers;
 
-int work_plain(
-	rocksdb::DB *db, std::istream& in, std::ostream& ans_out,
-	std::atomic<size_t> *progress
-) {
+int work_plain(rocksdb::DB *db, std::atomic<size_t> *progress) {
 	while (1) {
 		std::string op;
-		in >> op;
-		if (!in) {
+		std::cin >> op;
+		if (!std::cin) {
 			break;
 		}
 		if (op == "INSERT") {
 			std::string key, value;
-			in >> key >> value;
+			std::cin >> key >> value;
 			rocksdb::Slice key_slice(key);
 			rocksdb::Slice value_slice(value);
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
@@ -175,7 +172,7 @@ int work_plain(
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			std::string key;
-			in >> key;
+			std::cin >> key;
 			rocksdb::Slice key_slice(key);
 			std::string value;
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
@@ -183,14 +180,14 @@ int work_plain(
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
-			ans_out << value << '\n';
+			std::cout << value << '\n';
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
 			std::cerr << "UPDATE in plain format is not supported\n";
 			return -1;
 		} else {
 			std::cerr << "Ignore line: " << op;
-			std::getline(in, op); // Skip the rest of the line
+			std::getline(std::cin, op); // Skip the rest of the line
 			std::cerr << op << std::endl;
 		}
 	}
@@ -285,24 +282,23 @@ deserialize_values(std::istream& in,
 }
 
 int work_ycsb(
-	rocksdb::DB *db, std::istream& in, std::ostream& ans_out,
-	std::atomic<size_t> *progress
+	rocksdb::DB *db, std::atomic<size_t> *progress
 ) {
 	while (1) {
 		std::string op;
 		auto input_op_start =  Timers::Start();
-		in >> op;
+		std::cin >> op;
 		timers.Stop(TimerType::kInputOperation, input_op_start);
-		if (!in) {
+		if (!std::cin) {
 			break;
 		}
 		if (op == "INSERT") {
 			auto input_start = Timers::Start();
-			handle_table_name(in);
+			handle_table_name(std::cin);
 			std::string key;
-			in >> key;
+			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto field_values = read_field_values(in);
+			auto field_values = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputInsert, input_start);
 
 			auto insert_start = Timers::Start();
@@ -323,11 +319,11 @@ int work_ycsb(
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			auto input_start = Timers::Start();
-			handle_table_name(in);
+			handle_table_name(std::cin);
 			std::string key;
-			in >> key;
+			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto fields = read_fields(in);
+			auto fields = read_fields(std::cin);
 			timers.Stop(TimerType::kInputRead, input_start);
 
 			auto read_start = Timers::Start();
@@ -344,25 +340,25 @@ int work_ycsb(
 			timers.Stop(TimerType::kRead, read_start);
 
 			auto output_start = Timers::Start();
-			ans_out << "[ ";
+			std::cout << "[ ";
 			for (const auto& field_value : result) {
-				ans_out.write(field_value.first.data(),
+				std::cout.write(field_value.first.data(),
 					static_cast<std::streamsize>(field_value.first.size()));
-				ans_out << ' ';
-				ans_out.write(field_value.second.data(),
+				std::cout << ' ';
+				std::cout.write(field_value.second.data(),
 					static_cast<std::streamsize>(field_value.second.size()));
-				ans_out << ' ';
+				std::cout << ' ';
 			}
-			ans_out << "]\n";
+			std::cout << "]\n";
 			timers.Stop(TimerType::kOutput, output_start);
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
 			auto input_start = Timers::Start();
-			handle_table_name(in);
+			handle_table_name(std::cin);
 			std::string key;
-			in >> key;
+			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto updates = read_field_values(in);
+			auto updates = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputUpdate, input_start);
 
 			auto update_start = Timers::Start();
@@ -396,7 +392,7 @@ int work_ycsb(
 		}
 		else {
 			std::cerr << "Ignore line: " << op;
-			std::getline(in, op); // Skip the rest of the line
+			std::getline(std::cin, op); // Skip the rest of the line
 			std::cerr << op << std::endl;
 		}
 	}
@@ -561,9 +557,9 @@ int main(int argc, char **argv) {
 	int ret;
 	auto start = std::chrono::steady_clock::now();
 	if (format == "plain") {
-		ret = work_plain(db, std::cin, std::cout, &progress);
+		ret = work_plain(db, &progress);
 	} else if (format == "ycsb") {
-		ret = work_ycsb(db, std::cin, std::cout, &progress);
+		ret = work_ycsb(db, &progress);
 	} else {
 		std::cerr << "Unrecognized format: " << format << std::endl;
 		ret = -1;
