@@ -152,6 +152,8 @@ const char *timer_names[] = {
 };
 TypedTimers<TimerType> timers;
 
+static constexpr uint64_t MASK_LATENCY = 0x1;
+
 int work_plain(rocksdb::DB *db, std::atomic<size_t> *progress) {
 	while (1) {
 		std::string op;
@@ -282,8 +284,13 @@ deserialize_values(std::istream& in,
 }
 
 int work_ycsb(
-	rocksdb::DB *db, std::atomic<size_t> *progress
+	rocksdb::DB *db, uint64_t switches, const std::filesystem::path& db_path,
+	std::atomic<size_t> *progress
 ) {
+	std::optional<std::ofstream> latency_out =
+		switches & MASK_LATENCY
+			? std::optional<std::ofstream>(db_path / "latency")
+			: std::nullopt;
 	while (1) {
 		std::string op;
 		auto input_op_start =  rusty::time::Instant::now();
@@ -310,10 +317,15 @@ int work_ycsb(
 				rocksdb::Slice(value.c_str(), value.size());
 			auto put_start = rusty::time::Instant::now();
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
-			timers.Stop(TimerType::kPut, put_start);
+			auto put_time = put_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
+			}
+			timers.Add(TimerType::kPut, put_time);
+			if (latency_out.has_value()) {
+				latency_out.value() << "INSERT " << put_time.as_nanos()
+					<< std::endl;
 			}
 			timers.Stop(TimerType::kInsert, insert_start);
 			progress->fetch_add(1, std::memory_order_relaxed);
@@ -330,10 +342,15 @@ int work_ycsb(
 			std::string value;
 			auto get_start = rusty::time::Instant::now();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
-			timers.Stop(TimerType::kGet, get_start);
+			auto get_time = get_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
+			}
+			timers.Add(TimerType::kGet, get_time);
+			if (latency_out.has_value()) {
+				latency_out.value() << "GET " << get_time.as_nanos()
+					<< std::endl;
 			}
 			std::istringstream value_in(value);
 			auto result = deserialize_values(value_in, fields);
@@ -365,7 +382,7 @@ int work_ycsb(
 			std::string value;
 			auto get_start = rusty::time::Instant::now();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
-			timers.Stop(TimerType::kGet, get_start);
+			auto get_time = get_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
@@ -382,15 +399,21 @@ int work_ycsb(
 				rocksdb::Slice(value.c_str(), value.size());
 			auto put_start = rusty::time::Instant::now();
 			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
-			timers.Stop(TimerType::kPut, put_start);
+			auto put_time = put_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "UPDATE failed with error: " << s.ToString() << std::endl;
 				return -1;
 			}
-			timers.Stop(TimerType::kUpdate, update_start);
+			auto update_time = update_start.elapsed();
+			timers.Add(TimerType::kGet, get_time);
+			timers.Add(TimerType::kPut, put_time);
+			timers.Add(TimerType::kUpdate, update_time);
+			if (latency_out.has_value()) {
+				latency_out.value() << "UPDATE " << update_time.as_nanos()
+					<< std::endl;
+			}
 			progress->fetch_add(1, std::memory_order_relaxed);
-		}
-		else {
+		} else {
 			std::cerr << "Ignore line: " << op;
 			std::getline(std::cin, op); // Skip the rest of the line
 			std::cerr << op << std::endl;
@@ -507,7 +530,7 @@ int main(int argc, char **argv) {
 	if (arg_switches == "none") {
 		switches = 0;
 	} else if (arg_switches == "all") {
-		switches = 0;
+		switches = 0x1;
 	} else {
 		std::istringstream in(std::move(arg_switches));
 		in >> std::hex >> switches;
@@ -559,7 +582,7 @@ int main(int argc, char **argv) {
 	if (format == "plain") {
 		ret = work_plain(db, &progress);
 	} else if (format == "ycsb") {
-		ret = work_ycsb(db, &progress);
+		ret = work_ycsb(db, switches, db_path, &progress);
 	} else {
 		std::cerr << "Unrecognized format: " << format << std::endl;
 		ret = -1;
