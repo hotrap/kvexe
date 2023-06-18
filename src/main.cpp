@@ -226,7 +226,7 @@ read_field_values(std::istream& in) {
 
 template <typename T>
 void serialize_field_values(std::ostream& out, const T& fvs) {
-	auto start_time = Timers::Start();
+	auto start_time = rusty::time::Instant::now();
 	for (const auto& fv : fvs) {
 		size_t len = fv.first.size();
 		out.write((char *)&len, sizeof(len));
@@ -264,7 +264,7 @@ std::vector<char> read_len_bytes(std::istream& in) {
 std::map<std::vector<char>, std::vector<char> >
 deserialize_values(std::istream& in,
 		const std::set<std::string>& fields) {
-	auto start_time = Timers::Start();
+	auto start_time = rusty::time::Instant::now();
 	rusty_assert(fields.empty(), "Getting specific fields is not supported yet.");
 	std::map<std::vector<char>, std::vector<char> > result;
 	while (1) {
@@ -286,14 +286,14 @@ int work_ycsb(
 ) {
 	while (1) {
 		std::string op;
-		auto input_op_start =  Timers::Start();
+		auto input_op_start =  rusty::time::Instant::now();
 		std::cin >> op;
 		timers.Stop(TimerType::kInputOperation, input_op_start);
 		if (!std::cin) {
 			break;
 		}
 		if (op == "INSERT") {
-			auto input_start = Timers::Start();
+			auto input_start = rusty::time::Instant::now();
 			handle_table_name(std::cin);
 			std::string key;
 			std::cin >> key;
@@ -301,14 +301,14 @@ int work_ycsb(
 			auto field_values = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputInsert, input_start);
 
-			auto insert_start = Timers::Start();
+			auto insert_start = rusty::time::Instant::now();
 			std::ostringstream value_out;
 			serialize_field_values(value_out, field_values);
 			// TODO: Avoid the copy
 			std::string value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
-			auto put_start = Timers::Start();
+			auto put_start = rusty::time::Instant::now();
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
 			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
@@ -318,7 +318,7 @@ int work_ycsb(
 			timers.Stop(TimerType::kInsert, insert_start);
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
-			auto input_start = Timers::Start();
+			auto input_start = rusty::time::Instant::now();
 			handle_table_name(std::cin);
 			std::string key;
 			std::cin >> key;
@@ -326,9 +326,9 @@ int work_ycsb(
 			auto fields = read_fields(std::cin);
 			timers.Stop(TimerType::kInputRead, input_start);
 
-			auto read_start = Timers::Start();
+			auto read_start = rusty::time::Instant::now();
 			std::string value;
-			auto get_start = Timers::Start();
+			auto get_start = rusty::time::Instant::now();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
 			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
@@ -339,7 +339,7 @@ int work_ycsb(
 			auto result = deserialize_values(value_in, fields);
 			timers.Stop(TimerType::kRead, read_start);
 
-			auto output_start = Timers::Start();
+			auto output_start = rusty::time::Instant::now();
 			std::cout << "[ ";
 			for (const auto& field_value : result) {
 				std::cout.write(field_value.first.data(),
@@ -353,7 +353,7 @@ int work_ycsb(
 			timers.Stop(TimerType::kOutput, output_start);
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
-			auto input_start = Timers::Start();
+			auto input_start = rusty::time::Instant::now();
 			handle_table_name(std::cin);
 			std::string key;
 			std::cin >> key;
@@ -361,9 +361,9 @@ int work_ycsb(
 			auto updates = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputUpdate, input_start);
 
-			auto update_start = Timers::Start();
+			auto update_start = rusty::time::Instant::now();
 			std::string value;
-			auto get_start = Timers::Start();
+			auto get_start = rusty::time::Instant::now();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
 			timers.Stop(TimerType::kGet, get_start);
 			if (!s.ok()) {
@@ -380,7 +380,7 @@ int work_ycsb(
 			value = value_out.str();
 			auto value_slice =
 				rocksdb::Slice(value.c_str(), value.size());
-			auto put_start = Timers::Start();
+			auto put_start = rusty::time::Instant::now();
 			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
 			timers.Stop(TimerType::kPut, put_start);
 			if (!s.ok()) {
