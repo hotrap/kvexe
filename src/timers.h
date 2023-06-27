@@ -4,11 +4,12 @@
 #include "rcu_vector_bp.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <ostream>
 #include <vector>
+
+#include "rusty/time.h"
 
 class Timers {
 public:
@@ -23,17 +24,12 @@ public:
 		}
 	};
 	Timers(size_t num) : timers_(num) {}
-	void Add(size_t type, uint64_t nsec) {
-		timers_[type].add(nsec);
+	void Add(size_t type, rusty::time::Duration time) {
+		timers_[type].add(time.as_nanos());
 	}
-	static auto Start() {
-	    return std::chrono::steady_clock::now();
-	}
-	void Stop(size_t type, std::chrono::steady_clock::time_point start_time) {
-		auto end_time = std::chrono::steady_clock::now();
-		auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(
-				end_time - start_time).count();
-		Add(type, nsec);
+	void Stop(size_t type, rusty::time::Instant start) {
+		rusty::time::Instant end = rusty::time::Instant::now();
+		Add(type, end - start);
 	}
 	std::vector<Status> Collect() {
 		std::vector<Status> timers;
@@ -71,16 +67,14 @@ public:
 		for (size_t i = 0; i < size; ++i)
 			delete v_.ref_locked(i);
 	}
-	void Stop(size_t level, size_t type,
-		std::chrono::steady_clock::time_point start_time
-	) {
+	void Stop(size_t level, size_t type, rusty::time::Instant start) {
 		if (v_.size() <= level) {
 			v_.lock();
 			while (v_.size_locked() <= level)
 				v_.push_back_locked(new Timers(num_timers_in_each_level_));
 			v_.unlock();
 		}
-		v_.read_copy(level)->Stop(type, start_time);
+		v_.read_copy(level)->Stop(type, start);
 	}
 	auto Collect() -> std::vector<std::vector<Timers::Status>> {
 		std::vector<std::vector<Timers::Status>> ret;
@@ -100,8 +94,11 @@ template <typename Type>
 class TypedTimers {
 public:
 	TypedTimers() : timers_(NUM) {}
-	void Stop(Type type, std::chrono::steady_clock::time_point start_time) {
-		timers_.Stop(static_cast<size_t>(type), start_time);
+	void Add(Type type, rusty::time::Duration time) {
+		timers_.Add(static_cast<size_t>(type), time);
+	}
+	void Stop(Type type, rusty::time::Instant start) {
+		timers_.Stop(static_cast<size_t>(type), start);
 	}
 	std::vector<Timers::Status> Collect() {
 		return timers_.Collect();
@@ -115,10 +112,8 @@ template <typename Type>
 class TypedTimersPerLevel {
 public:
 	TypedTimersPerLevel() : v_(static_cast<size_t>(Type::kEnd)) {}
-	void Stop(size_t level, Type type,
-		std::chrono::steady_clock::time_point start_time
-	) {
-		v_.Stop(level, static_cast<size_t>(type), start_time);
+	void Stop(size_t level, Type type, rusty::time::Instant start) {
+		v_.Stop(level, static_cast<size_t>(type), start);
 	}
 	auto Collect() -> std::vector<std::vector<Timers::Status>> {
 		return v_.Collect();
