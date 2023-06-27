@@ -171,7 +171,14 @@ static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x2;
 static constexpr uint64_t MASK_LATENCY = 0x4;
 
-int work_plain(rocksdb::DB *db, std::atomic<size_t> *progress) {
+int work_plain(
+	rocksdb::DB *db, uint64_t switches, const std::filesystem::path& db_path,
+	std::atomic<size_t> *progress
+) {
+	std::optional<std::ofstream> latency_out =
+	switches & MASK_LATENCY
+		? std::optional<std::ofstream>(db_path / "latency")
+		: std::nullopt;
 	while (1) {
 		std::string op;
 		std::cin >> op;
@@ -183,10 +190,17 @@ int work_plain(rocksdb::DB *db, std::atomic<size_t> *progress) {
 			std::cin >> key >> value;
 			rocksdb::Slice key_slice(key);
 			rocksdb::Slice value_slice(value);
+			auto put_start = rusty::time::Instant::now();
 			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+			auto put_time = put_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
 				return -1;
+			}
+			timers.Add(TimerType::kPut, put_time);
+			if (latency_out.has_value()) {
+				latency_out.value() << "INSERT " << put_time.as_nanos()
+					<< std::endl;
 			}
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
@@ -194,10 +208,17 @@ int work_plain(rocksdb::DB *db, std::atomic<size_t> *progress) {
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
 			std::string value;
+			auto get_start = rusty::time::Instant::now();
 			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
+			auto get_time = get_start.elapsed();
 			if (!s.ok()) {
 				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
 				return -1;
+			}
+			timers.Add(TimerType::kGet, get_time);
+			if (latency_out.has_value()) {
+				latency_out.value() << "GET " << get_time.as_nanos()
+					<< std::endl;
 			}
 			std::cout << value << '\n';
 			progress->fetch_add(1, std::memory_order_relaxed);
@@ -797,7 +818,7 @@ int main(int argc, char **argv) {
 	int ret;
 	auto start = std::chrono::steady_clock::now();
 	if (format == "plain") {
-		ret = work_plain(db, &progress);
+		ret = work_plain(db, switches, db_path, &progress);
 	} else if (format == "ycsb") {
 		ret = work_ycsb(db, switches, db_path, &progress);
 	} else {
