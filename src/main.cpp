@@ -1,4 +1,5 @@
 #include "rocksdb/compaction_router.h"
+#include "rocksdb/options.h"
 #include "timers.h"
 
 #include <atomic>
@@ -683,15 +684,24 @@ auto timestamp_ns() {
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();
 }
-void bg_stat_printer(std::filesystem::path db_path,
-	std::atomic<bool> *should_stop, std::atomic<size_t> *progress
+void bg_stat_printer(const rocksdb::Options *options,
+	std::filesystem::path db_path, std::atomic<bool> *should_stop,
+	std::atomic<size_t> *progress
 ) {
 	std::ofstream progress_out(db_path / "progress");
 	progress_out << "Timestamp(ns) operations-executed\n";
+	std::ofstream promoted_bytes_out(db_path / "promoted-bytes");
+	promoted_bytes_out << "Timestamp(ns) promoted-bytes\n";
 	while (!should_stop->load(std::memory_order_relaxed)) {
 		auto timestamp = timestamp_ns();
+
 		auto value = progress->load(std::memory_order_relaxed);
 		progress_out << timestamp << ' ' << value << std::endl;
+
+		auto promoted_bytes =
+			options->statistics->getTickerCount(rocksdb::PROMOTED_BYTES);
+		promoted_bytes_out << timestamp << ' ' << promoted_bytes << std::endl;
+
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
 }
@@ -812,7 +822,7 @@ int main(int argc, char **argv) {
 	std::atomic<bool> should_stop(false);
 	std::atomic<size_t> progress(0);
 	std::thread stat_printer(
-		bg_stat_printer, db_path, &should_stop, &progress
+		bg_stat_printer, &options, db_path, &should_stop, &progress
 	);
 
 	int ret;
