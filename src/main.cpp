@@ -828,8 +828,8 @@ int main(int argc, char **argv) {
 	);
 
 	std::string pid = std::to_string(getpid());
-	std::string cmd = "pidstat -p " + pid + " 1 -u | awk '{print $8}' > " +
-		db_path.c_str() + "/cpu &";
+	std::string cmd = "pidstat -p " + pid + " -Hu 1 | "
+		"awk '{if(NR>3){print $1,$8}}' > " + db_path.c_str() + "/cpu &";
 	std::cerr << cmd << std::endl;
 	std::system(cmd.c_str());
 
