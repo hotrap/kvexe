@@ -4,13 +4,16 @@
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
+#include <cstdlib>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
 #include <rusty/macro.h>
 #include <set>
+#include <string>
 #include <thread>
 #include <chrono>
+#include <unistd.h>
 
 #include "rocksdb/db.h"
 #include "rocksdb/filter_policy.h"
@@ -597,6 +600,12 @@ int main(int argc, char **argv) {
 	std::thread stat_printer(
 		bg_stat_printer, db_path, &should_stop, &progress
 	);
+
+	std::string pid = std::to_string(getpid());
+	std::string cmd = "pidstat -p " + pid + " 1 -u | awk '{print $8}' > " +
+		db_path.c_str() + "/cpu &";
+	std::cerr << cmd << std::endl;
+	std::system(cmd.c_str());
 
 	int ret;
 	auto start = std::chrono::steady_clock::now();
