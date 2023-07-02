@@ -2,11 +2,12 @@
 #define TIMERS_H_
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <ostream>
 #include <vector>
+
+#include "rusty/time.h"
 
 class Timers {
 public:
@@ -21,17 +22,12 @@ public:
 		}
 	};
 	Timers(size_t num) : timers_(num) {}
-	void Add(size_t type, uint64_t nsec) {
-		timers_[type].add(nsec);
+	void Add(size_t type, rusty::time::Duration time) {
+		timers_[type].add(time.as_nanos());
 	}
-	static auto Start() {
-	    return std::chrono::steady_clock::now();
-	}
-	void Stop(size_t type, std::chrono::steady_clock::time_point start_time) {
-		auto end_time = std::chrono::steady_clock::now();
-		auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(
-				end_time - start_time).count();
-		Add(type, nsec);
+	void Stop(size_t type, rusty::time::Instant start) {
+		rusty::time::Instant end = rusty::time::Instant::now();
+		Add(type, end - start);
 	}
 	std::vector<Status> Collect() {
 		std::vector<Status> timers;
@@ -60,8 +56,11 @@ template <typename Type>
 class TypedTimers {
 public:
 	TypedTimers() : timers_(NUM) {}
-	void Stop(Type type, std::chrono::steady_clock::time_point start_time) {
-		timers_.Stop(static_cast<size_t>(type), start_time);
+	void Add(Type type, rusty::time::Duration time) {
+		timers_.Add(static_cast<size_t>(type), time);
+	}
+	void Stop(Type type, rusty::time::Instant start) {
+		timers_.Stop(static_cast<size_t>(type), start);
 	}
 	std::vector<Timers::Status> Collect() {
 		return timers_.Collect();
