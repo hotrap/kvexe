@@ -526,7 +526,7 @@ public:
 	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
-	std::unique_ptr<rocksdb::CompactionRouter::Iter> LowerBound(
+	rocksdb::CompactionRouter::Iter LowerBound(
 		size_t tier, rocksdb::Slice key
 	) override {
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
