@@ -20,9 +20,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC include)
 target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
+		dl
 		rocksdb
 		pthread
-	PRIVATE
 		rusty-cpp
 		rcu_vector_bp
 		boost_program_options

@@ -3,10 +3,12 @@
 #include "timers.h"
 
 #include <atomic>
+#include <boost/fiber/buffered_channel.hpp>
 #include <boost/program_options/errors.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -17,10 +19,12 @@
 #include <queue>
 #include <random>
 #include <rusty/macro.h>
+#include <rusty/time.h>
 #include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <variant>
 
 #include "rocksdb/db.h"
 #include "rocksdb/filter_policy.h"
@@ -28,6 +32,15 @@
 #include "rocksdb/table.h"
 
 #include "viscnts.h"
+
+template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+// explicit deduction guide (not needed as of C++20)
+template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
+
+template <typename Val, typename... Ts>
+auto match(Val val, Ts... ts) {
+	return std::visit(overloaded{ts...}, val);
+}
 
 std::vector<rocksdb::DbPath>
 decode_db_paths(std::string db_paths) {
@@ -174,14 +187,160 @@ static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x1;
 static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x2;
 static constexpr uint64_t MASK_LATENCY = 0x4;
 
-int work_plain(
+std::string_view read_len_bytes(const char *& start, const char *end) {
+	rusty_assert(end - start >= (ssize_t)sizeof(size_t));
+	size_t len = *(size_t *)start;
+	start += sizeof(len);
+	rusty_assert(end - start >= (ssize_t)len);
+	std::string_view ret(start, len);
+	start += len;
+	return ret;
+}
+
+struct BorrowedValue {
+	std::map<std::string_view, std::string_view> fields;
+	static BorrowedValue from(
+		const std::vector<std::pair<std::vector<char>, std::vector<char>>>& fields
+	) {
+		std::map<std::string_view, std::string_view> borrowed;
+		for (const auto& field : fields) {
+			std::string_view key(field.first.data(), field.first.size());
+			std::string_view value(field.second.data(), field.second.size());
+			auto res = borrowed.insert(std::make_pair(key, value));
+			rusty_assert(res.second);
+		}
+		return BorrowedValue{std::move(borrowed)};
+	}
+	std::vector<char> serialize() {
+		std::vector<char> ret;
+		auto start_time = rusty::time::Instant::now();
+		for (const auto& fv : fields) {
+			size_t len = fv.first.size();
+			ret.insert(ret.end(), (char *)&len, (char *)&len + sizeof(len));
+			ret.insert(ret.end(), fv.first.data(), fv.first.data() + len);
+			len = fv.second.size();
+			ret.insert(ret.end(), (char *)&len, (char *)&len + sizeof(len));
+			ret.insert(ret.end(), fv.second.data(), fv.second.data() + len);
+		}
+		timers.Stop(TimerType::kSerialize, start_time);
+		return ret;
+	}
+	static BorrowedValue deserialize(std::string_view in) {
+		std::map<std::string_view, std::string_view> fields;
+		auto start_time = rusty::time::Instant::now();
+		const char *start = in.data();
+		const char *end = start + in.size();
+		while (start < end) {
+			std::string_view field = read_len_bytes(start, end);
+			std::string_view value = read_len_bytes(start, end);
+			auto res = fields.insert(std::make_pair(field, value));
+			rusty_assert(res.second, "Duplicate field!");
+		}
+		rusty_assert(start == end);
+		timers.Stop(TimerType::kDeserialize, start_time);
+		return BorrowedValue{std::move(fields)};
+	}
+};
+struct Insert {
+	std::string key;
+	std::vector<std::pair<std::vector<char>, std::vector<char>>> fields;
+};
+struct Read {
+	std::string key;
+};
+struct Update {
+	std::string key;
+	std::vector<std::pair<std::vector<char>, std::vector<char>>> fields_to_update;
+};
+struct Env {
+	rocksdb::DB *db;
+	std::optional<std::ofstream> latency;
+};
+void do_insert(Env& env, Insert insert) {
+	auto insert_start = rusty::time::Instant::now();
+	rocksdb::Slice key_slice(insert.key);
+	std::vector<char> value = BorrowedValue::from(insert.fields).serialize();
+	rocksdb::Slice value_slice(value.data(), value.size());
+	auto put_start = rusty::time::Instant::now();
+	auto s = env.db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+	auto put_time = put_start.elapsed();
+	if (!s.ok()) {
+		std::string err = s.ToString();
+		rusty_panic("INSERT failed with error: %s\n", err.c_str());
+	}
+	timers.Add(TimerType::kPut, put_time);
+	if (env.latency.has_value()) {
+		env.latency.value() << "INSERT " << put_time.as_nanos()
+			<< std::endl;
+	}
+	timers.Stop(TimerType::kInsert, insert_start);
+}
+std::string do_read(Env& env, Read read) {
+	auto read_start = rusty::time::Instant::now();
+	rocksdb::Slice key_slice(read.key);
+	std::string value;
+	auto get_start = rusty::time::Instant::now();
+	auto s = env.db->Get(rocksdb::ReadOptions(), key_slice, &value);
+	auto get_time = get_start.elapsed();
+	if (!s.ok()) {
+		std::string err = s.ToString();
+		rusty_panic("GET failed with error: %s\n", err.c_str());
+	}
+	timers.Add(TimerType::kGet, get_time);
+	if (env.latency.has_value()) {
+		env.latency.value() << "GET " << get_time.as_nanos()
+			<< std::endl;
+	}
+	timers.Stop(TimerType::kRead, read_start);
+	return value;
+}
+void do_update(Env& env, Update update) {
+	auto update_start = rusty::time::Instant::now();
+	rocksdb::Slice key_slice(update.key);
+	std::string value;
+	auto get_start = rusty::time::Instant::now();
+	auto s = env.db->Get(rocksdb::ReadOptions(), key_slice, &value);
+	auto get_time = get_start.elapsed();
+	if (!s.ok()) {
+		std::string err = s.ToString();
+		rusty_panic("UPDATE failed when get: %s\n", err.c_str());
+	}
+	auto values = BorrowedValue::deserialize(value);
+	for (const auto& update : update.fields_to_update) {
+		std::string_view field(update.first.data(), update.first.size());
+		std::string_view value(update.second.data(), update.second.size());
+		values.fields[field] = value;
+	}
+	std::vector<char> value_v = values.serialize();
+	auto value_slice =
+		rocksdb::Slice(value_v.data(), value_v.size());
+	auto put_start = rusty::time::Instant::now();
+	s = env.db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+	auto put_time = put_start.elapsed();
+	if (!s.ok()) {
+		std::string err = s.ToString();
+		rusty_panic("UPDATE failed when put: %s\n", err.c_str());
+	}
+	auto update_time = update_start.elapsed();
+	timers.Add(TimerType::kGet, get_time);
+	timers.Add(TimerType::kPut, put_time);
+	timers.Add(TimerType::kUpdate, update_time);
+	if (env.latency.has_value()) {
+		env.latency.value() << "UPDATE " << update_time.as_nanos()
+			<< std::endl;
+	}
+}
+
+void work_plain(
 	rocksdb::DB *db, uint64_t switches, const std::filesystem::path& db_path,
 	std::atomic<size_t> *progress
 ) {
-	std::optional<std::ofstream> latency_out =
-	switches & MASK_LATENCY
-		? std::optional<std::ofstream>(db_path / "latency")
-		: std::nullopt;
+	Env env{
+		.db = db,
+		.latency = switches & MASK_LATENCY
+			? std::optional<std::ofstream>(db_path / "latency")
+			: std::nullopt
+	};
 	while (1) {
 		std::string op;
 		std::cin >> op;
@@ -189,52 +348,36 @@ int work_plain(
 			break;
 		}
 		if (op == "INSERT") {
-			std::string key, value;
-			std::cin >> key >> value;
-			rocksdb::Slice key_slice(key);
-			rocksdb::Slice value_slice(value);
-			auto put_start = rusty::time::Instant::now();
-			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
-			auto put_time = put_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
-				return -1;
+			std::string key;
+			std::cin >> key;
+			rusty_assert(std::cin.get() == ' ');
+			char c;
+			std::vector<char> value;
+			while ((c = std::cin.get()) != '\n' && c != EOF) {
+				value.push_back(c);
 			}
-			timers.Add(TimerType::kPut, put_time);
-			if (latency_out.has_value()) {
-				latency_out.value() << "INSERT " << put_time.as_nanos()
-					<< std::endl;
-			}
+			do_insert(env, Insert{
+				.key = std::move(key),
+				.fields = {{{}, std::move(value)}}
+			});
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			std::string key;
 			std::cin >> key;
-			rocksdb::Slice key_slice(key);
-			std::string value;
-			auto get_start = rusty::time::Instant::now();
-			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
-			auto get_time = get_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
-				return -1;
-			}
-			timers.Add(TimerType::kGet, get_time);
-			if (latency_out.has_value()) {
-				latency_out.value() << "GET " << get_time.as_nanos()
-					<< std::endl;
-			}
-			std::cout << value << '\n';
+			std::string value = do_read(env, Read{std::move(key)});
+			BorrowedValue value_parsed = BorrowedValue::deserialize(value);
+			rusty_assert(value_parsed.fields.size() == 1);
+			rusty_assert(value_parsed.fields.begin()->first.size() == 0);
+			std::cout << value_parsed.fields.begin()->second << '\n';
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
-			std::cerr << "UPDATE in plain format is not supported\n";
-			return -1;
+			rusty_panic("UPDATE in plain format is not supported yet\n");
 		} else {
 			std::cerr << "Ignore line: " << op;
 			std::getline(std::cin, op); // Skip the rest of the line
 			std::cerr << op << std::endl;
 		}
 	}
-	return 0;
 }
 
 void handle_table_name(std::istream& in) {
@@ -267,20 +410,6 @@ read_field_values(std::istream& in) {
 	return ret;
 }
 
-template <typename T>
-void serialize_field_values(std::ostream& out, const T& fvs) {
-	auto start_time = rusty::time::Instant::now();
-	for (const auto& fv : fvs) {
-		size_t len = fv.first.size();
-		out.write((char *)&len, sizeof(len));
-		out.write(fv.first.data(), len);
-		len = fv.second.size();
-		out.write((char *)&len, sizeof(len));
-		out.write(fv.second.data(), len);
-	}
-	timers.Stop(TimerType::kSerialize, start_time);
-}
-
 std::set<std::string> read_fields(std::istream& in) {
 	char c;
 	do {
@@ -294,44 +423,16 @@ std::set<std::string> read_fields(std::istream& in) {
 	return std::set<std::string>();
 }
 
-std::vector<char> read_len_bytes(std::istream& in) {
-	size_t len;
-	if (!in.read((char *)&len, sizeof(len))) {
-		return std::vector<char>();
-	}
-	std::vector<char> bytes(len);
-	rusty_assert(in.read(bytes.data(), len), "Invalid KV trace!");
-	return bytes;
-}
-
-std::map<std::vector<char>, std::vector<char> >
-deserialize_values(std::istream& in, const std::set<std::string>& fields) {
-	auto start_time = rusty::time::Instant::now();
-	rusty_assert(fields.empty(),
-		"Getting specific fields is not supported yet.");
-	std::map<std::vector<char>, std::vector<char> > result;
-	while (1) {
-		auto field = read_len_bytes(in);
-		if (!in) {
-			break;
-		}
-		auto value = read_len_bytes(in);
-		rusty_assert(in, "Invalid KV trace!");
-		rusty_assert(result.insert(std::make_pair(field, value)).second,
-			"Duplicate field!");
-	}
-	timers.Stop(TimerType::kDeserialize, start_time);
-	return result;
-}
-
 int work_ycsb(
 	rocksdb::DB *db, uint64_t switches, const std::filesystem::path& db_path,
 	std::atomic<size_t> *progress
 ) {
-	std::optional<std::ofstream> latency_out =
-		switches & MASK_LATENCY
+	Env env{
+		.db = db,
+		.latency = switches & MASK_LATENCY
 			? std::optional<std::ofstream>(db_path / "latency")
-			: std::nullopt;
+			: std::nullopt
+	};
 	while (1) {
 		std::string op;
 		auto input_op_start =  rusty::time::Instant::now();
@@ -349,26 +450,7 @@ int work_ycsb(
 			auto field_values = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputInsert, input_start);
 
-			auto insert_start = rusty::time::Instant::now();
-			std::ostringstream value_out;
-			serialize_field_values(value_out, field_values);
-			// TODO: Avoid the copy
-			std::string value = value_out.str();
-			auto value_slice =
-				rocksdb::Slice(value.c_str(), value.size());
-			auto put_start = rusty::time::Instant::now();
-			auto s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
-			auto put_time = put_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "INSERT failed with error: " << s.ToString() << std::endl;
-				return -1;
-			}
-			timers.Add(TimerType::kPut, put_time);
-			if (latency_out.has_value()) {
-				latency_out.value() << "INSERT " << put_time.as_nanos()
-					<< std::endl;
-			}
-			timers.Stop(TimerType::kInsert, insert_start);
+			do_insert(env, Insert{std::move(key), std::move(field_values)});
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "READ") {
 			auto input_start = rusty::time::Instant::now();
@@ -379,27 +461,12 @@ int work_ycsb(
 			auto fields = read_fields(std::cin);
 			timers.Stop(TimerType::kInputRead, input_start);
 
-			auto read_start = rusty::time::Instant::now();
-			std::string value;
-			auto get_start = rusty::time::Instant::now();
-			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
-			auto get_time = get_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
-				return -1;
-			}
-			timers.Add(TimerType::kGet, get_time);
-			if (latency_out.has_value()) {
-				latency_out.value() << "GET " << get_time.as_nanos()
-					<< std::endl;
-			}
-			std::istringstream value_in(value);
-			auto result = deserialize_values(value_in, fields);
-			timers.Stop(TimerType::kRead, read_start);
+			std::string value = do_read(env, Read{std::move(key)});
+			BorrowedValue value_parsed = BorrowedValue::deserialize(value);
 
 			auto output_start = rusty::time::Instant::now();
 			std::cout << "[ ";
-			for (const auto& field_value : result) {
+			for (const auto& field_value : value_parsed.fields) {
 				std::cout.write(field_value.first.data(),
 					static_cast<std::streamsize>(field_value.first.size()));
 				std::cout << ' ';
@@ -419,40 +486,7 @@ int work_ycsb(
 			auto updates = read_field_values(std::cin);
 			timers.Stop(TimerType::kInputUpdate, input_start);
 
-			auto update_start = rusty::time::Instant::now();
-			std::string value;
-			auto get_start = rusty::time::Instant::now();
-			auto s = db->Get(rocksdb::ReadOptions(), key_slice, &value);
-			auto get_time = get_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "GET failed with error: " << s.ToString() << std::endl;
-				return -1;
-			}
-			std::istringstream value_in(value);
-			auto values = deserialize_values(value_in, std::set<std::string>());
-			for (const auto& update : updates) {
-				values[update.first] = update.second;
-			}
-			std::ostringstream value_out;
-			serialize_field_values(value_out, values);
-			value = value_out.str();
-			auto value_slice =
-				rocksdb::Slice(value.c_str(), value.size());
-			auto put_start = rusty::time::Instant::now();
-			s = db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
-			auto put_time = put_start.elapsed();
-			if (!s.ok()) {
-				std::cerr << "UPDATE failed with error: " << s.ToString() << std::endl;
-				return -1;
-			}
-			auto update_time = update_start.elapsed();
-			timers.Add(TimerType::kGet, get_time);
-			timers.Add(TimerType::kPut, put_time);
-			timers.Add(TimerType::kUpdate, update_time);
-			if (latency_out.has_value()) {
-				latency_out.value() << "UPDATE " << update_time.as_nanos()
-					<< std::endl;
-			}
+			do_update(env, Update{std::move(key), std::move(updates)});
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else {
 			std::cerr << "Ignore line: " << op;
@@ -841,15 +875,13 @@ int main(int argc, char **argv) {
 	std::cerr << cmd << std::endl;
 	std::system(cmd.c_str());
 
-	int ret;
 	auto start = std::chrono::steady_clock::now();
 	if (format == "plain") {
-		ret = work_plain(db, switches, db_path, &progress);
+		work_plain(db, switches, db_path, &progress);
 	} else if (format == "ycsb") {
-		ret = work_ycsb(db, switches, db_path, &progress);
+		work_ycsb(db, switches, db_path, &progress);
 	} else {
-		std::cerr << "Unrecognized format: " << format << std::endl;
-		ret = -1;
+		rusty_panic("Unrecognized format: %s\n", format.c_str());
 	}
 	auto end = std::chrono::steady_clock::now();
 	std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -971,5 +1003,5 @@ int main(int argc, char **argv) {
 	delete db;
 	delete router;
 
-	return ret;
+	return 0;
 }
