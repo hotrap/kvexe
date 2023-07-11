@@ -347,7 +347,11 @@ void work_plain(
 		} else if (op == "READ") {
 			std::string key;
 			std::cin >> key;
-			std::cout << do_read(env, Read{std::move(key)}) << '\n';
+			std::string value = do_read(env, Read{std::move(key)});
+			BorrowedValue value_parsed = BorrowedValue::deserialize(value);
+			rusty_assert(value_parsed.fields.size() == 1);
+			rusty_assert(value_parsed.fields.begin()->first.size() == 0);
+			std::cout << value_parsed.fields.begin()->second << '\n';
 			progress->fetch_add(1, std::memory_order_relaxed);
 		} else if (op == "UPDATE") {
 			rusty_panic("UPDATE in plain format is not supported yet\n");
