@@ -1,0 +1,9 @@
+{
+    "version": "0.5",
+    "requires": [
+        "rusty-cpp/0.1.1#c39f95849375fb7c65e6bf72ba197dbb%1688716929.0",
+        "rcu-vector/0.1.0#da41fb3bb10185504bb6b0b8cb174e25%1688734902.0"
+    ],
+    "build_requires": [],
+    "python_requires": []
+}
