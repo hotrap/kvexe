@@ -735,6 +735,8 @@ int main(int argc, char **argv) {
 			"switches",
 			po::value<std::string>(&arg_switches)->default_value("none"),
 			"Switches for statistics: none/all/<hex value>\n"
+			"0x1: Log the latency of each operation\n"
+			"0x2: Output the result of READ"
 		) (
 			"num_threads",
 			po::value<size_t>(&num_threads)->default_value(1),
