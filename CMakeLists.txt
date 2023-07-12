@@ -21,6 +21,7 @@ target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		rocksdb
 		pthread
+		boost_fiber
 	PRIVATE
 		rusty-cpp
 		boost_program_options
