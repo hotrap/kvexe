@@ -47,6 +47,11 @@ size_t next_power_of_two(size_t x) {
 
 using boost::fibers::buffered_channel;
 
+enum class FormatType {
+	Plain,
+	YCSB,
+};
+
 std::vector<rocksdb::DbPath>
 decode_db_paths(std::string db_paths) {
 	std::istringstream in(db_paths);
@@ -183,6 +188,7 @@ const char *timer_names[] = {
 TypedTimers<TimerType> timers;
 
 static constexpr uint64_t MASK_LATENCY = 0x1;
+static constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
 
 std::string_view read_len_bytes(const char *& start, const char *end) {
 	rusty_assert(end - start >= (ssize_t)sizeof(size_t));
@@ -334,17 +340,45 @@ void do_update(Env& env, Update update) {
 }
 
 struct WorkEnv {
+	FormatType type;
 	rocksdb::DB *db;
+	uint64_t switches;
 	const std::filesystem::path& db_path;
 	std::atomic<size_t> *progress;
-	buffered_channel<std::string> *ans;
 	buffered_channel<std::pair<OpType, uint64_t>> *latency;
 };
 
+void print_plain_ans(std::ofstream& out, std::string_view value) {
+	BorrowedValue value_parsed = BorrowedValue::deserialize(value);
+	rusty_assert(value_parsed.fields.size() == 1);
+	rusty_assert(value_parsed.fields.begin()->first.size() == 0);
+	out << value_parsed.fields.begin()->second << '\n';
+}
+void print_ycsb_ans(std::ofstream& out, std::string_view value) {
+	BorrowedValue value_parsed = BorrowedValue::deserialize(value);
+	auto output_start = rusty::time::Instant::now();
+	out << "[ ";
+	for (const auto& field_value : value_parsed.fields) {
+		out.write(field_value.first.data(),
+			static_cast<std::streamsize>(field_value.first.size()));
+		out << ' ';
+		out.write(field_value.second.data(),
+			static_cast<std::streamsize>(field_value.second.size()));
+		out << ' ';
+	}
+	out << "]\n";
+	timers.Stop(TimerType::kOutput, output_start);
+}
 void work(
+	size_t id,
 	WorkEnv work_env,
 	buffered_channel<std::variant<Insert, Read, Update>> *in
 ) {
+	std::optional<std::ofstream> ans_out =
+		work_env.switches & MASK_OUTPUT_ANS
+			? std::optional<std::ofstream>(
+				work_env.db_path / ("ans_" + std::to_string(id)))
+			: std::nullopt;
 	Env env{
 		.db = work_env.db,
 		.latency = work_env.latency,
@@ -356,7 +390,16 @@ void work(
 			},
 			[&](Read& read) {
 				std::string value = do_read(env, std::move(read));
-				work_env.ans->push(std::move(value));
+				if (ans_out.has_value()) {
+					switch (work_env.type) {
+					case FormatType::Plain:
+						print_plain_ans(ans_out.value(), value);
+						break;
+					case FormatType::YCSB:
+						print_ycsb_ans(ans_out.value(), value);
+						break;
+					}
+				}
 			},
 			[&](Update& update) {
 				do_update(env, std::move(update));
@@ -387,12 +430,13 @@ void print_latency(const std::filesystem::path& db_path,
 		out << ' ' << item.second << '\n';
 	}
 }
-void work2(rocksdb::DB *db,
+void work2(
+	FormatType type,
+	rocksdb::DB *db,
 	uint64_t switches,
 	const std::filesystem::path& db_path,
 	std::atomic<size_t> *progress,
 	size_t num_threads,
-	void (*print_ans)(buffered_channel<std::string> *),
 	void (*parse)(
 		std::deque<buffered_channel<std::variant<Insert, Read, Update>>>&
 	)
@@ -408,14 +452,12 @@ void work2(rocksdb::DB *db,
 		latency_chan.has_value() ? &latency_chan.value() : nullptr;
 	std::thread latency_printer(print_latency, db_path, latency_chan_ptr);
 
-	buffered_channel<std::string> ans_chan(buf_len);
-	std::thread ans_printer(print_ans, &ans_chan);
-
 	WorkEnv env{
+		.type = type,
 		.db = db,
+		.switches = switches,
 		.db_path = db_path,
 		.progress = progress,
-		.ans = &ans_chan,
 		.latency = latency_chan_ptr,
 	};
 	std::deque<buffered_channel<std::variant<Insert, Read, Update>>> inputs;
@@ -423,7 +465,7 @@ void work2(rocksdb::DB *db,
 	workers.reserve(num_threads);
 	for (size_t i = 0; i < num_threads; ++i) {
 		inputs.emplace_back(buf_len);
-		workers.emplace_back(work, env, &inputs.back());
+		workers.emplace_back(work, i, env, &inputs.back());
 	}
 
 	parse(inputs);
@@ -436,9 +478,7 @@ void work2(rocksdb::DB *db,
 	}
 	if (latency_chan_ptr != nullptr)
 		latency_chan_ptr->close();
-	ans_chan.close();
 	latency_printer.join();
-	ans_printer.join();
 }
 
 void parse_plain(
@@ -480,14 +520,6 @@ void parse_plain(
 		}
 	}
 }
-void print_plain_ans(buffered_channel<std::string> *ans) {
-	for (std::string value : *ans) {
-		BorrowedValue value_parsed = BorrowedValue::deserialize(value);
-		rusty_assert(value_parsed.fields.size() == 1);
-		rusty_assert(value_parsed.fields.begin()->first.size() == 0);
-		std::cout << value_parsed.fields.begin()->second << '\n';
-	}
-}
 void work_plain(rocksdb::DB *db,
 	uint64_t switches,
 	const std::filesystem::path& db_path,
@@ -495,7 +527,7 @@ void work_plain(rocksdb::DB *db,
 	size_t num_threads
 ) {
 	work2(
-		db, switches, db_path, progress, num_threads, print_plain_ans,
+		FormatType::Plain, db, switches, db_path, progress, num_threads,
 		parse_plain
 	);
 }
@@ -596,30 +628,13 @@ void parse_ycsb(
 		}
 	}
 }
-void print_ycsb_ans(buffered_channel<std::string> *ans) {
-	for (std::string value : *ans) {
-		BorrowedValue value_parsed = BorrowedValue::deserialize(value);
-		auto output_start = rusty::time::Instant::now();
-		std::cout << "[ ";
-		for (const auto& field_value : value_parsed.fields) {
-			std::cout.write(field_value.first.data(),
-				static_cast<std::streamsize>(field_value.first.size()));
-			std::cout << ' ';
-			std::cout.write(field_value.second.data(),
-				static_cast<std::streamsize>(field_value.second.size()));
-			std::cout << ' ';
-		}
-		std::cout << "]\n";
-		timers.Stop(TimerType::kOutput, output_start);
-	}
-}
 void work_ycsb(
 	rocksdb::DB *db, uint64_t switches, const std::filesystem::path& db_path,
 	std::atomic<size_t> *progress,
 	size_t num_threads
 ) {
 	work2(
-		db, switches, db_path, progress, num_threads, print_ycsb_ans,
+		FormatType::YCSB, db, switches, db_path, progress, num_threads,
 		parse_ycsb
 	);
 }
@@ -737,7 +752,7 @@ int main(int argc, char **argv) {
 	if (arg_switches == "none") {
 		switches = 0;
 	} else if (arg_switches == "all") {
-		switches = 0x1;
+		switches = 0x3;
 	} else {
 		std::istringstream in(std::move(arg_switches));
 		in >> std::hex >> switches;
