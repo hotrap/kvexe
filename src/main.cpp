@@ -977,7 +977,7 @@ int main(int argc, char **argv) {
 	if (arg_switches == "none") {
 		switches = 0;
 	} else if (arg_switches == "all") {
-		switches = 0x15;
+		switches = 0xf;
 	} else {
 		std::istringstream in(std::move(arg_switches));
 		in >> std::hex >> switches;
