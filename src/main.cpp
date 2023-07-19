@@ -678,9 +678,10 @@ public:
 	RouterVisCnts(
 		const rocksdb::Comparator *ucmp, std::filesystem::path dir,
 		int tier0_last_level, size_t max_hot_set_size, uint64_t switches,
-		buffered_channel<std::pair<std::string, int>> *key_hit_level_chan
+		buffered_channel<std::pair<std::string, int>> *key_hit_level_chan,
+		buffered_channel<std::string> *promote_chan
 	) : switches_(switches),
-		vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size)),
+		vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size, promote_chan)),
 		tier0_last_level_(tier0_last_level),
 		new_iter_cnt_(0),
 		count_access_hot_per_tier_{0, 0},
@@ -916,6 +917,15 @@ void key_hit_level_print(
 	}
 }
 
+void promoter_fn(
+	rocksdb::DB *db, buffered_channel<std::string> *keys, size_t *promote_count
+) {
+	for (std::string key : *keys) {
+		++*promote_count;
+		rusty_assert(db->Promote(key).ok());
+	}
+}
+
 int main(int argc, char **argv) {
 	rocksdb::Options options;
 
@@ -1030,10 +1040,16 @@ int main(int argc, char **argv) {
 		key_hit_level_print, viscnts_path, key_hit_level_chan
 	);
 
+	buffered_channel<std::string> promote_chan(
+		next_power_of_two(num_threads * 10)
+	);
+
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
 	auto router = new RouterVisCnts(options.comparator, viscnts_path_str,
-		first_level_in_cd - 1, max_hot_set_size, switches, key_hit_level_chan);
+		first_level_in_cd - 1, max_hot_set_size, switches, key_hit_level_chan,
+		&promote_chan
+	);
 	options.compaction_router = router;
 
 	rocksdb::DB *db;
@@ -1053,6 +1069,9 @@ int main(int argc, char **argv) {
 	std::thread stat_printer(
 		bg_stat_printer, &options, db_path, &should_stop, &progress
 	);
+
+	size_t promote_count = 0;
+	std::thread promoter(promoter_fn, db, &promote_chan, &promote_count);
 
 	std::string pid = std::to_string(getpid());
 	std::string cmd = "pidstat -p " + pid + " -Hu 1 | "
@@ -1188,7 +1207,13 @@ int main(int argc, char **argv) {
 	if (key_hit_level_chan)
 		key_hit_level_chan->close();
 	key_hit_level_printer.join();
+
 	stat_printer.join();
+
+	promote_chan.close();
+	promoter.join();
+	std::cerr << "promote_count " << promote_count << std::endl;
+
 	delete db;
 	delete router;
 
