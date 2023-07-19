@@ -942,8 +942,9 @@ int main(int argc, char **argv) {
 			"Path to VisCnts"
 		) (
 			"cache_size",
-			po::value<size_t>(&cache_size)->default_value(8 << 20),
-			"Capacity of LRU block cache in bytes. Default: 8MiB"
+			// To slow down the execution to make time for compactions
+			po::value<size_t>(&cache_size)->default_value(0),
+			"Capacity of LRU block cache in bytes. Default: 0"
 		) (
 			"compaction_pri,p", po::value<int>(&compaction_pri)->required(),
 			"Method to pick SST to compact (rocksdb::CompactionPri)"
@@ -987,6 +988,10 @@ int main(int argc, char **argv) {
 	options.db_paths = decode_db_paths(arg_db_paths);
 	options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
 	options.statistics = rocksdb::CreateDBStatistics();
+	// To slow down the execution to make time for compactions
+	options.level0_file_num_compaction_trigger = 1;
+	options.level0_slowdown_writes_trigger = 2;
+	options.level0_stop_writes_trigger = 4;
 
 	rocksdb::BlockBasedTableOptions table_options;
 	table_options.block_cache = rocksdb::NewLRUCache(cache_size);
