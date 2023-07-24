@@ -1032,9 +1032,13 @@ int main(int argc, char **argv) {
 
 	// options.compaction_router = new RouterTrivial;
 	// options.compaction_router = new RouterProb(0.5, 233);
-	auto router = new RouterVisCnts(options.comparator, viscnts_path_str,
-		first_level_in_cd - 1, max_hot_set_size, switches, key_hit_level_chan);
-	options.compaction_router = router;
+	RouterVisCnts *router = nullptr;
+	if (first_level_in_cd != 0) {
+		router = new RouterVisCnts(options.comparator, viscnts_path_str,
+			first_level_in_cd - 1, max_hot_set_size, switches,
+			key_hit_level_chan);
+		options.compaction_router = router;
+	}
 
 	rocksdb::DB *db;
 	auto s = rocksdb::DB::Open(options, db_path.string(), &db);
@@ -1109,66 +1113,68 @@ int main(int argc, char **argv) {
 	rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
 	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
-	auto router_timers = router->CollectTimers();
-	for (const auto& timer : router_timers) {
-		std::cerr << timer.name << ": count " << timer.count <<
-			", total " << timer.nsec << "ns,\n";
-	}
-
-	auto router_per_level_timers = router->CollectTimersInAllLevels();
-	for (size_t level = 0; level < router_per_level_timers.size(); ++level) {
-		std::cerr << "{level: " << level << ", timers = [\n";
-		for (const auto& timer : router_per_level_timers[level]) {
-			std::cerr << timer.name << ": count " << timer.count
-				<< ", total " << timer.nsec << "ns,\n";
+	if (router) {
+		auto router_timers = router->CollectTimers();
+		for (const auto& timer : router_timers) {
+			std::cerr << timer.name << ": count " << timer.count <<
+				", total " << timer.nsec << "ns,\n";
 		}
-		std::cerr << "]},";
-	}
-	std::cerr << std::endl;
 
-	std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
-	if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-		auto counters = router->hit_count();
-		assert(counters.size() == 2);
-		std::cerr << "Access hot per tier: " << counters[0] << ' ' <<
-			counters[1] << std::endl;
-	}
-
-	auto per_tier_timers = router->per_tier_timers();
-	for (size_t tier = 0; tier < per_tier_timers.size(); ++tier) {
-		std::cerr << "{tier: " << tier << ", timers: [\n";
-		const auto& timers = per_tier_timers[tier];
-		for (size_t type = 0; type < timers.size(); ++type) {
-			std::cerr << per_tier_timer_names[type] << ": "
-				"count " << timers[type].count << ", "
-				"total " << timers[type].nsec << "ns,\n";
+		auto router_per_level_timers = router->CollectTimersInAllLevels();
+		for (size_t level = 0; level < router_per_level_timers.size(); ++level) {
+			std::cerr << "{level: " << level << ", timers = [\n";
+			for (const auto& timer : router_per_level_timers[level]) {
+				std::cerr << timer.name << ": count " << timer.count
+					<< ", total " << timer.nsec << "ns,\n";
+			}
+			std::cerr << "]},";
 		}
-		std::cerr << "]},";
-	}
-	std::cerr << std::endl;
+		std::cerr << std::endl;
 
-	auto per_level_timers = router->per_level_timers();
-	for (size_t level = 0; level < per_level_timers.size(); ++level) {
-		std::cerr << "{level: " << level << ", timers: [\n";
-		const auto& timers = per_level_timers[level];
-		for (size_t type = 0; type < timers.size(); ++type) {
-			std::cerr << per_level_timer_names[type] << ": "
-				"count " <<  timers[type].count << ", "
-				"total " << timers[type].nsec << "ns,\n";
+		std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
+		if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+			auto counters = router->hit_count();
+			assert(counters.size() == 2);
+			std::cerr << "Access hot per tier: " << counters[0] << ' ' <<
+				counters[1] << std::endl;
 		}
-		std::cerr << "]},";
-	}
-	std::cerr << std::endl;
 
-	std::cerr << "In all levels: [\n";
-	std::vector<Timers::Status> router_timers_in_all_levels =
-		AggregateTimers(per_level_timers);
-	for (size_t i = 0; i < router_timers_in_all_levels.size(); ++i) {
-		std::cerr << per_level_timer_names[i] << ": "
-			"count " << router_timers_in_all_levels[i].count << ", "
-			"total " << router_timers_in_all_levels[i].nsec << "ns,\n";
+		auto per_tier_timers = router->per_tier_timers();
+		for (size_t tier = 0; tier < per_tier_timers.size(); ++tier) {
+			std::cerr << "{tier: " << tier << ", timers: [\n";
+			const auto& timers = per_tier_timers[tier];
+			for (size_t type = 0; type < timers.size(); ++type) {
+				std::cerr << per_tier_timer_names[type] << ": "
+					"count " << timers[type].count << ", "
+					"total " << timers[type].nsec << "ns,\n";
+			}
+			std::cerr << "]},";
+		}
+		std::cerr << std::endl;
+
+		auto per_level_timers = router->per_level_timers();
+		for (size_t level = 0; level < per_level_timers.size(); ++level) {
+			std::cerr << "{level: " << level << ", timers: [\n";
+			const auto& timers = per_level_timers[level];
+			for (size_t type = 0; type < timers.size(); ++type) {
+				std::cerr << per_level_timer_names[type] << ": "
+					"count " <<  timers[type].count << ", "
+					"total " << timers[type].nsec << "ns,\n";
+			}
+			std::cerr << "]},";
+		}
+		std::cerr << std::endl;
+
+		std::cerr << "In all levels: [\n";
+		std::vector<Timers::Status> router_timers_in_all_levels =
+			AggregateTimers(per_level_timers);
+		for (size_t i = 0; i < router_timers_in_all_levels.size(); ++i) {
+			std::cerr << per_level_timer_names[i] << ": "
+				"count " << router_timers_in_all_levels[i].count << ", "
+				"total " << router_timers_in_all_levels[i].nsec << "ns,\n";
+		}
+		std::cerr << "]\n";
 	}
-	std::cerr << "]\n";
 
 	auto timers_status = timers.Collect();
 	for (size_t i = 0; i < static_cast<size_t>(TimerType::kEnd); ++i) {
