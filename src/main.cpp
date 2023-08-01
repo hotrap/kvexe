@@ -701,13 +701,13 @@ public:
 
 		if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 			auto start_time = rusty::time::Instant::now();
-			if (vc_.IsHot(tier, key))
+			if (vc_.IsHot(key))
 				count_access_hot_per_tier_[tier].fetch_add(1);
 			timers.Stop(TimerType::kCountAccessHotPerTier, start_time);
 		}
 
 		auto start = rusty::time::Instant::now();
-		vc_.Access(tier, key, vlen);
+		vc_.Access(key, vlen);
 		if (key_hit_level_chan_) {
 			key_hit_level_chan_->push(std::make_pair(key.ToString(), level));
 		}
@@ -715,24 +715,12 @@ public:
 	}
 	// The returned pointer will stay valid until the next call to Seek or
 	// NextHot with this iterator
-	rocksdb::CompactionRouter::Iter LowerBound(
-		size_t tier, rocksdb::Slice key
-	) override {
+	rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
 		new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
-		return vc_.LowerBound(tier, key);
-	}
-	void TransferRange(size_t target_tier, size_t source_tier,
-		rocksdb::RangeBounds range
-	) override {
-		rusty_assert(target_tier == 0);
-		auto start = rusty::time::Instant::now();
-		vc_.TransferRange(target_tier, source_tier, range);
-		per_tier_timers_.Stop(
-			source_tier, PerTierTimerType::kTransferRange, start
-		);
+		return vc_.LowerBound(key);
 	}
 	size_t RangeHotSize(
-		size_t tier, rocksdb::Slice smallest, rocksdb::Slice largest
+		rocksdb::Slice smallest, rocksdb::Slice largest
 	) override {
 		auto start_time = rusty::time::Instant::now();
 		rocksdb::Bound start{
@@ -744,7 +732,7 @@ public:
 			.excluded = false,
 		};
 		rocksdb::RangeBounds range{.start = start, .end = end};
-		size_t ret = vc_.RangeHotSize(tier, range);
+		size_t ret = vc_.RangeHotSize(range);
 		timers.Stop(TimerType::kRangeHotSize, start_time);
 		return ret;
 	}
@@ -881,8 +869,6 @@ void bg_stat_printer(const rocksdb::Options *options,
 ) {
 	std::ofstream progress_out(db_path / "progress");
 	progress_out << "Timestamp(ns) operations-executed\n";
-	std::ofstream promoted_iter_out(db_path / "promoted-iter-bytes");
-	promoted_iter_out << "Timestamp(ns) num-bytes\n";
 	std::ofstream promoted_2sdlast_out(db_path / "promoted-2sdlast-bytes");
 	promoted_2sdlast_out << "Timestamp(ns) num-bytes\n";
 	std::ofstream promoted_flush_out(db_path / "promoted-flush-bytes");
@@ -892,11 +878,6 @@ void bg_stat_printer(const rocksdb::Options *options,
 
 		auto value = progress->load(std::memory_order_relaxed);
 		progress_out << timestamp << ' ' << value << std::endl;
-
-		auto promoted_iter_bytes =
-			options->statistics->getTickerCount(rocksdb::PROMOTED_ITER_BYTES);
-		promoted_iter_out << timestamp << ' ' << promoted_iter_bytes
-			<< std::endl;
 
 		auto promoted_2sdlast_bytes =
 			options->statistics->getTickerCount(
