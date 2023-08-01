@@ -883,8 +883,10 @@ void bg_stat_printer(const rocksdb::Options *options,
 	progress_out << "Timestamp(ns) operations-executed\n";
 	std::ofstream promoted_iter_out(db_path / "promoted-iter-bytes");
 	promoted_iter_out << "Timestamp(ns) num-bytes\n";
-	std::ofstream promoted_get_out(db_path / "promoted-get-bytes");
-	promoted_get_out << "Timestamp(ns) num-bytes\n";
+	std::ofstream promoted_2sdlast_out(db_path / "promoted-2sdlast-bytes");
+	promoted_2sdlast_out << "Timestamp(ns) num-bytes\n";
+	std::ofstream promoted_flush_out(db_path / "promoted-flush-bytes");
+	promoted_flush_out << "Timestamp(ns) num-bytes\n";
 	while (!should_stop->load(std::memory_order_relaxed)) {
 		auto timestamp = timestamp_ns();
 
@@ -896,9 +898,17 @@ void bg_stat_printer(const rocksdb::Options *options,
 		promoted_iter_out << timestamp << ' ' << promoted_iter_bytes
 			<< std::endl;
 
-		auto promoted_get_bytes =
-			options->statistics->getTickerCount(rocksdb::PROMOTED_GET_BYTES);
-		promoted_get_out << timestamp << ' ' << promoted_get_bytes << std::endl;
+		auto promoted_2sdlast_bytes =
+			options->statistics->getTickerCount(
+				rocksdb::PROMOTED_2SDLAST_BYTES
+			);
+		promoted_2sdlast_out << timestamp << ' ' << promoted_2sdlast_bytes
+			<< std::endl;
+
+		auto promoted_flush_bytes =
+			options->statistics->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES);
+		promoted_flush_out << timestamp << ' ' << promoted_flush_bytes
+			<< std::endl;
 
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 	}
