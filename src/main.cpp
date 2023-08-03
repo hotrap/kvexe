@@ -821,26 +821,6 @@ void print_vector(const std::vector<T>& v) {
 }
 
 auto AggregateTimers(
-	const std::vector<std::vector<rocksdb::TimerStatus>>& timers_per_level
-) -> std::vector<rocksdb::TimerStatus> {
-	size_t num_levels = timers_per_level.size();
-	if (num_levels == 0)
-		return std::vector<rocksdb::TimerStatus>();
-	size_t num_timers = timers_per_level[0].size();
-	std::vector<rocksdb::TimerStatus> ret = timers_per_level[0];
-	for (size_t level = 1; level < num_levels; ++level) {
-		const auto& timers = timers_per_level[level];
-		assert(timers.size() == num_timers);
-		for (size_t i = 0; i < num_timers; ++i) {
-			assert(strcmp(ret[i].name, timers[i].name) == 0);
-			ret[i].count += timers[i].count;
-			ret[i].nsec += timers[i].nsec;
-		}
-	}
-	return ret;
-}
-
-auto AggregateTimers(
 	const std::vector<std::vector<Timers::Status>>& timers_per_level
 ) -> std::vector<Timers::Status> {
 	size_t num_levels = timers_per_level.size();
@@ -1105,23 +1085,6 @@ int main(int argc, char **argv) {
 	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
 	if (router) {
-		auto router_timers = router->CollectTimers();
-		for (const auto& timer : router_timers) {
-			std::cerr << timer.name << ": count " << timer.count <<
-				", total " << timer.nsec << "ns,\n";
-		}
-
-		auto router_per_level_timers = router->CollectTimersInAllLevels();
-		for (size_t level = 0; level < router_per_level_timers.size(); ++level) {
-			std::cerr << "{level: " << level << ", timers = [\n";
-			for (const auto& timer : router_per_level_timers[level]) {
-				std::cerr << timer.name << ": count " << timer.count
-					<< ", total " << timer.nsec << "ns,\n";
-			}
-			std::cerr << "]},";
-		}
-		std::cerr << std::endl;
-
 		std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
 		if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
 			auto counters = router->hit_count();
