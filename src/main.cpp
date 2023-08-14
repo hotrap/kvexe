@@ -2,6 +2,7 @@
 #include "rocksdb/options.h"
 #include "timers.h"
 
+#include <algorithm>
 #include <atomic>
 #include <boost/fiber/buffered_channel.hpp>
 #include <boost/program_options/errors.hpp>
@@ -56,6 +57,8 @@ size_t next_power_of_two(size_t x) {
 }
 
 using boost::fibers::buffered_channel;
+
+typedef uint16_t field_size_t;
 
 enum class FormatType {
 	Plain,
@@ -210,7 +213,7 @@ static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
 
 std::string_view read_len_bytes(const char *& start, const char *end) {
 	rusty_assert(end - start >= (ssize_t)sizeof(size_t));
-	size_t len = *(size_t *)start;
+	field_size_t len = *(field_size_t *)start;
 	start += sizeof(len);
 	rusty_assert(end - start >= (ssize_t)len);
 	std::string_view ret(start, len);
@@ -219,43 +222,34 @@ std::string_view read_len_bytes(const char *& start, const char *end) {
 }
 
 struct BorrowedValue {
-	std::map<std::string_view, std::string_view> fields;
+	std::vector<std::string_view> fields;
 	static BorrowedValue from(
-		const std::vector<std::pair<std::vector<char>, std::vector<char>>>& fields
+		const std::vector<std::vector<char>>& fields
 	) {
-		std::map<std::string_view, std::string_view> borrowed;
-		for (const auto& field : fields) {
-			std::string_view key(field.first.data(), field.first.size());
-			std::string_view value(field.second.data(), field.second.size());
-			auto res = borrowed.insert(std::make_pair(key, value));
-			rusty_assert(res.second);
-		}
+		std::vector<std::string_view> borrowed;
+		for (const std::vector<char> &field : fields)
+			borrowed.emplace_back(field.data(), field.size());
 		return BorrowedValue{std::move(borrowed)};
 	}
 	std::vector<char> serialize() {
 		std::vector<char> ret;
 		auto start_time = rusty::time::Instant::now();
-		for (const auto& fv : fields) {
-			size_t len = fv.first.size();
+		for (std::string_view field : fields) {
+			field_size_t len = field.size();
 			ret.insert(ret.end(), (char *)&len, (char *)&len + sizeof(len));
-			ret.insert(ret.end(), fv.first.data(), fv.first.data() + len);
-			len = fv.second.size();
-			ret.insert(ret.end(), (char *)&len, (char *)&len + sizeof(len));
-			ret.insert(ret.end(), fv.second.data(), fv.second.data() + len);
+			ret.insert(ret.end(), field.data(), field.data() + len);
 		}
 		timers.Stop(TimerType::kSerialize, start_time);
 		return ret;
 	}
 	static BorrowedValue deserialize(std::string_view in) {
-		std::map<std::string_view, std::string_view> fields;
+		std::vector<std::string_view> fields;
 		auto start_time = rusty::time::Instant::now();
 		const char *start = in.data();
 		const char *end = start + in.size();
 		while (start < end) {
 			std::string_view field = read_len_bytes(start, end);
-			std::string_view value = read_len_bytes(start, end);
-			auto res = fields.insert(std::make_pair(field, value));
-			rusty_assert(res.second, "Duplicate field!");
+			fields.push_back(field);
 		}
 		rusty_assert(start == end);
 		timers.Stop(TimerType::kDeserialize, start_time);
@@ -270,14 +264,14 @@ enum class OpType {
 };
 struct Insert {
 	std::string key;
-	std::vector<std::pair<std::vector<char>, std::vector<char>>> fields;
+	std::vector<std::vector<char>> fields;
 };
 struct Read {
 	std::string key;
 };
 struct Update {
 	std::string key;
-	std::vector<std::pair<std::vector<char>, std::vector<char>>> fields_to_update;
+	std::vector<std::pair<int, std::vector<char>>> fields_to_update;
 };
 struct Env {
 	rocksdb::DB *db;
@@ -332,7 +326,7 @@ void do_update(Env& env, Update update) {
 	}
 	auto values = BorrowedValue::deserialize(value);
 	for (const auto& update : update.fields_to_update) {
-		std::string_view field(update.first.data(), update.first.size());
+		int field = update.first;
 		std::string_view value(update.second.data(), update.second.size());
 		values.fields[field] = value;
 	}
@@ -369,19 +363,20 @@ struct WorkEnv {
 void print_plain_ans(std::ofstream& out, std::string_view value) {
 	BorrowedValue value_parsed = BorrowedValue::deserialize(value);
 	rusty_assert(value_parsed.fields.size() == 1);
-	rusty_assert(value_parsed.fields.begin()->first.size() == 0);
-	out << value_parsed.fields.begin()->second << '\n';
+	out << *value_parsed.fields.begin() << '\n';
 }
 void print_ycsb_ans(std::ofstream& out, std::string_view value) {
 	BorrowedValue value_parsed = BorrowedValue::deserialize(value);
 	auto output_start = rusty::time::Instant::now();
 	out << "[ ";
-	for (const auto& field_value : value_parsed.fields) {
-		out.write(field_value.first.data(),
-			static_cast<std::streamsize>(field_value.first.size()));
+	const auto &fields = value_parsed.fields;
+	for (int i = 0; i < (int)fields.size(); ++i) {
+		out.write("field", 5);
+		std::string s = std::to_string(i);
+		out.write(s.c_str(), s.size());
 		out << ' ';
-		out.write(field_value.second.data(),
-			static_cast<std::streamsize>(field_value.second.size()));
+		out.write(fields[i].data(),
+			static_cast<std::streamsize>(fields[i].size()));
 		out << ' ';
 	}
 	out << "]\n";
@@ -556,9 +551,9 @@ void handle_table_name(std::istream& in) {
 	rusty_assert(table == "usertable", "Column families not supported yet.");
 }
 
-std::vector<std::pair<std::vector<char>, std::vector<char> > >
-read_field_values(std::istream& in) {
-	std::vector<std::pair<std::vector<char>, std::vector<char> > > ret;
+std::vector<std::pair<int, std::vector<char> > >
+read_fields(std::istream& in) {
+	std::vector<std::pair<int, std::vector<char> > > ret;
 	char c;
 	do {
 		c = static_cast<char>(in.get());
@@ -567,20 +562,34 @@ read_field_values(std::istream& in) {
 	rusty_assert(in.get() == ' ', "Invalid KV trace!");
 	while (in.peek() != ']') {
 		constexpr size_t vallen = 100;
-		std::vector<char> field;
+		std::string field;
 		std::vector<char> value(vallen);
 		while ((c = static_cast<char>(in.get())) != '=') {
 			field.push_back(c);
 		}
+		rusty_assert(field.size() > 5);
+		rusty_assert(field.substr(0, 5) == "field");
+		int i = std::stoi(field.substr(5));
 		rusty_assert(in.read(value.data(), vallen), "Invalid KV trace!");
 		rusty_assert(in.get() == ' ', "Invalid KV trace!");
-		ret.emplace_back(std::move(field), std::move(value));
+		ret.emplace_back(i, std::move(value));
 	}
 	in.get(); // ]
 	return ret;
 }
+std::vector<std::vector<char>>
+read_fields_insert(std::istream &in) {
+	auto fields = read_fields(in);
+	std::sort(fields.begin(), fields.end());
+	std::vector<std::vector<char>> ret;
+	for (int i = 0; i < (int)fields.size(); ++i) {
+		rusty_assert(fields[i].first == i);
+		ret.emplace_back(std::move(fields[i].second));
+	}
+	return ret;
+}
 
-std::set<std::string> read_fields(std::istream& in) {
+std::set<std::string> read_fields_read(std::istream& in) {
 	char c;
 	do {
 		c = static_cast<char>(in.get());
@@ -612,7 +621,7 @@ void parse_ycsb(
 			std::string key;
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto field_values = read_field_values(std::cin);
+			auto field_values = read_fields_insert(std::cin);
 			timers.Stop(TimerType::kInputInsert, input_start);
 
 			size_t i = hasher(key) % num_threads;
@@ -623,7 +632,7 @@ void parse_ycsb(
 			std::string key;
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto fields = read_fields(std::cin);
+			auto fields = read_fields_read(std::cin);
 			timers.Stop(TimerType::kInputRead, input_start);
 
 			size_t i = hasher(key) % num_threads;
@@ -634,7 +643,7 @@ void parse_ycsb(
 			std::string key;
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
-			auto updates = read_field_values(std::cin);
+			auto updates = read_fields(std::cin);
 			timers.Stop(TimerType::kInputUpdate, input_start);
 
 			size_t i = hasher(key) % num_threads;
