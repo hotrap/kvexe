@@ -500,7 +500,7 @@ void parse_plain(
 			size_t i = hasher(key) % num_threads;
 			inputs[i].push(Insert{
 				.key = std::move(key),
-				.fields = {{{}, std::move(value)}}
+				.fields = {std::move(value)}
 			});
 		} else if (op == "READ") {
 			std::string key;
