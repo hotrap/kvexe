@@ -175,6 +175,7 @@ enum class TimerType : size_t {
 	kDeserialize,
 	kEnd,
 };
+constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 const char *timer_names[] = {
 	"Insert",
 	"Read",
@@ -189,7 +190,8 @@ const char *timer_names[] = {
 	"Serialize",
 	"Deserialize",
 };
-TypedTimers<TimerType> timers;
+static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char *));
+counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
 static constexpr uint64_t MASK_LATENCY = 0x1;
 static constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
@@ -215,19 +217,18 @@ struct BorrowedValue {
 		return BorrowedValue{std::move(borrowed)};
 	}
 	std::vector<char> serialize() {
+		auto guard = timers.timer(TimerType::kSerialize).start();
 		std::vector<char> ret;
-		auto start_time = rusty::time::Instant::now();
 		for (std::string_view field : fields) {
 			field_size_t len = field.size();
 			ret.insert(ret.end(), (char *)&len, (char *)&len + sizeof(len));
 			ret.insert(ret.end(), field.data(), field.data() + len);
 		}
-		timers.Stop(TimerType::kSerialize, start_time);
 		return ret;
 	}
 	static BorrowedValue deserialize(std::string_view in) {
+		auto guard = timers.timer(TimerType::kDeserialize).start();
 		std::vector<std::string_view> fields;
-		auto start_time = rusty::time::Instant::now();
 		const char *start = in.data();
 		const char *end = start + in.size();
 		while (start < end) {
@@ -235,7 +236,6 @@ struct BorrowedValue {
 			fields.push_back(field);
 		}
 		rusty_assert(start == end);
-		timers.Stop(TimerType::kDeserialize, start_time);
 		return BorrowedValue{std::move(fields)};
 	}
 };
@@ -261,7 +261,7 @@ struct Env {
 	buffered_channel<std::pair<OpType, uint64_t>> *latency;
 };
 void do_insert(Env& env, Insert insert) {
-	auto insert_start = rusty::time::Instant::now();
+	auto guard = timers.timer(TimerType::kInsert).start();
 	rocksdb::Slice key_slice(insert.key);
 	std::vector<char> value = BorrowedValue::from(insert.fields).serialize();
 	rocksdb::Slice value_slice(value.data(), value.size());
@@ -272,14 +272,13 @@ void do_insert(Env& env, Insert insert) {
 		std::string err = s.ToString();
 		rusty_panic("INSERT failed with error: %s\n", err.c_str());
 	}
-	timers.Add(TimerType::kPut, put_time);
+	timers.timer(TimerType::kPut).add(put_time);
 	if (env.latency != nullptr) {
 		env.latency->push(std::make_pair(OpType::INSERT, put_time.as_nanos()));
 	}
-	timers.Stop(TimerType::kInsert, insert_start);
 }
 std::string do_read(Env& env, Read read) {
-	auto read_start = rusty::time::Instant::now();
+	auto guard = timers.timer(TimerType::kRead).start();
 	rocksdb::Slice key_slice(read.key);
 	std::string value;
 	auto get_start = rusty::time::Instant::now();
@@ -289,11 +288,10 @@ std::string do_read(Env& env, Read read) {
 		std::string err = s.ToString();
 		rusty_panic("GET failed with error: %s\n", err.c_str());
 	}
-	timers.Add(TimerType::kGet, get_time);
+	timers.timer(TimerType::kGet).add(get_time);
 	if (env.latency) {
 		env.latency->push(std::make_pair(OpType::READ, get_time.as_nanos()));
 	}
-	timers.Stop(TimerType::kRead, read_start);
 	return value;
 }
 void do_update(Env& env, Update update) {
@@ -324,9 +322,9 @@ void do_update(Env& env, Update update) {
 		rusty_panic("UPDATE failed when put: %s\n", err.c_str());
 	}
 	auto update_time = update_start.elapsed();
-	timers.Add(TimerType::kGet, get_time);
-	timers.Add(TimerType::kPut, put_time);
-	timers.Add(TimerType::kUpdate, update_time);
+	timers.timer(TimerType::kGet).add(get_time);
+	timers.timer(TimerType::kPut).add(put_time);
+	timers.timer(TimerType::kUpdate).add(update_time);
 	if (env.latency) {
 		env.latency->push(
 			std::make_pair(OpType::UPDATE, update_time.as_nanos())
@@ -350,7 +348,7 @@ void print_plain_ans(std::ofstream& out, std::string_view value) {
 }
 void print_ycsb_ans(std::ofstream& out, std::string_view value) {
 	BorrowedValue value_parsed = BorrowedValue::deserialize(value);
-	auto output_start = rusty::time::Instant::now();
+	auto guard = timers.timer(TimerType::kOutput).start();
 	out << "[ ";
 	const auto &fields = value_parsed.fields;
 	for (int i = 0; i < (int)fields.size(); ++i) {
@@ -363,7 +361,6 @@ void print_ycsb_ans(std::ofstream& out, std::string_view value) {
 		out << ' ';
 	}
 	out << "]\n";
-	timers.Stop(TimerType::kOutput, output_start);
 }
 void work(
 	size_t id,
@@ -592,9 +589,9 @@ void parse_ycsb(
 	std::hash<std::string> hasher{};
 	while (1) {
 		std::string op;
-		auto input_op_start =  rusty::time::Instant::now();
+		auto input_op_start = rusty::time::Instant::now();
 		std::cin >> op;
-		timers.Stop(TimerType::kInputOperation, input_op_start);
+		timers.timer(TimerType::kInputOperation).add(input_op_start.elapsed());
 		if (!std::cin) {
 			break;
 		}
@@ -605,7 +602,7 @@ void parse_ycsb(
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
 			auto field_values = read_fields_insert(std::cin);
-			timers.Stop(TimerType::kInputInsert, input_start);
+			timers.timer(TimerType::kInputInsert).add(input_start.elapsed());
 
 			size_t i = hasher(key) % num_threads;
 			inputs[i].push(Insert{std::move(key), std::move(field_values)});
@@ -616,7 +613,7 @@ void parse_ycsb(
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
 			auto fields = read_fields_read(std::cin);
-			timers.Stop(TimerType::kInputRead, input_start);
+			timers.timer(TimerType::kInputRead).add(input_start.elapsed());
 
 			size_t i = hasher(key) % num_threads;
 			inputs[i].push(Read{std::move(key)});
@@ -627,7 +624,7 @@ void parse_ycsb(
 			std::cin >> key;
 			rocksdb::Slice key_slice(key);
 			auto updates = read_fields(std::cin);
-			timers.Stop(TimerType::kInputUpdate, input_start);
+			timers.timer(TimerType::kInputUpdate).add(input_start.elapsed());
 
 			size_t i = hasher(key) % num_threads;
 			inputs[i].push(Update{std::move(key), std::move(updates)});
@@ -866,19 +863,25 @@ int main(int argc, char **argv) {
 	rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
 	std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
-	auto timers_status = timers.Collect();
-	for (size_t i = 0; i < static_cast<size_t>(TimerType::kEnd); ++i) {
-		std::cerr << timer_names[i] << ": count " << timers_status[i].count <<
-			", total " << timers_status[i].nsec << "ns\n";
+	std::vector<counter_timer::CountTime> timers_status;
+	const auto &ts = timers.timers();
+	size_t num_types = ts.len();
+	for (size_t i = 0; i < num_types; ++i) {
+		const auto &timer = ts.timer(i);
+		uint64_t count = timer.count();
+		rusty::time::Duration time = timer.time();
+		timers_status.push_back(counter_timer::CountTime{count, time});
+		std::cerr << timer_names[i] << ": count " << count <<
+			", total " << time.as_nanos() << "ns\n";
 	}
 	std::cerr << "In summary: [\n";
-	Timers::Status input_time =
+	counter_timer::CountTime input_time =
 		timers_status[static_cast<size_t>(TimerType::kInputOperation)] +
 			timers_status[static_cast<size_t>(TimerType::kInputInsert)] +
 			timers_status[static_cast<size_t>(TimerType::kInputRead)] +
 			timers_status[static_cast<size_t>(TimerType::kInputUpdate)];
 	std::cerr << "\tInput: count " << input_time.count << ", total " <<
-		input_time.nsec << "ns\n";
+		input_time.time.as_nanos() << "ns\n";
 	std::cerr << "]\n";
 
 	stat_printer.join();

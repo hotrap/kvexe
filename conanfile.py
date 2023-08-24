@@ -23,7 +23,8 @@ class kvexe_rocksdbRecipe(ConanFile):
     }
 
     def requirements(self):
-        self.requires("rusty-cpp/[>=0.1.1]")
+        self.requires("rusty-cpp/[>=0.1.2]")
+        self.requires("rcu-vector/[~0.1]")
 
     def layout(self):
         cmake_layout(self)

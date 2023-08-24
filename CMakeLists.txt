@@ -24,6 +24,7 @@ target_link_libraries(${PROJECT_NAME}
 		boost_fiber
 	PRIVATE
 		rusty-cpp
+		rcu_vector_bp
 		boost_program_options
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
