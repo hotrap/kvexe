@@ -1099,7 +1099,7 @@ int main(int argc, char **argv) {
 		}
 		std::cerr << std::endl;
 
-		size_t num_levels = per_tier_timers.len();
+		size_t num_levels = per_level_timers.len();
 		for (size_t level = 0; level < num_levels; ++level) {
 			std::cerr << "{level: " << level << ", timers: [\n";
 			const auto& timers = per_level_timers.timers(level);
