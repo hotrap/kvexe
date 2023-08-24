@@ -1,8 +1,8 @@
 {
     "version": "0.5",
     "requires": [
-        "rusty-cpp/0.1.1#c39f95849375fb7c65e6bf72ba197dbb%1688716929.0",
-        "rcu-vector/0.1.0#da41fb3bb10185504bb6b0b8cb174e25%1688734902.0"
+        "rusty-cpp/0.1.2#5f10232a8dfbd8c4ff603b0056bf5c98%1692865623.4035707",
+        "rcu-vector/0.1.0#da41fb3bb10185504bb6b0b8cb174e25%1689672456.6307392"
     ],
     "build_requires": [],
     "python_requires": []
