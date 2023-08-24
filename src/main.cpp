@@ -1,6 +1,5 @@
 #include "rocksdb/compaction_router.h"
 #include "rocksdb/options.h"
-#include "timers.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,6 +10,7 @@
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
+#include <counter_timer.hpp>
 #include <cstddef>
 #include <cstdlib>
 #include <deque>
