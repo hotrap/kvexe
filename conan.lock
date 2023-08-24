@@ -1,7 +1,7 @@
 {
     "version": "0.5",
     "requires": [
-        "rusty-cpp/0.1.2#5f10232a8dfbd8c4ff603b0056bf5c98%1692865623.4035707",
+        "rusty-cpp/0.1.3#dd3767a2583b7b21dda61e33733412fc%1692887462.7923038",
         "rcu-vector/0.1.0#da41fb3bb10185504bb6b0b8cb174e25%1689672456.6307392"
     ],
     "build_requires": [],

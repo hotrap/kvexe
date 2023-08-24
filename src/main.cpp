@@ -22,13 +22,14 @@
 #include <optional>
 #include <queue>
 #include <random>
+#include <rusty/keyword.h>
 #include <rusty/macro.h>
+#include <rusty/primitive.h>
 #include <rusty/time.h>
 #include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
-#include <variant>
 
 #include "rocksdb/db.h"
 #include "rocksdb/filter_policy.h"
@@ -36,25 +37,6 @@
 #include "rocksdb/table.h"
 
 #include "viscnts.h"
-
-template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
-// explicit deduction guide (not needed as of C++20)
-template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
-
-template <typename Val, typename... Ts>
-auto match(Val val, Ts... ts) {
-	return std::visit(overloaded{ts...}, val);
-}
-
-// Returns the smallest power of two greater than or equal to "x".
-size_t next_power_of_two(size_t x) {
-	size_t ans = 1;
-	while (ans < x) {
-		ans <<= 1;
-		rusty_assert(ans != 0);
-	}
-	return ans;
-}
 
 using boost::fibers::buffered_channel;
 
