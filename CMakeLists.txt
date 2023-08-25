@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
-find_package(counter-timer CONFIG REQUIRED)
+add_subdirectory(3rdparty/rusty-cpp)
+add_subdirectory(3rdparty/rcu-vector)
+add_subdirectory(3rdparty/counter-timer)
 
 add_compile_options(-Wall -Wextra -fexceptions)
 IF (CMAKE_BUILD_TYPE STREQUAL Debug)
