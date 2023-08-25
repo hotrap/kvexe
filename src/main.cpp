@@ -19,7 +19,7 @@
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
-#include <counter_timer.hpp>
+#include <counter_timer_vec.hpp>
 #include <cstddef>
 #include <cstdlib>
 #include <deque>
@@ -606,7 +606,7 @@ const char *per_level_timer_names[] = {
 };
 static_assert(PER_LEVEL_TIMER_NUM ==
               sizeof(per_level_timer_names) / sizeof(const char *));
-counter_timer::TypedTimersVector<PerLevelTimerType> per_level_timers(
+counter_timer_vec::TypedTimersVector<PerLevelTimerType> per_level_timers(
     PER_LEVEL_TIMER_NUM);
 
 enum class PerTierTimerType : size_t {
@@ -620,7 +620,7 @@ const char *per_tier_timer_names[] = {
 };
 static_assert(PER_TIER_TIMER_NUM ==
               sizeof(per_tier_timer_names) / sizeof(const char *));
-counter_timer::TypedTimersVector<PerTierTimerType> per_tier_timers(
+counter_timer_vec::TypedTimersVector<PerTierTimerType> per_tier_timers(
     PER_TIER_TIMER_NUM);
 
 class RouterVisCnts : public rocksdb::CompactionRouter {

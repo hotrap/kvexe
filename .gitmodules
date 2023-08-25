@@ -7,3 +7,6 @@
 [submodule "3rdparty/counter-timer"]
 	path = 3rdparty/counter-timer
 	url = https://github.com/seekstar/counter-timer-cpp.git
+[submodule "3rdparty/counter-timer-vec"]
+	path = 3rdparty/counter-timer-vec
+	url = https://github.com/seekstar/counter-timer-vec-cpp.git
