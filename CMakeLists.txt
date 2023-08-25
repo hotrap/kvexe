@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
 add_subdirectory(3rdparty/rusty-cpp)
-add_subdirectory(3rdparty/rcu-vector)
 add_subdirectory(3rdparty/counter-timer)
 add_subdirectory(3rdparty/counter-timer-vec)
 
