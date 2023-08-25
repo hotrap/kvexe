@@ -4,6 +4,7 @@ project(rocksdb-kvexe CXX)
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/rcu-vector)
 add_subdirectory(3rdparty/counter-timer)
+add_subdirectory(3rdparty/counter-timer-vec)
 
 add_compile_options(-Wall -Wextra -fexceptions)
 IF (CMAKE_BUILD_TYPE STREQUAL Debug)
@@ -26,7 +27,7 @@ target_link_libraries(${PROJECT_NAME}
 		pthread
 		boost_fiber
 	PRIVATE
-		counter-timer
+		counter-timer-vec
 		boost_program_options
 )
 IF (DEFINED VISCNTS_LIB)
