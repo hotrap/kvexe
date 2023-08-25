@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
-find_package(rusty-cpp CONFIG REQUIRED)
-find_package(rcu-vector CONFIG REQUIRED COMPONENTS rcu_vector_bp)
+add_subdirectory(3rdparty/rusty-cpp)
+add_subdirectory(3rdparty/rcu-vector)
+add_subdirectory(3rdparty/counter-timer)
 
 add_compile_options(-Wall -Wextra -fexceptions)
 IF (CMAKE_BUILD_TYPE STREQUAL Debug)
@@ -23,7 +24,7 @@ target_link_libraries(${PROJECT_NAME}
 		pthread
 		boost_fiber
 	PRIVATE
-		rusty-cpp
+		counter-timer
 		boost_program_options
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)

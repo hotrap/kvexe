@@ -1,0 +1,9 @@
+[submodule "3rdparty/rusty-cpp"]
+	path = 3rdparty/rusty-cpp
+	url = https://github.com/seekstar/rusty-cpp.git
+[submodule "3rdparty/rcu-vector"]
+	path = 3rdparty/rcu-vector
+	url = https://github.com/seekstar/rcu-vector.git
+[submodule "3rdparty/counter-timer"]
+	path = 3rdparty/counter-timer
+	url = https://github.com/seekstar/counter-timer-cpp.git
