@@ -7,3 +7,6 @@
 [submodule "3rdparty/counter-timer-vec"]
 	path = 3rdparty/counter-timer-vec
 	url = https://github.com/seekstar/counter-timer-vec-cpp.git
+[submodule "3rdparty/rcu-vector"]
+	path = 3rdparty/rcu-vector
+	url = https://github.com/seekstar/rcu-vector.git

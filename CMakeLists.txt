@@ -3,6 +3,7 @@ project(rocksdb-kvexe CXX)
 
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
+add_subdirectory(3rdparty/rcu-vector)
 add_subdirectory(3rdparty/counter-timer-vec)
 
 add_compile_options(-Wall -Wextra -fexceptions)
