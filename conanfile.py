@@ -23,7 +23,7 @@ class kvexe_rocksdbRecipe(ConanFile):
     }
 
     def requirements(self):
-        self.requires("counter-timer/[~0.1]")
+        self.requires("counter-timer/[>=0.1.1]")
 
     def layout(self):
         cmake_layout(self)
