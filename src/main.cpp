@@ -305,6 +305,7 @@ struct WorkEnv {
   const std::filesystem::path &db_path;
   std::atomic<size_t> *progress;
   buffered_channel<std::pair<OpType, uint64_t>> *latency;
+  int async_num;
 };
 
 void print_plain_ans(std::ofstream &out, std::string_view value) {
@@ -327,35 +328,169 @@ void print_ycsb_ans(std::ofstream &out, std::string_view value) {
   }
   out << "]\n";
 }
-void work(size_t id, WorkEnv work_env,
+void work(size_t id, WorkEnv work_env, 
           buffered_channel<std::variant<Insert, Read, Update>> *in) {
   std::optional<std::ofstream> ans_out =
       work_env.switches & MASK_OUTPUT_ANS
           ? std::optional<std::ofstream>(work_env.db_path /
                                          ("ans_" + std::to_string(id)))
           : std::nullopt;
-  Env env{
-      .db = work_env.db,
-      .latency = work_env.latency,
-  };
+  // Env env{
+  //     .db = work_env.db,
+  //     .latency = work_env.latency,
+  // };
+  // for (std::variant<Insert, Read, Update> op : *in) {
+  //   match(
+  //       op, [&](Insert &insert) { do_insert(env, std::move(insert)); },
+  //       [&](Read &read) {
+  //         std::string value = do_read(env, std::move(read));
+  //         if (ans_out.has_value()) {
+  //           switch (work_env.type) {
+  //             case FormatType::Plain:
+  //               print_plain_ans(ans_out.value(), value);
+  //               break;
+  //             case FormatType::YCSB:
+  //               print_ycsb_ans(ans_out.value(), value);
+  //               break;
+  //           }
+  //         }
+  //       },
+  //       [&](Update &update) { do_update(env, std::move(update)); });
+  //   work_env.progress->fetch_add(1, std::memory_order_relaxed);
+  // }
+  const int async_num = work_env.async_num;
+
+  auto occupied = std::unique_ptr<bool[]>(new bool[async_num]);
+  auto status = std::unique_ptr<std::atomic<rocksdb::Status *>[]>(new std::atomic<rocksdb::Status *>[async_num]);
+  auto request = std::unique_ptr<std::variant<Insert, Read, Update>[]>(new std::variant<Insert, Read, Update>[async_num]);
+  
+  std::deque<std::string> Q;
+
+  rocksdb::WriteOptions write_options;
+  rocksdb::ReadOptions read_options;
+  write_options.sync = true;
+  write_options.disableWAL = false;
+  
+
+  for (int i = 0; i < async_num; i++) {
+    occupied[i] = 0;
+    status[i].store(nullptr);
+  }
+  
   for (std::variant<Insert, Read, Update> op : *in) {
+    int pos = -1;
+    for (int i = 0; i < async_num; i++) if (!occupied[i]) {
+      pos = i;
+      break;
+    }
+    while(pos == -1) {
+      for (int i = 0; i < async_num; i++) if (occupied[i] && status[i].load() != nullptr) {
+        if (!status[i].load()->ok()) {
+          std::cerr << status[i].load()->ToString() << std::endl;
+          rusty_panic("Request failed!");
+        }
+        occupied[i] = false;
+        status[i].store(nullptr);
+        work_env.progress->fetch_add(1, std::memory_order_relaxed);
+        pos = i;
+      }
+    }
+
+    while(Q.size() && Q.front().length() != 0) {
+      printf("[ok]");
+      if (ans_out.has_value()) {
+        switch (work_env.type) {
+          case FormatType::Plain:
+            print_plain_ans(ans_out.value(), Q.front());
+            break;
+          case FormatType::YCSB:
+            printf("[ok2]");
+            print_ycsb_ans(ans_out.value(), Q.front());
+            break;
+        }  
+      }
+      Q.pop_front();
+    }
+    
+    occupied[pos] = true;
     match(
-        op, [&](Insert &insert) { do_insert(env, std::move(insert)); },
-        [&](Read &read) {
-          std::string value = do_read(env, std::move(read));
-          if (ans_out.has_value()) {
-            switch (work_env.type) {
-              case FormatType::Plain:
-                print_plain_ans(ans_out.value(), value);
-                break;
-              case FormatType::YCSB:
-                print_ycsb_ans(ans_out.value(), value);
-                break;
+      op, 
+      [&](Insert &insert) {
+        std::vector<char> value = BorrowedValue::from(insert.fields).serialize();
+        std::string value_slice(value.data(), value.size());
+        // std::string value_slice(1024, 'a');
+        // std::cout << insert.key << ": " << value_slice << std::endl;
+        while(true) {
+          auto s = work_env.db->AsyncPut(write_options, insert.key, value_slice, status[pos]);
+          if (!s.ok()) {
+            if (status[pos].load() != nullptr) {
+              delete status[pos].load();
+              status[pos].store(nullptr);
             }
+          } else {
+            break;
           }
-        },
-        [&](Update &update) { do_update(env, std::move(update)); });
-    work_env.progress->fetch_add(1, std::memory_order_relaxed);
+        }
+      }, 
+      [&](Read &read) {
+        Q.emplace_back();
+        while(true) {
+          auto s = work_env.db->AsyncGet(read_options, read.key, &Q.back(), status[pos]);
+          if (!s.ok()) {
+            if (status[pos].load() != nullptr) {
+              delete status[pos].load();
+              status[pos].store(nullptr);
+            }
+          } else {
+            break;
+          }
+        }
+      },
+      /* update needs 2 operations so we don't implement it now. */
+      [&](Update &update) {
+        // std::vector<char> value = BorrowedValue::from(update.fields_to_update).serialize();
+        // std::string value_slice(value.data(), value.size());
+        // auto s = work_env.db->AsyncPut(write_options, update.key, value_slice, status[pos]);
+        // if (!s.ok()) {
+        //   std::string err = s.ToString();
+        //   rusty_panic("UPDATE failed when get: %s\n", err.c_str());
+        // }
+        rusty_panic("Don't support UPDATE!");
+      }
+    );
+    request[pos] = std::move(op);
+  }
+
+  while(true) {
+    bool flag = false;
+    for (int i = 0; i < async_num; i++) if (occupied[i]) {
+      flag = true;
+      if (status[i].load() == nullptr) continue;
+      if (!status[i].load()->ok()) {
+        std::cerr << status[i].load()->ToString() << std::endl;
+        rusty_panic("Request failed!");
+      }
+      occupied[i] = false;
+      status[i].store(nullptr);
+      work_env.progress->fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!flag) {
+      break;
+    }
+  }
+  
+  while(Q.size() && Q.front().length() != 0) {
+    if (ans_out.has_value()) {
+      switch (work_env.type) {
+        case FormatType::Plain:
+          print_plain_ans(ans_out.value(), Q.front());
+          break;
+        case FormatType::YCSB:
+          print_ycsb_ans(ans_out.value(), Q.front());
+          break;
+      }  
+    }
+    Q.pop_front();
   }
 }
 
@@ -401,6 +536,7 @@ void work2(
       .db_path = db_path,
       .progress = progress,
       .latency = latency_chan_ptr,
+      .async_num = 50,
   };
   std::deque<buffered_channel<std::variant<Insert, Read, Update>>> inputs;
   std::vector<std::thread> workers;
@@ -646,25 +782,27 @@ int main(int argc, char **argv) {
   namespace po = boost::program_options;
   po::options_description desc("Available options");
   std::string format;
-  std::string arg_db_path;
-  std::string arg_db_paths;
+  std::string arg_data_path;
   size_t cache_size;
   std::string arg_switches;
+  std::string pcie_addr;
   size_t num_threads;
+  bool is_load;
+  size_t spandb_worker_num;
+  size_t topfs_cache_size;
   desc.add_options()("help", "Print help message");
-  desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
   desc.add_options()(
       "use_direct_reads",
       po::value<bool>(&options.use_direct_reads)->default_value(true), "");
-  desc.add_options()("db_path",
-                     po::value<std::string>(&arg_db_path)->required(),
-                     "Path to database");
   desc.add_options()(
-      "db_paths", po::value<std::string>(&arg_db_paths)->required(),
-      "For example: \"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"");
+      "data_path", po::value<std::string>(&arg_data_path)->required(),
+      "For example: \"/tmp/spandb/data/\"");
+  desc.add_options()(
+      "is_load", po::value<bool>(&is_load)->required(),
+      "is_load is 1 when it will generate a new database. 0 otherwise.");
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
@@ -676,6 +814,9 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
+  desc.add_options()("pcie_addr", po::value<std::string>(&pcie_addr)->default_value("0000:01:00.0"), "The PCIe addr of sd.");
+  desc.add_options()("spandb_worker_num", po::value<size_t>(&spandb_worker_num)->required(), "The number of spandb workers.");
+  desc.add_options()("topfs_cache_size", po::value<size_t>(&topfs_cache_size)->required(), "The TopFS cache size (GB).");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -683,6 +824,44 @@ int main(int argc, char **argv) {
     return 1;
   }
   po::notify(vm);
+  std::filesystem::path db_path = arg_data_path;
+
+  // YCSB options
+  options.wal_dir = arg_data_path;
+  options.enable_spdklogging = true;
+  options.ssdlogging_type = "spdk";
+  options.spdk_recovery = false;
+  options.lo_path = arg_data_path;
+  options.max_level = 4;
+  options.l0_queue_num = 20;
+  options.max_compaction_bytes = 64ull << 20;
+  options.ssdlogging_path = "trtype:PCIe traddr:" + pcie_addr;
+  options.ssdlogging_num = 6;
+  options.logging_server_num = 1;
+  // It seems that SpdkEnv is the TopFS (SD).
+  options.lo_env = rocksdb::NewSpdkEnv(rocksdb::Env::Default(), "trtype:PCIe traddr:" + pcie_addr, options, is_load);
+  auto env = rocksdb::Env::Default();
+  options.spandb_worker_num = spandb_worker_num;
+  env->SetBackgroundThreads(2, rocksdb::Env::HIGH);
+  env->SetBackgroundThreads(6, rocksdb::Env::LOW);
+  options.max_background_jobs = 8;
+  options.max_subcompactions = 4;
+  options.max_write_buffer_number = 4;
+  options.topfs_cache_size = topfs_cache_size;
+  
+  options.statistics = rocksdb::CreateDBStatistics();
+  options.max_total_wal_size = 1ull << 30;
+  options.write_buffer_size = 1ull << 30;
+  options.env = rocksdb::Env::Default();
+  options.auto_config = true;
+  options.dynamic_moving = true;
+  options.max_open_files = 500000;
+  options.compression = rocksdb::kNoCompression;
+  options.allow_2pc = false;
+  options.recycle_log_file_num = false;
+  options.allow_concurrent_memtable_write = true;
+
+
 
   uint64_t switches;
   if (arg_switches == "none") {
@@ -693,9 +872,6 @@ int main(int argc, char **argv) {
     std::istringstream in(std::move(arg_switches));
     in >> std::hex >> switches;
   }
-
-  std::filesystem::path db_path(arg_db_path);
-  options.db_paths = decode_db_paths(arg_db_paths);
   options.statistics = rocksdb::CreateDBStatistics();
 
   rocksdb::BlockBasedTableOptions table_options;
@@ -704,31 +880,48 @@ int main(int argc, char **argv) {
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
 
-  if (vm.count("cleanup")) {
+  if (is_load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-  }
-  int first_level_in_cd = predict_level_assignment(options);
-  {
-    std::ofstream out(db_path / "first-level-in-cd");
-    out << first_level_in_cd << std::endl;
-  }
-
-  rocksdb::DB *db;
-  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
-  if (!s.ok()) {
-    std::cerr << "Creating database\n";
-    options.create_if_missing = true;
-    s = rocksdb::DB::Open(options, db_path.string(), &db);
+  } else if (options.lo_env != nullptr && options.enable_spdklogging) {
+    rocksdb::DB* db;
+    auto s = rocksdb::DB::Open(rocksdb::Options(), db_path.string(), &db);
     if (!s.ok()) {
       std::cerr << s.ToString() << std::endl;
       return -1;
     }
+    std::vector<rocksdb::LiveFileMetaData> metadata;
+    db->GetLiveFilesMetaData(&metadata);
+    options.lo_env->SpanDBMigration(metadata);
+    delete db;
   }
 
+  rocksdb::DB *db;
+  if (is_load) {
+    std::cerr << "Creating database\n";
+  }
+  options.create_if_missing = is_load;
+  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
+  if (!s.ok()) {
+    std::cerr << s.ToString() << std::endl;
+    return -1;
+  }
+  options.lo_env->ResetStat();
+  options.statistics->Reset();
+  db->ResetStats();
+  // {
+  //   puts("OK");
+  //   std::atomic<rocksdb::Status*> status;
+  //   db->AsyncPut(rocksdb::WriteOptions(), "A", std::string(1024, 'a'), status);
+  //   while(status.load() == nullptr);
+  //   delete db;
+  //   delete options.lo_env;
+  //   return 0;
+  // }
+  
   std::atomic<bool> should_stop(false);
   std::atomic<size_t> progress(0);
   std::thread stat_printer(bg_stat_printer, db_path, &should_stop, &progress);
@@ -754,7 +947,7 @@ int main(int argc, char **argv) {
                    end - start)
                        .count() /
                    1e9
-            << " second(s) for work\n";
+            << " second(s) for work" << std::endl;
 
   start = std::chrono::steady_clock::now();
   wait_for_background_work(db);
@@ -763,7 +956,7 @@ int main(int argc, char **argv) {
                    end - start)
                        .count() /
                    1e9
-            << " second(s) waiting for background work\n";
+            << " second(s) waiting for background work"  << std::endl;
 
   should_stop.store(true, std::memory_order_relaxed);
 
@@ -821,6 +1014,7 @@ int main(int argc, char **argv) {
 
   stat_printer.join();
   delete db;
+  delete options.lo_env;
 
   return 0;
 }
