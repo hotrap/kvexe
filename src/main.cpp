@@ -363,6 +363,9 @@ void work(size_t id, WorkEnv work_env,
   auto occupied = std::unique_ptr<bool[]>(new bool[async_num]);
   auto status = std::unique_ptr<std::atomic<rocksdb::Status *>[]>(new std::atomic<rocksdb::Status *>[async_num]);
   auto request = std::unique_ptr<std::variant<Insert, Read, Update>[]>(new std::variant<Insert, Read, Update>[async_num]);
+
+  // Avoid NotFound error. Since async queries are out-of-order.
+  std::vector<std::pair<std::string, std::string>> nearby_data(async_num);
   
   std::deque<std::string> Q;
 
@@ -376,6 +379,10 @@ void work(size_t id, WorkEnv work_env,
     occupied[i] = 0;
     status[i].store(nullptr);
   }
+
+  size_t wop_id = 0;
+  size_t num_async_read = 0;
+  size_t num_async_insert = 0;
   
   for (std::variant<Insert, Read, Update> op : *in) {
     int pos = -1;
@@ -397,14 +404,12 @@ void work(size_t id, WorkEnv work_env,
     }
 
     while(Q.size() && Q.front().length() != 0) {
-      printf("[ok]");
       if (ans_out.has_value()) {
         switch (work_env.type) {
           case FormatType::Plain:
             print_plain_ans(ans_out.value(), Q.front());
             break;
           case FormatType::YCSB:
-            printf("[ok2]");
             print_ycsb_ans(ans_out.value(), Q.front());
             break;
         }  
@@ -412,7 +417,6 @@ void work(size_t id, WorkEnv work_env,
       Q.pop_front();
     }
     
-    occupied[pos] = true;
     match(
       op, 
       [&](Insert &insert) {
@@ -420,6 +424,7 @@ void work(size_t id, WorkEnv work_env,
         std::string value_slice(value.data(), value.size());
         // std::string value_slice(1024, 'a');
         // std::cout << insert.key << ": " << value_slice << std::endl;
+        occupied[pos] = true;
         while(true) {
           auto s = work_env.db->AsyncPut(write_options, insert.key, value_slice, status[pos]);
           if (!s.ok()) {
@@ -431,9 +436,34 @@ void work(size_t id, WorkEnv work_env,
             break;
           }
         }
+        nearby_data[wop_id % async_num] = {insert.key, std::move(value_slice)};
+        wop_id++;
+        num_async_insert++;
       }, 
       [&](Read &read) {
         Q.emplace_back();
+        bool is_found = false;
+        for (int i = (int)wop_id % async_num - 1; i >= 0; i--) if (nearby_data[i].first == read.key) {
+          Q.back() = nearby_data[i].second;
+          is_found = true;
+          break;
+        }
+        if (is_found) {
+          work_env.progress->fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+        if (wop_id >= async_num) {
+          for (int i = async_num - 1; i >= (int)wop_id % async_num; i--) if (nearby_data[i].first == read.key) {
+            Q.back() = nearby_data[i].second;
+            is_found = true;
+            break;
+          }
+        }
+        if (is_found) {
+          work_env.progress->fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+        occupied[pos] = true;
         while(true) {
           auto s = work_env.db->AsyncGet(read_options, read.key, &Q.back(), status[pos]);
           if (!s.ok()) {
@@ -445,6 +475,7 @@ void work(size_t id, WorkEnv work_env,
             break;
           }
         }
+        num_async_read++;
       },
       /* update needs 2 operations so we don't implement it now. */
       [&](Update &update) {
@@ -458,7 +489,7 @@ void work(size_t id, WorkEnv work_env,
         rusty_panic("Don't support UPDATE!");
       }
     );
-    request[pos] = std::move(op);
+    // request[pos] = std::move(op);
   }
 
   while(true) {
@@ -492,6 +523,16 @@ void work(size_t id, WorkEnv work_env,
     }
     Q.pop_front();
   }
+
+  {
+    static std::mutex mu;
+    std::unique_lock lck(mu);
+
+    std::cerr << "Id: " << id << std::endl;
+    std::cerr << "Async read number: " << num_async_read << std::endl;
+    std::cerr << "Async insert number: " << num_async_insert << std::endl;  
+  }
+  
 }
 
 void print_latency(const std::filesystem::path &db_path,
