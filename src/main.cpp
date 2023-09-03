@@ -3,6 +3,7 @@
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rocksdb/cache.h>
+#include <../mutant/mutant.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
@@ -845,6 +846,11 @@ int main(int argc, char **argv) {
   std::cerr << "rocksdb.rocksdb.l2andup.hit: "
             << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
             << std::endl;
+  
+  std::cerr << "mutant.l0.access: " << rocksdb::Mutant::GetAccessStats(0) << std::endl;
+  std::cerr << "mutant.l1.access: " << rocksdb::Mutant::GetAccessStats(1) << std::endl;
+  std::cerr << "mutant.l0.hit: " << rocksdb::Mutant::GetHitStats(0) << std::endl;
+  std::cerr << "mutant.l1.hit: " << rocksdb::Mutant::GetHitStats(1) << std::endl;
 
   std::string rocksdb_stats;
   rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
