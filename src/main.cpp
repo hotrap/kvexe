@@ -1,7 +1,8 @@
-#include <rocksdb/db.h>
-#include <rocksdb/filter_policy.h>
-#include <rocksdb/statistics.h>
-#include <rocksdb/table.h>
+#include <leveldb/db.h>
+#include <leveldb/filter_policy.h>
+#include <leveldb/table.h>
+#include <leveldb/cache.h>
+#include <leveldb/env.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
@@ -37,97 +38,6 @@ enum class FormatType {
   Plain,
   YCSB,
 };
-
-std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
-  std::istringstream in(db_paths);
-  std::vector<rocksdb::DbPath> ret;
-  rusty_assert(in.get() == '{', "Invalid db_paths");
-  char c = static_cast<char>(in.get());
-  if (c == '}') return ret;
-  rusty_assert(c == '{', "Invalid db_paths");
-  while (1) {
-    std::string path;
-    size_t size;
-    if (in.peek() == '"') {
-      in >> std::quoted(path);
-      rusty_assert(in.get() == ',', "Invalid db_paths");
-    } else {
-      while ((c = static_cast<char>(in.get())) != ',') path.push_back(c);
-    }
-    in >> size;
-    ret.emplace_back(std::move(path), size);
-    rusty_assert(in.get() == '}', "Invalid db_paths");
-    c = static_cast<char>(in.get());
-    if (c != ',') break;
-    rusty_assert(in.get() == '{', "Invalid db_paths");
-  }
-  rusty_assert(c == '}', "Invalid db_paths");
-  return ret;
-}
-
-int MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
-  if (level >= static_cast<int>(
-                   options.max_bytes_for_level_multiplier_additional.size())) {
-    return 1;
-  }
-  return options.max_bytes_for_level_multiplier_additional[level];
-}
-
-// Return the first level in the last path
-int predict_level_assignment(const rocksdb::Options &options) {
-  uint32_t p = 0;
-  int level = 0;
-  assert(!options.db_paths.empty());
-
-  std::cerr << "Predicted level assignment:\n";
-
-  // size remaining in the most recent path
-  uint64_t current_path_size = options.db_paths[0].target_size;
-
-  uint64_t level_size;
-  int cur_level = 0;
-
-  // max_bytes_for_level_base denotes L1 size.
-  // We estimate L0 size to be the same as L1.
-  level_size = options.max_bytes_for_level_base;
-
-  // Last path is the fallback
-  while (p < options.db_paths.size() - 1) {
-    if (current_path_size < level_size) {
-      p++;
-      current_path_size = options.db_paths[p].target_size;
-      continue;
-    }
-    if (cur_level == level) {
-      // Does desired level fit in this path?
-      std::cerr << level << ' ' << options.db_paths[p].path << ' ' << level_size
-                << std::endl;
-      ++level;
-    }
-    current_path_size -= level_size;
-    if (cur_level > 0) {
-      if (options.level_compaction_dynamic_level_bytes) {
-        // Currently, level_compaction_dynamic_level_bytes is ignored when
-        // multiple db paths are specified. https://github.com/facebook/
-        // rocksdb/blob/main/db/column_family.cc.
-        // Still, adding this check to avoid accidentally using
-        // max_bytes_for_level_multiplier_additional
-        level_size =
-            static_cast<uint64_t>(static_cast<double>(level_size) *
-                                  options.max_bytes_for_level_multiplier);
-      } else {
-        level_size = static_cast<uint64_t>(
-            static_cast<double>(level_size) *
-            options.max_bytes_for_level_multiplier *
-            MaxBytesMultiplerAdditional(options, cur_level));
-      }
-    }
-    cur_level++;
-  }
-  std::cerr << level << "+ " << options.db_paths[p].path << ' ' << level_size
-            << std::endl;
-  return level;
-}
 
 void empty_directory(std::filesystem::path dir_path) {
   for (auto &path : std::filesystem::directory_iterator(dir_path)) {
@@ -226,16 +136,27 @@ struct Update {
   std::vector<std::pair<int, std::vector<char>>> fields_to_update;
 };
 struct Env {
-  rocksdb::DB *db;
+  leveldb::DB *db;
   buffered_channel<std::pair<OpType, uint64_t>> *latency;
 };
+
+std::string GenPrismKey(const std::string& key) {
+  std::hash<std::string> hasher{};
+  char a[8] = {0};
+  size_t hv = hasher(key) % 40000000;
+  for (int i = 7; i >= 0; --i)
+    a[i] = hv >> (7 - i) * 8 & 255;
+  return std::string(a, 8);// + key;
+}
+
 void do_insert(Env &env, Insert insert) {
   auto guard = timers.timer(TimerType::kInsert).start();
-  rocksdb::Slice key_slice(insert.key);
+  std::string key = GenPrismKey(insert.key);
+  leveldb::Slice key_slice(key);
   std::vector<char> value = BorrowedValue::from(insert.fields).serialize();
-  rocksdb::Slice value_slice(value.data(), value.size());
+  leveldb::Slice value_slice(value.data(), std::min<size_t>(992, value.size()));
   auto put_start = rusty::time::Instant::now();
-  auto s = env.db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+  auto s = env.db->Put(leveldb::WriteOptions(), key_slice, value_slice);
   auto put_time = put_start.elapsed();
   if (!s.ok()) {
     std::string err = s.ToString();
@@ -246,12 +167,12 @@ void do_insert(Env &env, Insert insert) {
     env.latency->push(std::make_pair(OpType::INSERT, put_time.as_nanos()));
   }
 }
-std::string do_read(Env &env, Read read) {
+std::string do_read(Env &env, Read read, std::string& value) {
   auto guard = timers.timer(TimerType::kRead).start();
-  rocksdb::Slice key_slice(read.key);
-  std::string value;
+  std::string key = GenPrismKey(read.key);
+  leveldb::Slice key_slice(key);
   auto get_start = rusty::time::Instant::now();
-  auto s = env.db->Get(rocksdb::ReadOptions(), key_slice, &value);
+  auto s = env.db->Get(leveldb::ReadOptions(), key_slice, &value);
   auto get_time = get_start.elapsed();
   if (!s.ok()) {
     std::string err = s.ToString();
@@ -265,10 +186,10 @@ std::string do_read(Env &env, Read read) {
 }
 void do_update(Env &env, Update update) {
   auto update_start = rusty::time::Instant::now();
-  rocksdb::Slice key_slice(update.key);
+  leveldb::Slice key_slice(update.key);
   std::string value;
   auto get_start = rusty::time::Instant::now();
-  auto s = env.db->Get(rocksdb::ReadOptions(), key_slice, &value);
+  auto s = env.db->Get(leveldb::ReadOptions(), key_slice, &value);
   auto get_time = get_start.elapsed();
   if (!s.ok()) {
     std::string err = s.ToString();
@@ -281,9 +202,9 @@ void do_update(Env &env, Update update) {
     values.fields[field] = value;
   }
   std::vector<char> value_v = values.serialize();
-  auto value_slice = rocksdb::Slice(value_v.data(), value_v.size());
+  auto value_slice = leveldb::Slice(value_v.data(), value_v.size());
   auto put_start = rusty::time::Instant::now();
-  s = env.db->Put(rocksdb::WriteOptions(), key_slice, value_slice);
+  s = env.db->Put(leveldb::WriteOptions(), key_slice, value_slice);
   auto put_time = put_start.elapsed();
   if (!s.ok()) {
     std::string err = s.ToString();
@@ -300,7 +221,7 @@ void do_update(Env &env, Update update) {
 
 struct WorkEnv {
   FormatType type;
-  rocksdb::DB *db;
+  leveldb::DB *db;
   uint64_t switches;
   const std::filesystem::path &db_path;
   std::atomic<size_t> *progress;
@@ -338,11 +259,12 @@ void work(size_t id, WorkEnv work_env,
       .db = work_env.db,
       .latency = work_env.latency,
   };
+  std::string prismdb_read_value(4096, 'a');
   for (std::variant<Insert, Read, Update> op : *in) {
     match(
         op, [&](Insert &insert) { do_insert(env, std::move(insert)); },
         [&](Read &read) {
-          std::string value = do_read(env, std::move(read));
+          std::string value = do_read(env, std::move(read), prismdb_read_value);
           if (ans_out.has_value()) {
             switch (work_env.type) {
               case FormatType::Plain:
@@ -379,7 +301,7 @@ void print_latency(const std::filesystem::path &db_path,
   }
 }
 void work2(
-    FormatType type, rocksdb::DB *db, uint64_t switches,
+    FormatType type, leveldb::DB *db, uint64_t switches,
     const std::filesystem::path &db_path, std::atomic<size_t> *progress,
     size_t num_threads,
     void (*parse)(
@@ -458,7 +380,7 @@ void parse_plain(
     }
   }
 }
-void work_plain(rocksdb::DB *db, uint64_t switches,
+void work_plain(leveldb::DB *db, uint64_t switches,
                 const std::filesystem::path &db_path,
                 std::atomic<size_t> *progress, size_t num_threads) {
   work2(FormatType::Plain, db, switches, db_path, progress, num_threads,
@@ -537,7 +459,7 @@ void parse_ycsb(
       handle_table_name(std::cin);
       std::string key;
       std::cin >> key;
-      rocksdb::Slice key_slice(key);
+      leveldb::Slice key_slice(key);
       auto field_values = read_fields_insert(std::cin);
       timers.timer(TimerType::kInputInsert).add(input_start.elapsed());
 
@@ -548,7 +470,7 @@ void parse_ycsb(
       handle_table_name(std::cin);
       std::string key;
       std::cin >> key;
-      rocksdb::Slice key_slice(key);
+      leveldb::Slice key_slice(key);
       auto fields = read_fields_read(std::cin);
       timers.timer(TimerType::kInputRead).add(input_start.elapsed());
 
@@ -559,7 +481,7 @@ void parse_ycsb(
       handle_table_name(std::cin);
       std::string key;
       std::cin >> key;
-      rocksdb::Slice key_slice(key);
+      leveldb::Slice key_slice(key);
       auto updates = read_fields(std::cin);
       timers.timer(TimerType::kInputUpdate).add(input_start.elapsed());
 
@@ -572,35 +494,18 @@ void parse_ycsb(
     }
   }
 }
-void work_ycsb(rocksdb::DB *db, uint64_t switches,
+void work_ycsb(leveldb::DB *db, uint64_t switches,
                const std::filesystem::path &db_path,
                std::atomic<size_t> *progress, size_t num_threads) {
   work2(FormatType::YCSB, db, switches, db_path, progress, num_threads,
         parse_ycsb);
 }
 
-bool has_background_work(rocksdb::DB *db) {
-  uint64_t flush_pending;
-  uint64_t compaction_pending;
-  uint64_t flush_running;
-  uint64_t compaction_running;
-  bool ok = db->GetIntProperty(
-      rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.compaction-pending"),
-                          &compaction_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-flushes"),
-                          &flush_running);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-compactions"),
-                          &compaction_running);
-  rusty_assert(ok, "");
-  return flush_pending || compaction_pending || flush_running ||
-         compaction_running;
+bool has_background_work(leveldb::DB *db) {
+  return false;
 }
 
-void wait_for_background_work(rocksdb::DB *db) {
+void wait_for_background_work(leveldb::DB *db) {
   while (1) {
     if (has_background_work(db)) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -641,7 +546,7 @@ void bg_stat_printer(std::filesystem::path db_path,
 }
 
 int main(int argc, char **argv) {
-  rocksdb::Options options;
+  leveldb::Options options;
 
   namespace po = boost::program_options;
   po::options_description desc("Available options");
@@ -656,9 +561,6 @@ int main(int argc, char **argv) {
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
-  desc.add_options()(
-      "use_direct_reads",
-      po::value<bool>(&options.use_direct_reads)->default_value(true), "");
   desc.add_options()("db_path",
                      po::value<std::string>(&arg_db_path)->required(),
                      "Path to database");
@@ -676,6 +578,18 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
+  desc.add_options()("migrations_logging",
+                      po::value<bool>(&options.migration_logging)->required(), "Option migrations_logging");
+  desc.add_options()("read_logging",
+                      po::value<bool>(&options.read_logging)->required(), "Option read_logging");
+  desc.add_options()("migration_policy",
+                      po::value<int>(&options.migration_policy)->required(), "Option migration_policy");
+  desc.add_options()("migration_metric",
+                      po::value<int>(&options.migration_metric)->required(), "Option migration_metric");
+  desc.add_options()("migration_rand_range_num",
+                      po::value<int>(&options.migration_rand_range_num)->required(), "Option migration_rand_range_num");
+  desc.add_options()("migration_rand_range_size",
+                      po::value<int>(&options.migration_rand_range_size)->required(), "Option migration_rand_range_size");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -694,39 +608,35 @@ int main(int argc, char **argv) {
     in >> std::hex >> switches;
   }
 
-  std::filesystem::path db_path(arg_db_path);
-  options.db_paths = decode_db_paths(arg_db_paths);
-  options.statistics = rocksdb::CreateDBStatistics();
+  //PrismDB
+  options.env = leveldb::Env::Default();
+  options.block_cache = leveldb::NewLRUCache(cache_size);
+  options.filter_policy = leveldb::NewBloomFilterPolicy(10);
 
-  rocksdb::BlockBasedTableOptions table_options;
-  table_options.block_cache = rocksdb::NewLRUCache(cache_size);
-  table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-  options.table_factory.reset(
-      rocksdb::NewBlockBasedTableFactory(table_options));
+  std::filesystem::path db_path(arg_db_path);
+  // options.db_paths = decode_db_paths(arg_db_paths);
+  // options.statistics = leveldb::CreateDBStatistics();
+
+  // leveldb::BlockBasedTableOptions table_options;
+  // table_options.block_cache = leveldb::NewLRUCache(cache_size);
+  // table_options.filter_policy.reset(leveldb::NewBloomFilterPolicy(10, false));
+  // options.table_factory.reset(
+  //     leveldb::NewBlockBasedTableFactory(table_options));
 
   if (vm.count("cleanup")) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
-  }
-  int first_level_in_cd = predict_level_assignment(options);
-  {
-    std::ofstream out(db_path / "first-level-in-cd");
-    out << first_level_in_cd << std::endl;
+    // for (auto path : options.db_paths) {
+    //   empty_directory(path.path);
+    // }
+    options.create_if_missing = true;
   }
 
-  rocksdb::DB *db;
-  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
+  leveldb::DB *db;
+  auto s = leveldb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
-    std::cerr << "Creating database\n";
-    options.create_if_missing = true;
-    s = rocksdb::DB::Open(options, db_path.string(), &db);
-    if (!s.ok()) {
-      std::cerr << s.ToString() << std::endl;
-      return -1;
-    }
+    std::cerr << s.ToString() << std::endl;
+    return -1;
   }
 
   std::atomic<bool> should_stop(false);
@@ -767,36 +677,36 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  std::cerr << "rocksdb.block.cache.data.miss: "
-            << options.statistics->getTickerCount(
-                   rocksdb::BLOCK_CACHE_DATA_MISS)
-            << std::endl;
-  std::cerr << "rocksdb.block.cache.data.hit: "
-            << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-            << std::endl;
-  std::cerr << "rocksdb.bloom.filter.useful: "
-            << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-            << std::endl;
-  std::cerr << "rocksdb.bloom.filter.full.positive: "
-            << options.statistics->getTickerCount(
-                   rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-            << std::endl;
-  std::cerr << "rocksdb.memtable.hit: "
-            << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT)
-            << std::endl;
-  std::cerr << "rocksdb.l0.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L0)
-            << std::endl;
-  std::cerr << "rocksdb.l1.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L1)
-            << std::endl;
-  std::cerr << "rocksdb.rocksdb.l2andup.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
-            << std::endl;
+  // std::cerr << "rocksdb.block.cache.data.miss: "
+  //           << options.statistics->getTickerCount(
+  //                  leveldb::BLOCK_CACHE_DATA_MISS)
+  //           << std::endl;
+  // std::cerr << "rocksdb.block.cache.data.hit: "
+  //           << options.statistics->getTickerCount(leveldb::BLOCK_CACHE_DATA_HIT)
+  //           << std::endl;
+  // std::cerr << "rocksdb.bloom.filter.useful: "
+  //           << options.statistics->getTickerCount(leveldb::BLOOM_FILTER_USEFUL)
+  //           << std::endl;
+  // std::cerr << "rocksdb.bloom.filter.full.positive: "
+  //           << options.statistics->getTickerCount(
+  //                  leveldb::BLOOM_FILTER_FULL_POSITIVE)
+  //           << std::endl;
+  // std::cerr << "rocksdb.memtable.hit: "
+  //           << options.statistics->getTickerCount(leveldb::MEMTABLE_HIT)
+  //           << std::endl;
+  // std::cerr << "rocksdb.l0.hit: "
+  //           << options.statistics->getTickerCount(leveldb::GET_HIT_L0)
+  //           << std::endl;
+  // std::cerr << "rocksdb.l1.hit: "
+  //           << options.statistics->getTickerCount(leveldb::GET_HIT_L1)
+  //           << std::endl;
+  // std::cerr << "rocksdb.rocksdb.l2andup.hit: "
+  //           << options.statistics->getTickerCount(leveldb::GET_HIT_L2_AND_UP)
+  //           << std::endl;
 
-  std::string rocksdb_stats;
-  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
-  std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
+  // std::string rocksdb_stats;
+  // rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
+  // std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
   std::vector<counter_timer::CountTime> timers_status;
   const auto &ts = timers.timers();

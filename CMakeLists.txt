@@ -19,7 +19,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC include)
 target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
-		rocksdb
+		leveldb
+		tbb
+		snappy
 		pthread
 		boost_fiber
 	PRIVATE
@@ -27,9 +29,3 @@ target_link_libraries(${PROJECT_NAME}
 		boost_program_options
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
-
-install(TARGETS ${RPOJECT_NAME} DESTINATION "."
-	RUNTIME DESTINATION bin
-	ARCHIVE DESTINATION lib
-	LIBRARY DESTINATION lib
-)
