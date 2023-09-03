@@ -2,6 +2,7 @@
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
+#include <rocksdb/cache.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
@@ -62,6 +63,24 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
     rusty_assert(in.get() == '{', "Invalid db_paths");
   }
   rusty_assert(c == '}', "Invalid db_paths");
+  return ret;
+}
+
+std::vector<double> decode_mutant_cost(std::string costs) {
+  std::istringstream in(costs);
+  std::vector<double> ret;
+  rusty_assert(in.get() == '{', "Invalid costs");
+  char c;
+  while (1) {
+    std::string path;
+    double cost;
+    in >> cost;
+    std::cerr << "cost: " << cost << std::endl;
+    ret.emplace_back(cost);
+    c = static_cast<char>(in.get());
+    if (c != ',') break;
+  }
+  rusty_assert(c == '}', "Invalid costs");
   return ret;
 }
 
@@ -648,23 +667,31 @@ int main(int argc, char **argv) {
   std::string format;
   std::string arg_db_path;
   std::string arg_db_paths;
+  std::string arg_costs;
   size_t cache_size;
   std::string arg_switches;
   size_t num_threads;
+  double target_cost;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
-  desc.add_options()(
-      "use_direct_reads",
-      po::value<bool>(&options.use_direct_reads)->default_value(true), "");
+  // desc.add_options()(
+  //     "use_direct_reads",
+  //     po::value<bool>(&options.use_direct_reads)->default_value(true), "");
   desc.add_options()("db_path",
                      po::value<std::string>(&arg_db_path)->required(),
                      "Path to database");
   desc.add_options()(
       "db_paths", po::value<std::string>(&arg_db_paths)->required(),
-      "For example: \"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\"");
+      "For example: \"{{/tmp/sd,100000000},{/tmp/cd,1000000000}}\", the second one is the slow device.");
+  desc.add_options()(
+      "costs", po::value<std::string>(&arg_costs)->required(),
+      "For example: \"{0.528, 0.049}\"");
+  desc.add_options()(
+      "target_cost", po::value<double>(&target_cost)->required(),
+      "Target cost of Mutant.");
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
@@ -694,15 +721,40 @@ int main(int argc, char **argv) {
     in >> std::hex >> switches;
   }
 
+  // Set 7 threads for compaction, 1 thread for flush.
+  options.IncreaseParallelism(8);
+
+  options.OptimizeLevelStyleCompaction();
+  options.compaction_readahead_size = 2 * 1024 * 1024;
+
   std::filesystem::path db_path(arg_db_path);
   options.db_paths = decode_db_paths(arg_db_paths);
+  rusty_assert(options.db_paths.size() == 2, "Must have exactly 2 devices.");
+  // Mutant options
+  options.mutant_options.calc_sst_placement = true;
+  options.mutant_options.migrate_sstables = true;
+  options.mutant_options.stg_cost_list = decode_mutant_cost(arg_costs);
+  options.mutant_options.stg_cost_slo = target_cost;
+  options.mutant_options.stg_cost_slo_epsilon = 0.05;
+  options.mutant_options.slow_dev = options.db_paths[1].path;
+  options.mutant_options.monitor_temp = true;
+  options.mutant_options.fast_dev_size = options.db_paths[0].target_size;
+  options.compression = rocksdb::kNoCompression;
+
+  options.min_write_buffer_number_to_merge = 1;
+  options.max_write_buffer_number = 2;
+
   options.statistics = rocksdb::CreateDBStatistics();
 
-  rocksdb::BlockBasedTableOptions table_options;
-  table_options.block_cache = rocksdb::NewLRUCache(cache_size);
-  table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-  options.table_factory.reset(
-      rocksdb::NewBlockBasedTableFactory(table_options));
+  // Mutant set table options in DB::Open.
+  // rocksdb::BlockBasedTableOptions table_options;
+  // table_options.block_cache = rocksdb::NewLRUCache(cache_size);
+  // table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+  // From mutant
+  // table_options.pin_l0_filter_and_index_blocks_in_cache = true;
+  // table_options.cache_index_and_filter_blocks = true;
+  // options.table_factory.reset(
+  //     rocksdb::NewBlockBasedTableFactory(table_options));
 
   if (vm.count("cleanup")) {
     std::cerr << "Emptying directories\n";
@@ -717,16 +769,15 @@ int main(int argc, char **argv) {
     out << first_level_in_cd << std::endl;
   }
 
+  if (vm.count("cleanup")) {
+    options.create_if_missing = true;
+  }
+  
   rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
-    std::cerr << "Creating database\n";
-    options.create_if_missing = true;
-    s = rocksdb::DB::Open(options, db_path.string(), &db);
-    if (!s.ok()) {
-      std::cerr << s.ToString() << std::endl;
-      return -1;
-    }
+    std::cerr << s.ToString() << std::endl;
+    return -1;
   }
 
   std::atomic<bool> should_stop(false);
@@ -777,10 +828,11 @@ int main(int argc, char **argv) {
   std::cerr << "rocksdb.bloom.filter.useful: "
             << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
             << std::endl;
-  std::cerr << "rocksdb.bloom.filter.full.positive: "
-            << options.statistics->getTickerCount(
-                   rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-            << std::endl;
+  // No such option.
+  // std::cerr << "rocksdb.bloom.filter.full.positive: "
+  //           << options.statistics->getTickerCount(
+  //                  rocksdb::BLOOM_FILTER_FULL_POSITIVE)
+  //           << std::endl;
   std::cerr << "rocksdb.memtable.hit: "
             << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT)
             << std::endl;
