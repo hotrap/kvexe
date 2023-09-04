@@ -900,7 +900,7 @@ int main(int argc, char **argv) {
   } else {
     key_hit_level_chan = nullptr;
   }
-  std::thread key_hit_level_printer(key_hit_level_print, viscnts_path,
+  std::thread key_hit_level_printer(key_hit_level_print, db_path,
                                     key_hit_level_chan);
 
   // options.compaction_router = new RouterTrivial;
