@@ -711,6 +711,7 @@ int main(int argc, char **argv) {
       empty_directory(path.path);
     }
   }
+  options.max_bytes_for_level_multiplier_additional = std::vector<int>({1, 2});
   int first_level_in_cd = predict_level_assignment(options);
   {
     std::ofstream out(db_path / "first-level-in-cd");
