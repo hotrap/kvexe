@@ -244,14 +244,6 @@ class BlockChannel {
     return ret;
   }
 
-  void PutBlock(std::vector<T>&& block) {
-    std::unique_lock lck(m_);
-    q_.push(std::move(block));
-    if (reader_waiting_) {
-      cv_r_.notify_one();
-    }
-  }
-
   void PutBlock(const std::vector<T>& block) {
     std::unique_lock lck(m_);
     q_.push(block);
@@ -290,6 +282,7 @@ class BlockChannelClient {
   }
 
   void Flush() {
+    if (!opnum_) return;
     channel_->PutBlock(std::vector<T>(opblock_.begin(), opblock_.begin() + opnum_));
     opnum_ = 0;
   }
@@ -305,7 +298,6 @@ struct WorkOptions {
   uint64_t switches;
   std::filesystem::path db_path;
   std::atomic<size_t> *progress;
-  BlockChannelClient<std::pair<OpType, uint64_t>> *latency;
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
@@ -315,7 +307,6 @@ struct WorkerEnv {
   rocksdb::DB *db;
   rocksdb::ReadOptions read_options;
   rocksdb::WriteOptions write_options;
-  BlockChannelClient<std::pair<OpType, uint64_t>> *latency;
   bool ignore_notfound{false};
 };
 
@@ -323,6 +314,20 @@ void print_ans(std::ofstream &out, std::string value) {
   out << value << '\n';
 }
 
+void print_latency(std::ofstream &out, OpType op, uint64_t nanos) {
+  switch (op) {
+    case OpType::INSERT:
+      out << "INSERT";
+      break;
+    case OpType::READ:
+      out << "READ";
+      break;
+    case OpType::UPDATE:
+      out << "UPDATE";
+      break;
+  }
+  out << ' ' << nanos << '\n';
+}
 
 class Tester {
   WorkOptions options_;
@@ -330,9 +335,11 @@ class Tester {
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
 
+  size_t parse_counts_{0};
+  std::atomic<size_t> notfound_counts_{0};
+
  public:
   Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads) {
-    env_.latency = options_.latency;
     env_.db = options_.db;
     env_.read_options = rocksdb::ReadOptions();
     env_.write_options = rocksdb::WriteOptions();
@@ -353,6 +360,14 @@ class Tester {
     for (auto& t : threads) t.join();
   }
 
+  size_t GetOpParseCounts() const {
+    return parse_counts_;
+  }
+
+  size_t GetNotFoundCounts() const {
+    return notfound_counts_.load(std::memory_order_relaxed);
+  }
+
  private:
   void work(size_t id, BlockChannel<Operation>& chan) {
     std::optional<std::ofstream> ans_out =
@@ -360,75 +375,87 @@ class Tester {
             ? std::optional<std::ofstream>(options_.db_path /
                                           ("ans_" + std::to_string(id)))
             : std::nullopt;
+
+    std::optional<std::ofstream> latency_out =
+        options_.switches & MASK_LATENCY
+            ? std::optional<std::ofstream>(options_.db_path /
+                                          ("latency_" + std::to_string(id)))
+            : std::nullopt;
     while (true) {
       auto block = chan.GetBlock();
       if (block.empty()) {
         break;
       }
+      size_t local_notfound_counts = 0;
       for (Operation& op : block) {
         if (op.type == OpType::INSERT) {
-          do_insert(env_, op);
+          do_insert(latency_out, op);
         } else if (op.type == OpType::READ) {
-          auto value = do_read(env_, op);
+          auto value = do_read(latency_out, op);
           if (ans_out) {
             print_ans(ans_out.value(), value);
           }
+          if (value == "") {
+            local_notfound_counts++;
+          }
         } else if (op.type == OpType::UPDATE) {
-          do_update(env_, op);
+          do_update(latency_out, op);
         }
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
+      notfound_counts_ += local_notfound_counts;
     }
   }
 
   
-  void do_insert(WorkerEnv &env, const Operation& insert) {
+  void do_insert(std::optional<std::ofstream>& latency, const Operation& insert) {
     auto guard = timers.timer(TimerType::kInsert).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env.db->Put(env.write_options, insert.key, rocksdb::Slice(insert.value.data(), insert.value.size()));
+    auto s = env_.db->Put(env_.write_options, insert.key, rocksdb::Slice(insert.value.data(), insert.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
       rusty_panic("INSERT failed with error: %s\n", err.c_str());
     }
     timers.timer(TimerType::kPut).add(put_time);
-    if (env.latency != nullptr) {
-      env.latency->Push(std::make_pair(OpType::INSERT, put_time.as_nanos()));
+    if (latency) {
+      print_latency(latency.value(), OpType::INSERT, put_time.as_nanos());
     }
   }
 
-  std::string do_read(WorkerEnv &env, const Operation& read) {
+  std::string do_read(std::optional<std::ofstream>& latency, const Operation& read) {
     auto guard = timers.timer(TimerType::kRead).start();
     std::string value;
     auto get_start = rusty::time::Instant::now();
-    auto s = env.db->Get(env.read_options, read.key, &value);
+    auto s = env_.db->Get(env_.read_options, read.key, &value);
     auto get_time = get_start.elapsed();
     if (!s.ok()) {
-      if (s.code() == rocksdb::Status::kNotFound && env.ignore_notfound) {
-        return "NotFound";
+      if (s.code() == rocksdb::Status::kNotFound && env_.ignore_notfound) {
+        value = "";
+      } else {
+        std::string err = s.ToString();
+        rusty_panic("GET failed with error: %s\n", err.c_str());
       }
-      std::string err = s.ToString();
-      rusty_panic("GET failed with error: %s\n", err.c_str());
     }
     timers.timer(TimerType::kGet).add(get_time);
-    if (env.latency) {
-      env.latency->Push(std::make_pair(OpType::READ, get_time.as_nanos()));
+    if (latency) {
+      print_latency(latency.value(), OpType::READ, get_time.as_nanos());
     }
     return value;
   }
 
-  void do_update(WorkerEnv &env, const Operation& update) {
+  void do_update(std::optional<std::ofstream>& latency, const Operation& update) {
     auto guard = timers.timer(TimerType::kUpdate).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env.db->Put(env.write_options, update.key, rocksdb::Slice(update.value.data(), update.value.size()));
+    auto s = env_.db->Put(env_.write_options, update.key, rocksdb::Slice(update.value.data(), update.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
       rusty_panic("Update failed with error: %s\n", err.c_str());
     }
     timers.timer(TimerType::kUpdate).add(put_time);
-    if (env.latency != nullptr) {
-      env.latency->Push(std::make_pair(OpType::UPDATE, put_time.as_nanos()));
+    if (latency) {
+      print_latency(latency.value(), OpType::UPDATE, put_time.as_nanos());
     }
   }
 
@@ -437,7 +464,7 @@ class Tester {
     if (options_.enable_fast_process) {
       opblocks.emplace_back(&channel_, options_.opblock_size);
     } else {
-      for (int i = 0; i < options_.num_threads; i++) {
+      for (size_t i = 0; i < options_.num_threads; i++) {
         opblocks.emplace_back(&channel_for_workers_[i], options_.opblock_size);
       }
     }
@@ -451,25 +478,47 @@ class Tester {
         break;
       }
       if (op == "INSERT") {
-        handle_table_name(std::cin);
+        if (options_.format_type == FormatType::YCSB) { 
+          handle_table_name(std::cin);
+        }
         std::string key;
         std::cin >> key;
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
+        if (options_.format_type == FormatType::Plain) {
+          rusty_assert(std::cin.get() == ' ');
+          char c;
+          std::vector<char> value;
+          while ((c = std::cin.get()) != '\n' && c != EOF) {
+            value.push_back(c);
+          }
+          opblocks[i].Push(Operation(OpType::INSERT, std::move(key), std::move(value)));
+        } else {
+          opblocks[i].Push(Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
+        }
+        parse_counts_++;
       } else if (op == "READ") {
-        handle_table_name(std::cin);
         std::string key;
-        std::cin >> key;
-        read_fields_read(std::cin);
+        if (options_.format_type == FormatType::YCSB) {        
+          handle_table_name(std::cin);
+          std::cin >> key;
+          read_fields_read(std::cin);
+        } else {
+          std::cin >> key;
+        }
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
         opblocks[i].Push(Operation(OpType::READ, std::move(key), {}));
+        parse_counts_++;
 
       } else if (op == "UPDATE") {
+        if (options_.format_type == FormatType::Plain) {
+          rusty_panic("UPDATE in plain format is not supported yet\n");
+        }
         handle_table_name(std::cin);
         std::string key;
         std::cin >> key;
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
         opblocks[i].Push(Operation(OpType::UPDATE, std::move(key), read_value(std::cin)));
+        parse_counts_++;
         
       } else {
         std::cerr << "Ignore line: " << op;
@@ -757,9 +806,11 @@ int main(int argc, char **argv) {
   double arg_max_hot_set_size;
   std::string arg_switches;
   size_t num_threads;
+  size_t max_background_jobs;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("enable_fast_process", "Enable fast processing method.");
+  desc.add_options()("max_background_jobs", po::value<size_t>(&max_background_jobs)->default_value(1), "max_background_jobs");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
@@ -818,6 +869,7 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
+  options.max_background_jobs = max_background_jobs;
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
@@ -886,18 +938,122 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  BlockChannel<std::pair<OpType, uint64_t>> latency_chan;
-  auto latency_chan_client = std::make_unique<BlockChannelClient<std::pair<OpType, uint64_t>>>(&latency_chan, 65536);
-
+  // Option for test
   WorkOptions work_option;
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;
   work_option.progress = &progress;
-  work_option.latency = switches & MASK_LATENCY ? latency_chan_client.get() : nullptr;
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
+  work_option.format_type = format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   Tester tester(work_option);
+
+  auto stats_print_func = [&] (std::ostream& log) {
+    log << "Timestamp: " << timestamp_ns() << "\n";
+    log << "rocksdb.block.cache.data.miss: "
+        << options.statistics->getTickerCount(
+              rocksdb::BLOCK_CACHE_DATA_MISS)
+        << "\n";
+    log << "rocksdb.block.cache.data.hit: "
+        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
+        << "\n";
+    log << "rocksdb.bloom.filter.useful: "
+        << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
+        << "\n";
+    log << "rocksdb.bloom.filter.full.positive: "
+        << options.statistics->getTickerCount(
+              rocksdb::BLOOM_FILTER_FULL_POSITIVE)
+        << "\n";
+    log << "rocksdb.memtable.hit: "
+        << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT)
+        << "\n";
+    log << "rocksdb.l0.hit: "
+        << options.statistics->getTickerCount(rocksdb::GET_HIT_L0)
+        << "\n";
+    log << "rocksdb.l1.hit: "
+        << options.statistics->getTickerCount(rocksdb::GET_HIT_L1)
+        << "\n";
+    log << "rocksdb.rocksdb.l2andup.hit: "
+        << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
+        << "\n";
+
+    /* Statistics of router */
+    if (router) {
+      log << "New iterator count: " << router->new_iter_cnt() << "\n";
+      if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+        auto counters = router->hit_count();
+        assert(counters.size() == 2);
+        log << "Access hot per tier: " << counters[0] << ' ' << counters[1] << "\n";
+      }
+
+      size_t num_tiers = per_tier_timers.len();
+      for (size_t tier = 0; tier < num_tiers; ++tier) {
+        log << "Tier timers: {tier: " << tier << ", timers: [\n";
+        const auto &timers = per_tier_timers.timers(tier);
+        size_t num_types = timers.len();
+        for (size_t type = 0; type < num_types; ++type) {
+          const auto &timer = timers.timer(type);
+          log << per_tier_timer_names[type]
+                    << ": "
+                      "count "
+                    << timer.count()
+                    << ", "
+                      "total "
+                    << timer.time().as_nanos() << "ns,\n";
+        }
+        log << "]},\n";
+      }
+      log << "end===\n";
+
+      size_t num_levels = per_level_timers.len();
+      for (size_t level = 0; level < num_levels; ++level) {
+        log << "Level timers: {level: " << level << ", timers: [\n";
+        const auto &timers = per_level_timers.timers(level);
+        size_t num_types = timers.len();
+        for (size_t type = 0; type < num_types; ++type) {
+          const auto &timer = timers.timer(type);
+          log << per_level_timer_names[type]
+              << ": "
+                "count "
+              << timer.count()
+              << ", "
+                "total "
+              << timer.time().as_nanos() << "ns,\n";
+        }
+        log << "]},\n";
+      }
+      log << "end===\n";
+    }
+
+    /* Timer data */
+    std::vector<counter_timer::CountTime> timers_status;
+    const auto &ts = timers.timers();
+    size_t num_types = ts.len();
+    for (size_t i = 0; i < num_types; ++i) {
+      const auto &timer = ts.timer(i);
+      uint64_t count = timer.count();
+      rusty::time::Duration time = timer.time();
+      timers_status.push_back(counter_timer::CountTime{count, time});
+      log << timer_names[i] << ": count " << count << ", total "
+          << time.as_nanos() << "ns\n";
+    }
+
+    /* Operation counts*/
+    log << "operation counts: " << tester.GetOpParseCounts() << "\n";
+    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+    log << "stat end===" << std::endl;
+  };
+
+  auto period_print_stat = [&] () {
+    std::ofstream period_stats(db_path / "period_stats");
+    while(!should_stop.load()) {
+      stats_print_func(period_stats);
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+    }
+  };
+
+  std::thread period_print_thread(period_print_stat);
 
   auto start = std::chrono::steady_clock::now();
   tester.Test();
@@ -907,9 +1063,6 @@ int main(int argc, char **argv) {
                        .count() /
                    1e9
             << " second(s) for work\n";
-  
-  latency_chan_client->Flush();
-  latency_chan_client->Finish();
 
   start = std::chrono::steady_clock::now();
   wait_for_background_work(db);
@@ -921,110 +1074,17 @@ int main(int argc, char **argv) {
             << " second(s) waiting for background work\n";
 
   should_stop.store(true, std::memory_order_relaxed);
-
-  std::cerr << "rocksdb.block.cache.data.miss: "
-            << options.statistics->getTickerCount(
-                   rocksdb::BLOCK_CACHE_DATA_MISS)
-            << std::endl;
-  std::cerr << "rocksdb.block.cache.data.hit: "
-            << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-            << std::endl;
-  std::cerr << "rocksdb.bloom.filter.useful: "
-            << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-            << std::endl;
-  std::cerr << "rocksdb.bloom.filter.full.positive: "
-            << options.statistics->getTickerCount(
-                   rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-            << std::endl;
-  std::cerr << "rocksdb.memtable.hit: "
-            << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT)
-            << std::endl;
-  std::cerr << "rocksdb.l0.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L0)
-            << std::endl;
-  std::cerr << "rocksdb.l1.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L1)
-            << std::endl;
-  std::cerr << "rocksdb.rocksdb.l2andup.hit: "
-            << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
-            << std::endl;
+  
+  stats_print_func(std::cerr);
 
   std::string rocksdb_stats;
   rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
   std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
-  if (router) {
-    std::cerr << "New iterator count: " << router->new_iter_cnt() << std::endl;
-    if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-      auto counters = router->hit_count();
-      assert(counters.size() == 2);
-      std::cerr << "Access hot per tier: " << counters[0] << ' ' << counters[1]
-                << std::endl;
-    }
-
-    size_t num_tiers = per_tier_timers.len();
-    for (size_t tier = 0; tier < num_tiers; ++tier) {
-      std::cerr << "{tier: " << tier << ", timers: [\n";
-      const auto &timers = per_tier_timers.timers(tier);
-      size_t num_types = timers.len();
-      for (size_t type = 0; type < num_types; ++type) {
-        const auto &timer = timers.timer(type);
-        std::cerr << per_tier_timer_names[type]
-                  << ": "
-                     "count "
-                  << timer.count()
-                  << ", "
-                     "total "
-                  << timer.time().as_nanos() << "ns,\n";
-      }
-      std::cerr << "]},";
-    }
-    std::cerr << std::endl;
-
-    size_t num_levels = per_level_timers.len();
-    for (size_t level = 0; level < num_levels; ++level) {
-      std::cerr << "{level: " << level << ", timers: [\n";
-      const auto &timers = per_level_timers.timers(level);
-      size_t num_types = timers.len();
-      for (size_t type = 0; type < num_types; ++type) {
-        const auto &timer = timers.timer(type);
-        std::cerr << per_level_timer_names[type]
-                  << ": "
-                     "count "
-                  << timer.count()
-                  << ", "
-                     "total "
-                  << timer.time().as_nanos() << "ns,\n";
-      }
-      std::cerr << "]},";
-    }
-    std::cerr << std::endl;
-  }
-
-  std::vector<counter_timer::CountTime> timers_status;
-  const auto &ts = timers.timers();
-  size_t num_types = ts.len();
-  for (size_t i = 0; i < num_types; ++i) {
-    const auto &timer = ts.timer(i);
-    uint64_t count = timer.count();
-    rusty::time::Duration time = timer.time();
-    timers_status.push_back(counter_timer::CountTime{count, time});
-    std::cerr << timer_names[i] << ": count " << count << ", total "
-              << time.as_nanos() << "ns\n";
-  }
-  std::cerr << "In summary: [\n";
-  counter_timer::CountTime input_time =
-      timers_status[static_cast<size_t>(TimerType::kInputOperation)] +
-      timers_status[static_cast<size_t>(TimerType::kInputInsert)] +
-      timers_status[static_cast<size_t>(TimerType::kInputRead)] +
-      timers_status[static_cast<size_t>(TimerType::kInputUpdate)];
-  std::cerr << "\tInput: count " << input_time.count << ", total "
-            << input_time.time.as_nanos() << "ns\n";
-  std::cerr << "]\n";
-
   if (key_hit_level_chan) key_hit_level_chan->close();
   key_hit_level_printer.join();
   stat_printer.join();
+  period_print_thread.join();
   delete db;
   delete router;
 
