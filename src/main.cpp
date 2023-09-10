@@ -195,7 +195,7 @@ class BlockChannelClient {
 
 struct WorkOptions {
   FormatType format_type;
-  rocksdb::DB *db;
+  leveldb::DB *db;
   uint64_t switches;
   std::filesystem::path db_path;
   std::atomic<size_t> *progress;
@@ -203,12 +203,13 @@ struct WorkOptions {
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
+  size_t num_keys;
 };
 
 struct WorkerEnv {
-  rocksdb::DB *db;
-  rocksdb::ReadOptions read_options;
-  rocksdb::WriteOptions write_options;
+  leveldb::DB *db;
+  leveldb::ReadOptions read_options;
+  leveldb::WriteOptions write_options;
   BlockChannelClient<std::pair<OpType, uint64_t>> *latency;
   bool ignore_notfound{false};
 };
@@ -228,8 +229,8 @@ class Tester {
   Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads) {
     env_.latency = options_.latency;
     env_.db = options_.db;
-    env_.read_options = rocksdb::ReadOptions();
-    env_.write_options = rocksdb::WriteOptions();
+    env_.read_options = leveldb::ReadOptions();
+    env_.write_options = leveldb::WriteOptions();
     if (options_.enable_fast_process) {
       env_.ignore_notfound = true;
     }
@@ -279,7 +280,7 @@ class Tester {
   void do_insert(WorkerEnv &env, const Operation& insert) {
     auto guard = timers.timer(TimerType::kInsert).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env.db->Put(env.write_options, insert.key, rocksdb::Slice(insert.value.data(), insert.value.size()));
+    auto s = env.db->Put(env.write_options, insert.key, leveldb::Slice(insert.value.data(), insert.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
@@ -298,7 +299,7 @@ class Tester {
     auto s = env.db->Get(env.read_options, read.key, &value);
     auto get_time = get_start.elapsed();
     if (!s.ok()) {
-      if (s.code() == rocksdb::Status::kNotFound && env.ignore_notfound) {
+      if (s.IsNotFound() && env.ignore_notfound) {
         return "NotFound";
       }
       std::string err = s.ToString();
@@ -314,7 +315,7 @@ class Tester {
   void do_update(WorkerEnv &env, const Operation& update) {
     auto guard = timers.timer(TimerType::kUpdate).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env.db->Put(env.write_options, update.key, rocksdb::Slice(update.value.data(), update.value.size()));
+    auto s = env.db->Put(env.write_options, update.key, leveldb::Slice(update.value.data(), update.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
@@ -324,6 +325,15 @@ class Tester {
     if (env.latency != nullptr) {
       env.latency->Push(std::make_pair(OpType::UPDATE, put_time.as_nanos()));
     }
+  }
+
+  std::string gen_prism_key(const std::string& key) {
+    std::hash<std::string> hasher;
+    char a[8] = {0};
+    size_t hv = hasher(key) % options_.num_keys;
+    for (int i = 7; i >= 0; --i)
+      a[i] = hv >> (7 - i) * 8 & 255;
+    return std::string(a, 8);
   }
 
   void parse() {
@@ -349,21 +359,22 @@ class Tester {
         std::string key;
         std::cin >> key;
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
+        opblocks[i].Push(Operation(OpType::INSERT, gen_prism_key(key), read_value(std::cin)));
+
       } else if (op == "READ") {
         handle_table_name(std::cin);
         std::string key;
         std::cin >> key;
         read_fields_read(std::cin);
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::READ, std::move(key), {}));
+        opblocks[i].Push(Operation(OpType::READ, gen_prism_key(key), {}));
 
       } else if (op == "UPDATE") {
         handle_table_name(std::cin);
         std::string key;
         std::cin >> key;
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::UPDATE, std::move(key), read_value(std::cin)));
+        opblocks[i].Push(Operation(OpType::UPDATE, gen_prism_key(key), read_value(std::cin)));
         
       } else {
         std::cerr << "Ignore line: " << op;
@@ -418,7 +429,6 @@ class Tester {
       rusty_assert(fields[i].first == i);
       ret.insert(ret.end(), fields[i].second.begin(), fields[i].second.end());
     }
-    return ret;
   }
 
   void read_fields_read(std::istream &in) {
@@ -491,6 +501,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
   std::string arg_switches;
   size_t num_threads;
+  size_t num_keys;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("enable_fast_process", "Enable fast processing method.");
@@ -514,6 +525,9 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
+  desc.add_options()("num_keys",
+                     po::value<size_t>(&num_keys)->required(),
+                     "The number of keys.\n");
   desc.add_options()("migrations_logging",
                       po::value<bool>(&options.migration_logging)->required(), "Option migrations_logging");
   desc.add_options()("read_logging",
@@ -598,6 +612,7 @@ int main(int argc, char **argv) {
   work_option.latency = switches & MASK_LATENCY ? latency_chan_client.get() : nullptr;
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
+  work_option.num_keys = num_keys;
   Tester tester(work_option);
 
   auto start = std::chrono::steady_clock::now();
@@ -623,36 +638,36 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  // std::cerr << "rocksdb.block.cache.data.miss: "
+  // std::cerr << "leveldb.block.cache.data.miss: "
   //           << options.statistics->getTickerCount(
   //                  leveldb::BLOCK_CACHE_DATA_MISS)
   //           << std::endl;
-  // std::cerr << "rocksdb.block.cache.data.hit: "
+  // std::cerr << "leveldb.block.cache.data.hit: "
   //           << options.statistics->getTickerCount(leveldb::BLOCK_CACHE_DATA_HIT)
   //           << std::endl;
-  // std::cerr << "rocksdb.bloom.filter.useful: "
+  // std::cerr << "leveldb.bloom.filter.useful: "
   //           << options.statistics->getTickerCount(leveldb::BLOOM_FILTER_USEFUL)
   //           << std::endl;
-  // std::cerr << "rocksdb.bloom.filter.full.positive: "
+  // std::cerr << "leveldb.bloom.filter.full.positive: "
   //           << options.statistics->getTickerCount(
   //                  leveldb::BLOOM_FILTER_FULL_POSITIVE)
   //           << std::endl;
-  // std::cerr << "rocksdb.memtable.hit: "
+  // std::cerr << "leveldb.memtable.hit: "
   //           << options.statistics->getTickerCount(leveldb::MEMTABLE_HIT)
   //           << std::endl;
-  // std::cerr << "rocksdb.l0.hit: "
+  // std::cerr << "leveldb.l0.hit: "
   //           << options.statistics->getTickerCount(leveldb::GET_HIT_L0)
   //           << std::endl;
-  // std::cerr << "rocksdb.l1.hit: "
+  // std::cerr << "leveldb.l1.hit: "
   //           << options.statistics->getTickerCount(leveldb::GET_HIT_L1)
   //           << std::endl;
-  // std::cerr << "rocksdb.rocksdb.l2andup.hit: "
+  // std::cerr << "leveldb.leveldb.l2andup.hit: "
   //           << options.statistics->getTickerCount(leveldb::GET_HIT_L2_AND_UP)
   //           << std::endl;
 
-  // std::string rocksdb_stats;
-  // rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
-  // std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
+  // std::string leveldb_stats;
+  // rusty_assert(db->GetProperty("leveldb.stats", &leveldb_stats), "");
+  // std::ofstream(db_path / "leveldb-stats.txt") << leveldb_stats;
 
   std::vector<counter_timer::CountTime> timers_status;
   const auto &ts = timers.timers();
