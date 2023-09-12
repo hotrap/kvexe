@@ -209,6 +209,41 @@ int main(int argc, char **argv) {
   work_option.format_type = format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   Tester tester(work_option);
 
+  auto stats_print_func = [&] (std::ostream& log) {
+    log << "Timestamp: " << timestamp_ns() << "\n";
+    std::string leveldb_stats;
+    db->GetProperty("leveldb.stats", &leveldb_stats);
+    log << "LevelDB stats: " << leveldb_stats << "\n";
+    log << "Timers: \n";
+    std::vector<counter_timer::CountTime> timers_status;
+    const auto &ts = timers.timers();
+    size_t num_types = ts.len();
+    for (size_t i = 0; i < num_types; ++i) {
+      const auto &timer = ts.timer(i);
+      uint64_t count = timer.count();
+      rusty::time::Duration time = timer.time();
+      timers_status.push_back(counter_timer::CountTime{count, time});
+      std::cerr << timer_names[i] << ": count " << count << ", total "
+                << time.as_nanos() << "ns\n";
+    }
+    log << "end===\n";
+    db->ReportMigrationStats(log);
+    /* Operation counts*/
+    log << "operation counts: " << tester.GetOpParseCounts() << "\n";
+    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+    log << "stat end===" << std::endl;
+  };
+
+  auto period_print_stat = [&] () {
+    std::ofstream period_stats(db_path / "period_stats");
+    while(!should_stop.load()) {
+      stats_print_func(period_stats);
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+    }
+  };
+
+  std::thread period_print_thread(period_print_stat);
+
   auto start = std::chrono::steady_clock::now();
   tester.Test();
   auto end = std::chrono::steady_clock::now();
@@ -228,40 +263,6 @@ int main(int argc, char **argv) {
             << " second(s) waiting for background work\n";
 
   should_stop.store(true, std::memory_order_relaxed);
-
-  auto stats_print_func = [&] (std::ostream& log) {
-    log << "Timestamp: " << timestamp_ns() << "\n";
-    std::string leveldb_stats;
-    db->GetProperty("leveldb.stats", &leveldb_stats);
-    log << "LevelDB stats: " << leveldb_stats << "\n";
-    log << "Timers: \n";
-    std::vector<counter_timer::CountTime> timers_status;
-    const auto &ts = timers.timers();
-    size_t num_types = ts.len();
-    for (size_t i = 0; i < num_types; ++i) {
-      const auto &timer = ts.timer(i);
-      uint64_t count = timer.count();
-      rusty::time::Duration time = timer.time();
-      timers_status.push_back(counter_timer::CountTime{count, time});
-      std::cerr << timer_names[i] << ": count " << count << ", total "
-                << time.as_nanos() << "ns\n";
-    }
-    log << "end===\n";
-    /* Operation counts*/
-    log << "operation counts: " << tester.GetOpParseCounts() << "\n";
-    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
-    log << "stat end===" << std::endl;
-  };
-
-  auto period_print_stat = [&] () {
-    std::ofstream period_stats(db_path / "period_stats");
-    while(!should_stop.load()) {
-      stats_print_func(period_stats);
-      std::this_thread::sleep_for(std::chrono::seconds(3));
-    }
-  };
-
-  std::thread period_print_thread(period_print_stat);
 
   stats_print_func(std::cerr);
   stat_printer.join();

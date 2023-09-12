@@ -284,9 +284,9 @@ class Tester {
           do_insert(latency_out, op);
         } else if (op.type == OpType::READ) {
           auto is_notfound = do_read(latency_out, read_value, op);
-          // if (ans_out) {
-          //   print_ans(ans_out.value(), value);
-          // }
+          if (ans_out) {
+            print_ans(ans_out.value(), read_value.c_str());
+          }
           if (is_notfound) {
             local_notfound_counts++;
           }
