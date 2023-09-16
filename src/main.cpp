@@ -98,6 +98,9 @@ int main(int argc, char **argv) {
   std::string arg_switches;
   size_t num_threads;
   size_t num_keys;
+  size_t num_load_ops;
+  double optane_threshold;
+  size_t num_write_keys;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("enable_fast_process", "Enable fast processing method.");
@@ -136,6 +139,10 @@ int main(int argc, char **argv) {
                       po::value<int>(&options.migration_rand_range_num)->required(), "Option migration_rand_range_num");
   desc.add_options()("migration_rand_range_size",
                       po::value<int>(&options.migration_rand_range_size)->required(), "Option migration_rand_range_size");
+  desc.add_options()("num_load_ops", po::value<size_t>(&num_load_ops)->required(), "Number of operations in loading phase.");
+  desc.add_options()("optane_threshold", po::value<double>(&optane_threshold)->default_value(0.15), "Optane threshold.");
+  desc.add_options()("slab_dir", po::value<std::string>(&options.slab_dir)->required(), "Directory of slabs.");
+  desc.add_options()("pop_cache_size", po::value<uint32_t>(&options.popCacheSize)->required(), "size of popularity cache.");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -158,6 +165,9 @@ int main(int argc, char **argv) {
   options.env = leveldb::Env::Default();
   options.block_cache = leveldb::NewLRUCache(cache_size);
   options.filter_policy = leveldb::NewBloomFilterPolicy(10);
+  options.numKeys = num_keys;
+  options.optaneThreshold = optane_threshold;
+  options.numWriteKeys = num_keys;
 
   std::filesystem::path db_path(arg_db_path);
   auto db_paths = decode_db_paths_to_filepaths(arg_db_paths);
@@ -206,6 +216,7 @@ int main(int argc, char **argv) {
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
   work_option.num_keys = num_keys;
+  work_option.num_load_ops = num_load_ops;
   work_option.format_type = format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   Tester tester(work_option);
 

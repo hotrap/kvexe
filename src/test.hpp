@@ -95,6 +95,7 @@ class BlockChannel {
   std::condition_variable cv_w_;
   size_t reader_waiting_{0};
   size_t limit_size_{0};
+  size_t get_total_ops_{0};
   bool finish_{false};
   bool writer_waiting_{0};
  
@@ -110,6 +111,7 @@ class BlockChannel {
     if (q_.size()) {
       auto ret = std::move(q_.front());
       q_.pop();
+      get_total_ops_ += ret.size();
       return ret;
     }
     if (finish_) {
@@ -123,6 +125,7 @@ class BlockChannel {
     reader_waiting_ -= 1;
     auto ret = std::move(q_.front());
     q_.pop();
+    get_total_ops_ += ret.size();
     return ret;
   }
 
@@ -150,6 +153,10 @@ class BlockChannel {
   void Finish() {
     finish_ = true;
     cv_r_.notify_all();
+  }
+
+  size_t GetTotalOps() {
+    return get_total_ops_;
   }
 
 };
@@ -190,7 +197,8 @@ struct WorkOptions {
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
-  size_t num_keys;
+  size_t num_keys;        // The number of keys after load phase and run phase.
+  size_t num_load_ops;
 };
 
 struct WorkerEnv {
@@ -351,10 +359,10 @@ class Tester {
     }
   }
 
-  std::string gen_prism_key(const std::string& key) {
+  std::string gen_prism_key(const std::string& key, size_t key_id_pre, size_t key_num) {
     std::hash<std::string> hasher;
     char a[8] = {0};
-    size_t hv = hasher(key) % options_.num_keys;
+    size_t hv = key_id_pre + hasher(key) % key_num;
     for (int i = 7; i >= 0; --i)
       a[i] = hv >> (7 - i) * 8 & 255;
     return std::string(a, 8);
@@ -371,6 +379,10 @@ class Tester {
     }
 
     std::hash<std::string> hasher{};
+
+    size_t key_num = options_.num_keys;
+    size_t key_id_pre = 0;
+    bool is_run = false;
 
     while (1) {
       std::string op;
@@ -392,9 +404,9 @@ class Tester {
           while ((c = std::cin.get()) != '\n' && c != EOF) {
             value.push_back(c);
           }
-          opblocks[i].Push(Operation(OpType::INSERT, gen_prism_key(key), std::move(value)));
+          opblocks[i].Push(Operation(OpType::INSERT, gen_prism_key(key, key_id_pre, key_num), std::move(value)));
         } else {
-          opblocks[i].Push(Operation(OpType::INSERT, gen_prism_key(key), read_value(std::cin)));
+          opblocks[i].Push(Operation(OpType::INSERT, gen_prism_key(key, key_id_pre, key_num), read_value(std::cin)));
         }
         parse_counts_++;
       } else if (op == "READ") {
@@ -407,7 +419,7 @@ class Tester {
           std::cin >> key;
         }
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::READ, gen_prism_key(key), {}));
+        opblocks[i].Push(Operation(OpType::READ, gen_prism_key(key, key_id_pre, key_num), {}));
         parse_counts_++;
 
       } else if (op == "UPDATE") {
@@ -418,13 +430,28 @@ class Tester {
         std::string key;
         std::cin >> key;
         int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::UPDATE, gen_prism_key(key), read_value(std::cin)));
+        opblocks[i].Push(Operation(OpType::UPDATE, gen_prism_key(key, key_id_pre, key_num), read_value(std::cin)));
         parse_counts_++;
         
       } else {
         std::cerr << "Ignore line: " << op;
         std::getline(std::cin, op);  // Skip the rest of the line
         std::cerr << op << std::endl;
+      }
+
+      if (!is_run && parse_counts_ >= options_.num_load_ops) {
+        size_t get_ops = 0;
+        if (options_.enable_fast_process) {
+          get_ops = channel_.GetTotalOps();
+        } else {
+          for (size_t i = 0; i < options_.num_threads; i++) {
+            get_ops += channel_for_workers_[i].GetTotalOps();
+          }
+        }
+        if (get_ops >= options_.num_load_ops) {
+          is_run = true;
+          options_.db->SetDbMode(false);
+        }
       }
     }
 
