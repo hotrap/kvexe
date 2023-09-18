@@ -712,10 +712,8 @@ int main(int argc, char **argv) {
     }
   }
   int first_level_in_cd = predict_level_assignment(options);
-  {
-    std::ofstream out(db_path / "first-level-in-cd");
-    out << first_level_in_cd << std::endl;
-  }
+  std::ofstream(db_path / "first-level-in-cd")
+      << first_level_in_cd << std::endl;
 
   rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
@@ -733,11 +731,10 @@ int main(int argc, char **argv) {
   std::atomic<size_t> progress(0);
   std::thread stat_printer(bg_stat_printer, db_path, &should_stop, &progress);
 
-  std::string pid = std::to_string(getpid());
-  std::string cmd = "pidstat -p " + pid +
-                    " -Hu 1 | "
-                    "awk '{if(NR>3){print $1,$8; fflush(stdout)}}' > " +
-                    db_path.c_str() + "/cpu &";
+  std::string cmd =
+      "pidstat -p " + std::to_string(getpid()) +
+      " -Hu 1 | awk '{if(NR>3){print $1,$8; fflush(stdout)}}' > " +
+      db_path.c_str() + "/cpu &";
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
