@@ -994,13 +994,8 @@ int main(int argc, char **argv) {
         size_t num_types = timers.len();
         for (size_t type = 0; type < num_types; ++type) {
           const auto &timer = timers.timer(type);
-          log << per_tier_timer_names[type]
-                    << ": "
-                      "count "
-                    << timer.count()
-                    << ", "
-                      "total "
-                    << timer.time().as_nanos() << "ns,\n";
+          log << per_tier_timer_names[type] << ": count " << timer.count()
+              << ", total " << timer.time().as_nanos() << "ns,\n";
         }
         log << "]},\n";
       }
@@ -1013,13 +1008,8 @@ int main(int argc, char **argv) {
         size_t num_types = timers.len();
         for (size_t type = 0; type < num_types; ++type) {
           const auto &timer = timers.timer(type);
-          log << per_level_timer_names[type]
-              << ": "
-                "count "
-              << timer.count()
-              << ", "
-                "total "
-              << timer.time().as_nanos() << "ns,\n";
+          log << per_level_timer_names[type] << ": count " << timer.count()
+              << ", total " << timer.time().as_nanos() << "ns,\n";
         }
         log << "]},\n";
       }
