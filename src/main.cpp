@@ -159,10 +159,19 @@ void bg_stat_printer(std::filesystem::path db_path,
                      std::atomic<size_t> *progress) {
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed\n";
+  auto mem_path = db_path / "mem";
+  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
     auto value = progress->load(std::memory_order_relaxed);
     progress_out << timestamp << ' ' << value << std::endl;
+
+    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
+    std::system(("ps -q " + std::to_string(getpid()) +
+                 " -o rss | tail -n 1 >> " + mem_path.c_str())
+                    .c_str());
+
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 }
