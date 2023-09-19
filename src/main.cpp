@@ -279,6 +279,9 @@ void bg_stat_printer(const rocksdb::Options *options,
                      std::atomic<size_t> *progress) {
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed\n";
+  auto mem_path = db_path / "mem";
+  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+
   std::ofstream promoted_2sdlast_out(db_path / "promoted-2sdlast-bytes");
   promoted_2sdlast_out << "Timestamp(ns) num-bytes\n";
   std::ofstream promoted_flush_out(db_path / "promoted-flush-bytes");
@@ -288,6 +291,11 @@ void bg_stat_printer(const rocksdb::Options *options,
 
     auto value = progress->load(std::memory_order_relaxed);
     progress_out << timestamp << ' ' << value << std::endl;
+
+    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
+    std::system(("ps -q " + std::to_string(getpid()) +
+                 " -o rss | tail -n 1 >> " + mem_path.c_str())
+                    .c_str());
 
     auto promoted_2sdlast_bytes =
         options->statistics->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES);
