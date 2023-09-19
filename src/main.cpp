@@ -177,6 +177,10 @@ void bg_stat_printer(std::filesystem::path db_path,
 }
 
 int main(int argc, char **argv) {
+  std::ios::sync_with_stdio(false);
+  std::cin.tie(0);
+  std::cout.tie(0);
+
   rocksdb::Options options;
 
   namespace po = boost::program_options;
