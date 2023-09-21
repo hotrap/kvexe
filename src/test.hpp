@@ -32,6 +32,9 @@
 #include <thread>
 #include <vector>
 
+#include "ycsbgen/ycsbgen.hpp"
+
+
 enum class FormatType {
   Plain,
   YCSB,
@@ -188,6 +191,8 @@ struct WorkOptions {
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
+  bool enable_fast_generator{false};
+  YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
 };
 
 struct WorkerEnv {
@@ -219,13 +224,13 @@ class Tester {
   WorkerEnv env_;
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
+  YCSBGen::YCSBGenerator ycsb_generator_;
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
 
  public:
-  Tester(const WorkOptions& option)
-      : options_(option), channel_for_workers_(option.num_threads) {
+  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
     env_.db = options_.db;
     env_.read_options = rocksdb::ReadOptions();
     env_.write_options = rocksdb::WriteOptions();
@@ -237,6 +242,10 @@ class Tester {
   void Test() {
     std::vector<std::thread> threads;
 
+    if (options_.enable_fast_generator) {
+      std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
+    }
+
     for (size_t i = 0; i < options_.num_threads; i++) {
       threads.emplace_back([this, i]() {
         work(i,
@@ -244,7 +253,9 @@ class Tester {
       });
     }
 
-    parse();
+    if (!options_.enable_fast_generator) {
+      parse();
+    }
 
     for (auto& t : threads) t.join();
   }
@@ -266,31 +277,57 @@ class Tester {
     std::optional<std::ofstream> latency_out =
         options_.switches & MASK_LATENCY
             ? std::optional<std::ofstream>(options_.db_path /
-                                           ("latency_" + std::to_string(id)))
+                                          ("latency_" + std::to_string(id)))
             : std::nullopt;
-    while (true) {
-      auto block = chan.GetBlock();
-      if (block.empty()) {
-        break;
-      }
-      size_t local_notfound_counts = 0;
-      for (Operation& op : block) {
-        if (op.type == OpType::INSERT) {
-          do_insert(latency_out, op);
-        } else if (op.type == OpType::READ) {
-          auto value = do_read(latency_out, op);
-          if (ans_out) {
-            print_ans(ans_out.value(), value);
-          }
-          if (value == "") {
-            local_notfound_counts++;
-          }
-        } else if (op.type == OpType::UPDATE) {
-          do_update(latency_out, op);
+    std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
+    size_t local_notfound_counts = 0;
+    size_t local_read_progress = 0;
+
+    auto process_op = [&] (const Operation& op) {
+      if (op.type == OpType::INSERT) {
+        do_insert(latency_out, op);
+      } else if (op.type == OpType::READ) {
+        auto value = do_read(latency_out, op);
+        if (ans_out) {
+          print_ans(ans_out.value(), value);
         }
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (value == "") {
+          local_notfound_counts++;
+          if ((local_read_progress & 15) == 15) {
+            notfound_counts_ += local_notfound_counts;
+            local_notfound_counts = 0;
+          }
+        }
+        local_read_progress++;
+      } else if (op.type == OpType::UPDATE) {
+        do_update(latency_out, op);
       }
-      notfound_counts_ += local_notfound_counts;
+    };
+
+    while (true) {
+      if (options_.enable_fast_generator) {
+        if (ycsb_generator_.IsEOF()) {
+          break;
+        }
+        Operation op;
+        auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
+        op.key = std::move(ycsb_op.key);
+        op.value = std::move(ycsb_op.value);
+        if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
+        else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
+        else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
+        process_op(op);
+        options_.progress->fetch_add(1, std::memory_order_relaxed);
+      } else {
+        auto block = chan.GetBlock();
+        if (block.empty()) {
+          break;
+        }
+        for (const Operation& op : block) {
+          process_op(op);
+          options_.progress->fetch_add(1, std::memory_order_relaxed);
+        }
+      }
     }
   }
 

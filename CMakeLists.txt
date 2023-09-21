@@ -15,7 +15,7 @@ add_executable(${PROJECT_NAME} ${SRCS})
 include_directories(
     ${ROCKSDB_INCLUDE}
 )
-target_include_directories(${PROJECT_NAME} PUBLIC include)
+target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
 target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC

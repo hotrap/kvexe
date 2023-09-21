@@ -191,6 +191,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
   std::string arg_switches;
   size_t num_threads;
+  std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("format,f",
@@ -216,6 +217,9 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
+  desc.add_options()("enable_fast_process", "Enable fast process including ignoring kNotFound and pushing operations in one channel.");
+  desc.add_options()("enable_fast_generator", "Enable fast generator");
+  desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -287,6 +291,8 @@ int main(int argc, char **argv) {
   work_option.enable_fast_process = vm.count("enable_fast_process");
   work_option.format_type =
       format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
+  work_option.enable_fast_generator = vm.count("enable_fast_generator");
+  work_option.ycsb_gen_options = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file) : YCSBGen::YCSBGeneratorOptions();
   Tester tester(work_option);
 
   auto stats_print_func = [&](std::ostream &log) {
@@ -337,7 +343,7 @@ int main(int argc, char **argv) {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
       stats_print_func(period_stats);
-      std::this_thread::sleep_for(std::chrono::seconds(3));
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
 
