@@ -10,3 +10,6 @@
 [submodule "3rdparty/rcu-vector"]
 	path = 3rdparty/rcu-vector
 	url = https://github.com/seekstar/rcu-vector.git
+[submodule "3rdparty/ycsbgen"]
+	path = 3rdparty/ycsbgen
+	url = git@github.com:hotrap/YCSBGenerator.git
