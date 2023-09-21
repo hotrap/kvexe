@@ -379,25 +379,6 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
-  desc.add_options()("num_keys",
-                     po::value<size_t>(&num_keys)->required(),
-                     "The number of keys.\n");
-  desc.add_options()("migrations_logging",
-                      po::value<bool>(&options.migration_logging)->required(), "Option migrations_logging");
-  desc.add_options()("read_logging",
-                      po::value<bool>(&options.read_logging)->required(), "Option read_logging");
-  desc.add_options()("migration_policy",
-                      po::value<int>(&options.migration_policy)->required(), "Option migration_policy");
-  desc.add_options()("migration_metric",
-                      po::value<int>(&options.migration_metric)->required(), "Option migration_metric");
-  desc.add_options()("migration_rand_range_num",
-                      po::value<int>(&options.migration_rand_range_num)->required(), "Option migration_rand_range_num");
-  desc.add_options()("migration_rand_range_size",
-                      po::value<int>(&options.migration_rand_range_size)->required(), "Option migration_rand_range_size");
-  desc.add_options()("num_load_ops", po::value<size_t>(&num_load_ops)->required(), "Number of operations in loading phase.");
-  desc.add_options()("optane_threshold", po::value<double>(&optane_threshold)->default_value(0.15), "Optane threshold.");
-  desc.add_options()("slab_dir", po::value<std::string>(&options.slab_dir)->required(), "Directory of slabs.");
-  desc.add_options()("pop_cache_size", po::value<uint32_t>(&options.popCacheSize)->required(), "size of popularity cache.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
   desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
   po::variables_map vm;

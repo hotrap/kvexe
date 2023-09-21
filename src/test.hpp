@@ -311,7 +311,7 @@ class Tester {
         }
         Operation op;
         auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
-        op.key = gen_prism_key(ycsb_op.key, 0, options_.num_keys);
+        op.key = std::move(ycsb_op.key);
         op.value = std::move(ycsb_op.value);
         if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
         else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
