@@ -101,6 +101,7 @@ int main(int argc, char **argv) {
   size_t num_load_ops;
   double optane_threshold;
   size_t num_write_keys;
+  std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("enable_fast_process", "Enable fast processing method.");
@@ -143,6 +144,8 @@ int main(int argc, char **argv) {
   desc.add_options()("optane_threshold", po::value<double>(&optane_threshold)->default_value(0.15), "Optane threshold.");
   desc.add_options()("slab_dir", po::value<std::string>(&options.slab_dir)->required(), "Directory of slabs.");
   desc.add_options()("pop_cache_size", po::value<uint32_t>(&options.popCacheSize)->required(), "size of popularity cache.");
+  desc.add_options()("enable_fast_generator", "Enable fast generator");
+  desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -218,6 +221,8 @@ int main(int argc, char **argv) {
   work_option.num_keys = num_keys;
   work_option.num_load_ops = num_load_ops;
   work_option.format_type = format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
+  work_option.enable_fast_generator = vm.count("enable_fast_generator");
+  work_option.ycsb_gen_options = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file) : YCSBGen::YCSBGeneratorOptions();
   Tester tester(work_option);
 
   auto stats_print_func = [&] (std::ostream& log) {
