@@ -330,7 +330,9 @@ class Tester {
         else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
         else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
         process_op(op);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if(options_.progress->fetch_add(1, std::memory_order_relaxed) == options_.num_load_ops) {
+          env_.db->SetDbMode(0);
+        }
       } else {
         auto block = chan.GetBlock();
         if (block.empty()) {
