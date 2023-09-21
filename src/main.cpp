@@ -324,7 +324,7 @@ int main(int argc, char **argv) {
       rusty::time::Duration time = timer.time();
       timers_status.push_back(counter_timer::CountTime{count, time});
       log << timer_names[i] << ": count " << count << ", total "
-          << time.as_nanos() << "ns\n";
+          << time.as_secs_double() << " s\n";
     }
 
     /* Operation counts*/
