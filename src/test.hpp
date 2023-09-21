@@ -102,7 +102,7 @@ class BlockChannel {
   bool writer_waiting_{0};
  
  public:
-  BlockChannel(size_t limit_size = 4192) : limit_size_(limit_size) {}
+  BlockChannel(size_t limit_size = 64) : limit_size_(limit_size) {}
   std::vector<T> GetBlock() {
     std::unique_lock lck(m_);
     if (writer_waiting_) {
