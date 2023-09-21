@@ -1,3 +1,4 @@
+#include <rocksdb/cache.h>
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/statistics.h>
@@ -27,11 +28,13 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <queue>
 #include <set>
 #include <string>
 #include <thread>
-#include <queue>
 #include <vector>
+
+#include "ycsbgen/ycsbgen.hpp"
 
 
 enum class FormatType {
@@ -44,7 +47,6 @@ enum class OpType {
   READ,
   UPDATE,
 };
-
 
 enum class TimerType : size_t {
   kInsert,
@@ -63,12 +65,12 @@ enum class TimerType : size_t {
 };
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
-static const char *timer_names[] = {
+static const char* timer_names[] = {
     "Insert",      "Read",           "Update",      "Put",
     "Get",         "InputOperation", "InputInsert", "InputRead",
     "InputUpdate", "Output",         "Serialize",   "Deserialize",
 };
-static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char *));
+static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
@@ -81,11 +83,12 @@ struct Operation {
 
   Operation() {}
 
-  Operation(OpType _type, const std::string& _key, const std::vector<char>& _value) :
-    type(_type), key(_key), value(_value) {}
+  Operation(OpType _type, const std::string& _key,
+            const std::vector<char>& _value)
+      : type(_type), key(_key), value(_value) {}
 
-  Operation(OpType _type, std::string&& _key, std::vector<char>&& _value) :
-    type(_type), key(std::move(_key)), value(std::move(_value)) {}
+  Operation(OpType _type, std::string&& _key, std::vector<char>&& _value)
+      : type(_type), key(std::move(_key)), value(std::move(_value)) {}
 };
 
 template <typename T>
@@ -98,9 +101,9 @@ class BlockChannel {
   size_t limit_size_{0};
   bool finish_{false};
   bool writer_waiting_{0};
- 
+
  public:
-  BlockChannel(size_t limit_size = 4192) : limit_size_(limit_size) {}
+  BlockChannel(size_t limit_size = 64) : limit_size_(limit_size) {}
   std::vector<T> GetBlock() {
     std::unique_lock lck(m_);
     if (writer_waiting_) {
@@ -152,17 +155,17 @@ class BlockChannel {
     finish_ = true;
     cv_r_.notify_all();
   }
-
 };
 
-template<typename T>
+template <typename T>
 class BlockChannelClient {
   BlockChannel<T>* channel_;
   std::vector<T> opblock_;
   size_t opnum_{0};
 
  public:
-  BlockChannelClient(BlockChannel<T>* channel, size_t block_size) : channel_(channel), opblock_(block_size) {}
+  BlockChannelClient(BlockChannel<T>* channel, size_t block_size)
+      : channel_(channel), opblock_(block_size) {}
 
   void Push(T&& data) {
     opblock_[opnum_++] = std::move(data);
@@ -173,38 +176,37 @@ class BlockChannelClient {
   }
 
   void Flush() {
-    channel_->PutBlock(std::vector<T>(opblock_.begin(), opblock_.begin() + opnum_));
+    channel_->PutBlock(
+        std::vector<T>(opblock_.begin(), opblock_.begin() + opnum_));
     opnum_ = 0;
   }
 
-  void Finish() {
-    channel_->Finish();
-  }
+  void Finish() { channel_->Finish(); }
 };
 
 struct WorkOptions {
   FormatType format_type;
-  rocksdb::DB *db;
+  rocksdb::DB* db;
   uint64_t switches;
   std::filesystem::path db_path;
-  std::atomic<size_t> *progress;
+  std::atomic<size_t>* progress;
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
+  bool enable_fast_generator{false};
+  YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
 };
 
 struct WorkerEnv {
-  rocksdb::DB *db;
+  rocksdb::DB* db;
   rocksdb::ReadOptions read_options;
   rocksdb::WriteOptions write_options;
   bool ignore_notfound{false};
 };
 
-void print_ans(std::ofstream &out, std::string value) {
-  out << value << '\n';
-}
+void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
 
-void print_latency(std::ofstream &out, OpType op, uint64_t nanos) {
+void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
   switch (op) {
     case OpType::INSERT:
       out << "INSERT";
@@ -224,13 +226,13 @@ class Tester {
   WorkerEnv env_;
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
-
+  YCSBGen::YCSBGenerator ycsb_generator_;
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
-  
+
  public:
-  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads) {
+  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
     env_.db = options_.db;
     env_.read_options = rocksdb::ReadOptions();
     env_.write_options = rocksdb::WriteOptions();
@@ -242,18 +244,25 @@ class Tester {
   void Test() {
     std::vector<std::thread> threads;
 
-    for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, i]() { work(i, options_.enable_fast_process ? channel_ : channel_for_workers_[i]); });
+    if (options_.enable_fast_generator) {
+      std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
     }
 
-    parse();
+    for (size_t i = 0; i < options_.num_threads; i++) {
+      threads.emplace_back([this, i]() {
+        work(i,
+             options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
+      });
+    }
+
+    if (!options_.enable_fast_generator) {
+      parse();
+    }
 
     for (auto& t : threads) t.join();
   }
 
-  size_t GetOpParseCounts() const {
-    return parse_counts_;
-  }
+  size_t GetOpParseCounts() const { return parse_counts_; }
 
   size_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
@@ -264,7 +273,7 @@ class Tester {
     std::optional<std::ofstream> ans_out =
         options_.switches & MASK_OUTPUT_ANS
             ? std::optional<std::ofstream>(options_.db_path /
-                                          ("ans_" + std::to_string(id)))
+                                           ("ans_" + std::to_string(id)))
             : std::nullopt;
 
     std::optional<std::ofstream> latency_out =
@@ -272,37 +281,65 @@ class Tester {
             ? std::optional<std::ofstream>(options_.db_path /
                                           ("latency_" + std::to_string(id)))
             : std::nullopt;
-    while (true) {
-      auto block = chan.GetBlock();
-      if (block.empty()) {
-        break;
-      }
-      size_t local_notfound_counts = 0;
-      for (Operation& op : block) {
-        if (op.type == OpType::INSERT) {
-          do_insert(latency_out, op);
-        } else if (op.type == OpType::READ) {
-          auto value = do_read(latency_out, op);
-          if (ans_out) {
-            print_ans(ans_out.value(), value);
-          }
-          if (value == "") {
-            local_notfound_counts++;
-          }
-        } else if (op.type == OpType::UPDATE) {
-          do_update(latency_out, op);
+    std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
+    size_t local_notfound_counts = 0;
+    size_t local_read_progress = 0;
+
+    auto process_op = [&] (const Operation& op) {
+      if (op.type == OpType::INSERT) {
+        do_insert(latency_out, op);
+      } else if (op.type == OpType::READ) {
+        auto value = do_read(latency_out, op);
+        if (ans_out) {
+          print_ans(ans_out.value(), value);
         }
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (value == "") {
+          local_notfound_counts++;
+          if ((local_read_progress & 15) == 15) {
+            notfound_counts_ += local_notfound_counts;
+            local_notfound_counts = 0;
+          }
+        }
+        local_read_progress++;
+      } else if (op.type == OpType::UPDATE) {
+        do_update(latency_out, op);
       }
-      notfound_counts_ += local_notfound_counts;
+    };
+
+    while (true) {
+      if (options_.enable_fast_generator) {
+        if (ycsb_generator_.IsEOF()) {
+          break;
+        }
+        Operation op;
+        auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
+        op.key = std::move(ycsb_op.key);
+        op.value = std::move(ycsb_op.value);
+        if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
+        else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
+        else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
+        process_op(op);
+        options_.progress->fetch_add(1, std::memory_order_relaxed);
+      } else {
+        auto block = chan.GetBlock();
+        if (block.empty()) {
+          break;
+        }
+        for (const Operation& op : block) {
+          process_op(op);
+          options_.progress->fetch_add(1, std::memory_order_relaxed);
+        }
+      }
     }
   }
 
-  
-  void do_insert(std::optional<std::ofstream>& latency, const Operation& insert) {
+  void do_insert(std::optional<std::ofstream>& latency,
+                 const Operation& insert) {
     auto guard = timers.timer(TimerType::kInsert).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env_.db->Put(env_.write_options, insert.key, rocksdb::Slice(insert.value.data(), insert.value.size()));
+    auto s =
+        env_.db->Put(env_.write_options, insert.key,
+                     rocksdb::Slice(insert.value.data(), insert.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
@@ -314,7 +351,8 @@ class Tester {
     }
   }
 
-  std::string do_read(std::optional<std::ofstream>& latency, const Operation& read) {
+  std::string do_read(std::optional<std::ofstream>& latency,
+                      const Operation& read) {
     auto guard = timers.timer(TimerType::kRead).start();
     std::string value;
     auto get_start = rusty::time::Instant::now();
@@ -335,10 +373,13 @@ class Tester {
     return value;
   }
 
-  void do_update(std::optional<std::ofstream>& latency, const Operation& update) {
+  void do_update(std::optional<std::ofstream>& latency,
+                 const Operation& update) {
     auto guard = timers.timer(TimerType::kUpdate).start();
     auto put_start = rusty::time::Instant::now();
-    auto s = env_.db->Put(env_.write_options, update.key, rocksdb::Slice(update.value.data(), update.value.size()));
+    auto s =
+        env_.db->Put(env_.write_options, update.key,
+                     rocksdb::Slice(update.value.data(), update.value.size()));
     auto put_time = put_start.elapsed();
     if (!s.ok()) {
       std::string err = s.ToString();
@@ -369,12 +410,14 @@ class Tester {
         break;
       }
       if (op == "INSERT") {
-        if (options_.format_type == FormatType::YCSB) { 
+        if (options_.format_type == FormatType::YCSB) {
           handle_table_name(std::cin);
         }
         std::string key;
         std::cin >> key;
-        int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
+        int i = options_.enable_fast_process
+                    ? 0
+                    : hasher(key) % options_.num_threads;
         if (options_.format_type == FormatType::Plain) {
           rusty_assert(std::cin.get() == ' ');
           char c;
@@ -382,21 +425,25 @@ class Tester {
           while ((c = std::cin.get()) != '\n' && c != EOF) {
             value.push_back(c);
           }
-          opblocks[i].Push(Operation(OpType::INSERT, std::move(key), std::move(value)));
+          opblocks[i].Push(
+              Operation(OpType::INSERT, std::move(key), std::move(value)));
         } else {
-          opblocks[i].Push(Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
+          opblocks[i].Push(
+              Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
         }
         parse_counts_++;
       } else if (op == "READ") {
         std::string key;
-        if (options_.format_type == FormatType::YCSB) {        
+        if (options_.format_type == FormatType::YCSB) {
           handle_table_name(std::cin);
           std::cin >> key;
           read_fields_read(std::cin);
         } else {
           std::cin >> key;
         }
-        int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
+        int i = options_.enable_fast_process
+                    ? 0
+                    : hasher(key) % options_.num_threads;
         opblocks[i].Push(Operation(OpType::READ, std::move(key), {}));
         parse_counts_++;
 
@@ -407,10 +454,13 @@ class Tester {
         handle_table_name(std::cin);
         std::string key;
         std::cin >> key;
-        int i = options_.enable_fast_process ? 0 : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::UPDATE, std::move(key), read_value(std::cin)));
+        int i = options_.enable_fast_process
+                    ? 0
+                    : hasher(key) % options_.num_threads;
+        opblocks[i].Push(
+            Operation(OpType::UPDATE, std::move(key), read_value(std::cin)));
         parse_counts_++;
-        
+
       } else {
         std::cerr << "Ignore line: " << op;
         std::getline(std::cin, op);  // Skip the rest of the line
@@ -418,20 +468,19 @@ class Tester {
       }
     }
 
-    for(auto& o : opblocks) {
+    for (auto& o : opblocks) {
       o.Flush();
       o.Finish();
     }
   }
 
-
-  void handle_table_name(std::istream &in) {
+  void handle_table_name(std::istream& in) {
     std::string table;
     in >> table;
     rusty_assert(table == "usertable", "Column families not supported yet.");
   }
 
-  std::vector<std::pair<int, std::vector<char>>> read_fields(std::istream &in) {
+  std::vector<std::pair<int, std::vector<char>>> read_fields(std::istream& in) {
     std::vector<std::pair<int, std::vector<char>>> ret;
     char c;
     do {
@@ -457,7 +506,7 @@ class Tester {
     return ret;
   }
 
-  std::vector<char> read_value(std::istream &in) {
+  std::vector<char> read_value(std::istream& in) {
     auto fields = read_fields(in);
     std::sort(fields.begin(), fields.end());
     std::vector<char> ret;
@@ -468,7 +517,7 @@ class Tester {
     return ret;
   }
 
-  void read_fields_read(std::istream &in) {
+  void read_fields_read(std::istream& in) {
     char c;
     do {
       c = static_cast<char>(in.get());
@@ -477,7 +526,6 @@ class Tester {
     std::string s;
     std::getline(in, s);
     rusty_assert(s == " <all fields>]",
-                "Reading specific fields is not supported yet.");
+                 "Reading specific fields is not supported yet.");
   }
-
 };
