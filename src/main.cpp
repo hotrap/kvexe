@@ -337,7 +337,6 @@ int main(int argc, char **argv) {
   double arg_max_hot_set_size;
   std::string arg_switches;
   size_t num_threads;
-  size_t max_background_jobs;
   std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
@@ -409,7 +408,6 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
-  options.max_background_jobs = max_background_jobs;
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
