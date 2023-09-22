@@ -220,9 +220,13 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
-  desc.add_options()("enable_fast_process", "Enable fast process including ignoring kNotFound and pushing operations in one channel.");
+  desc.add_options()("enable_fast_process",
+                     "Enable fast process including ignoring kNotFound and "
+                     "pushing operations in one channel.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
-  desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
+  desc.add_options()("workload_file",
+                     po::value<std::string>(&workload_file)->default_value(""),
+                     "Workload file used in built-in generator");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -304,7 +308,10 @@ int main(int argc, char **argv) {
   work_option.format_type =
       format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   work_option.enable_fast_generator = vm.count("enable_fast_generator");
-  work_option.ycsb_gen_options = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file) : YCSBGen::YCSBGeneratorOptions();
+  work_option.ycsb_gen_options =
+      vm.count("enable_fast_generator")
+          ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file)
+          : YCSBGen::YCSBGeneratorOptions();
   Tester tester(work_option);
 
   auto stats_print_func = [&](std::ostream &log) {
