@@ -194,6 +194,7 @@ int main(int argc, char **argv) {
   std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
+  desc.add_options()("max_background_jobs", po::value<int>(), "");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
@@ -247,6 +248,10 @@ int main(int argc, char **argv) {
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
+
+  if (vm.count("max_background_jobs")) {
+    options.max_background_jobs = vm["max_background_jobs"].as<int>();
+  }
 
   if (vm.count("cleanup")) {
     std::cerr << "Emptying directories\n";
