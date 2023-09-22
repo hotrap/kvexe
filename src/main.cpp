@@ -195,6 +195,8 @@ int main(int argc, char **argv) {
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("max_background_jobs", po::value<int>(), "");
+  desc.add_options()("level0_file_num_compaction_trigger", po::value<int>(),
+                     "Number of files in level-0 when compactions start");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
@@ -251,6 +253,11 @@ int main(int argc, char **argv) {
 
   if (vm.count("max_background_jobs")) {
     options.max_background_jobs = vm["max_background_jobs"].as<int>();
+  }
+
+  if (vm.count("level0_file_num_compaction_trigger")) {
+    options.level0_file_num_compaction_trigger =
+        vm["level0_file_num_compaction_trigger"].as<int>();
   }
 
   if (vm.count("cleanup")) {
