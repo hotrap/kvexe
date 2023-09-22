@@ -341,7 +341,6 @@ int main(int argc, char **argv) {
   std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
-  desc.add_options()("enable_fast_process", "Enable fast processing method.");
   desc.add_options()("max_background_jobs",
                      po::value<size_t>(&max_background_jobs)->default_value(1),
                      "max_background_jobs");
@@ -379,6 +378,9 @@ int main(int argc, char **argv) {
   desc.add_options()("num_threads",
                      po::value<size_t>(&num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
+  desc.add_options()("enable_fast_process",
+                     "Enable fast process including ignoring kNotFound and "
+                     "pushing operations in one channel.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
   desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
   po::variables_map vm;
@@ -571,7 +573,7 @@ int main(int argc, char **argv) {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
       stats_print_func(period_stats);
-      std::this_thread::sleep_for(std::chrono::seconds(3));
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
 
