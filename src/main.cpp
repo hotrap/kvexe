@@ -341,9 +341,9 @@ int main(int argc, char **argv) {
   std::string workload_file;
   desc.add_options()("help", "Print help message");
   desc.add_options()("cleanup,c", "Empty the directories first.");
-  desc.add_options()("max_background_jobs",
-                     po::value<size_t>(&max_background_jobs)->default_value(1),
-                     "max_background_jobs");
+  desc.add_options()("max_background_jobs", po::value<int>(), "");
+  desc.add_options()("level0_file_num_compaction_trigger", po::value<int>(),
+                     "Number of files in level-0 when compactions start");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
@@ -382,7 +382,9 @@ int main(int argc, char **argv) {
                      "Enable fast process including ignoring kNotFound and "
                      "pushing operations in one channel.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
-  desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
+  desc.add_options()("workload_file",
+                     po::value<std::string>(&workload_file)->default_value(""),
+                     "Workload file used in built-in generator");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -414,6 +416,15 @@ int main(int argc, char **argv) {
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
+
+  if (vm.count("max_background_jobs")) {
+    options.max_background_jobs = vm["max_background_jobs"].as<int>();
+  }
+
+  if (vm.count("level0_file_num_compaction_trigger")) {
+    options.level0_file_num_compaction_trigger =
+        vm["level0_file_num_compaction_trigger"].as<int>();
+  }
 
   if (vm.count("cleanup")) {
     std::cerr << "Emptying directories\n";
@@ -483,7 +494,10 @@ int main(int argc, char **argv) {
   work_option.format_type =
       format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   work_option.enable_fast_generator = vm.count("enable_fast_generator");
-  work_option.ycsb_gen_options = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file) : YCSBGen::YCSBGeneratorOptions();
+  work_option.ycsb_gen_options =
+      vm.count("enable_fast_generator")
+          ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file)
+          : YCSBGen::YCSBGeneratorOptions();
   Tester tester(work_option);
 
   auto stats_print_func = [&](std::ostream &log) {
