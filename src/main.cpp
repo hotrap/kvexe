@@ -146,6 +146,7 @@ int main(int argc, char **argv) {
   desc.add_options()("pop_cache_size", po::value<uint32_t>(&options.popCacheSize)->required(), "size of popularity cache.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
   desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
+  desc.add_options()("read_dominated_threshold", po::value(&options.read_dominated_threshold)->default_value(0.95), "read_dominated_threshold");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {

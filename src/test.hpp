@@ -332,6 +332,7 @@ class Tester {
         process_op(op);
         if(options_.progress->fetch_add(1, std::memory_order_relaxed) == options_.num_load_ops) {
           env_.db->SetDbMode(0);
+          env_.db->ResetMigrationStats();
         }
       } else {
         auto block = chan.GetBlock();
