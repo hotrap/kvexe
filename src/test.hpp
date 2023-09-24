@@ -3,6 +3,8 @@
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
+#include <rocksdb/perf_context.h>
+#include <rocksdb/iostats_context.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
@@ -228,6 +230,8 @@ class Tester {
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
+  std::vector<rocksdb::PerfContext*> perf_contexts_;
+  std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
 
  public:
   Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
@@ -246,10 +250,11 @@ class Tester {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
     }
 
+    perf_contexts_.resize(options_.num_threads);
+    iostats_contexts_.resize(options_.num_threads);
     for (size_t i = 0; i < options_.num_threads; i++) {
       threads.emplace_back([this, i]() {
-        work(i,
-             options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
+        work(i, options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
       });
     }
 
@@ -260,10 +265,18 @@ class Tester {
     for (auto& t : threads) t.join();
   }
 
-  size_t GetOpParseCounts() const { return parse_counts_; }
+  size_t GetOpParseCounts() const { return options_.enable_fast_generator ? options_.progress->load(std::memory_order_relaxed) : parse_counts_; }
 
   size_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
+  }
+
+  std::string GetRocksdbPerf() const {
+    return perf_contexts_[0] ? perf_contexts_[0]->ToString() : "";
+  }
+
+  std::string GetRocksdbIOStats() const {
+    return iostats_contexts_[0] ? iostats_contexts_[0]->ToString() : "";
   }
 
  private:
@@ -280,8 +293,10 @@ class Tester {
                                           ("latency_" + std::to_string(id)))
             : std::nullopt;
     std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
-    size_t local_notfound_counts = 0;
-    size_t local_read_progress = 0;
+    
+    rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
+    perf_contexts_[id] = rocksdb::get_perf_context();
+    iostats_contexts_[id] = rocksdb::get_iostats_context();
 
     auto process_op = [&] (const Operation& op) {
       if (op.type == OpType::INSERT) {
@@ -292,13 +307,8 @@ class Tester {
           print_ans(ans_out.value(), value);
         }
         if (value == "") {
-          local_notfound_counts++;
-          if ((local_read_progress & 15) == 15) {
-            notfound_counts_ += local_notfound_counts;
-            local_notfound_counts = 0;
-          }
+          notfound_counts_ += 1; // unlikely
         }
-        local_read_progress++;
       } else if (op.type == OpType::UPDATE) {
         do_update(latency_out, op);
       }
