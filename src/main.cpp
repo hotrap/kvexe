@@ -174,6 +174,10 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       key_hit_level_chan_->push(std::make_pair(key.ToString(), level));
     }
   }
+
+  bool IsStablyHot(rocksdb::Slice key) override {
+    return vc_.IsStablyHot(key);
+  }
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
   rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
