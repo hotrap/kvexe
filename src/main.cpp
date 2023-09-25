@@ -3,9 +3,12 @@
 #include "test.hpp"
 #include "viscnts.h"
 
-using boost::fibers::buffered_channel;
-
 typedef uint16_t field_size_t;
+
+thread_local std::optional<std::ofstream> key_hit_level_out;
+std::optional<std::ofstream> &get_key_hit_level_out() {
+  return key_hit_level_out;
+}
 
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
@@ -109,9 +112,6 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x4;
-static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
-
 enum class PerLevelTimerType : size_t {
   kAccess = 0,
   kEnd,
@@ -142,16 +142,14 @@ counter_timer_vec::TypedTimersVector<PerTierTimerType> per_tier_timers(
 
 class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
-  RouterVisCnts(
-      const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-      int tier0_last_level, size_t max_hot_set_size, uint64_t switches,
-      buffered_channel<std::pair<std::string, int>> *key_hit_level_chan)
+  RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
+                int tier0_last_level, size_t max_hot_set_size,
+                uint64_t switches)
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size)),
         tier0_last_level_(tier0_last_level),
         new_iter_cnt_(0),
-        count_access_hot_per_tier_{0, 0},
-        key_hit_level_chan_(key_hit_level_chan) {}
+        count_access_hot_per_tier_{0, 0} {}
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
@@ -170,8 +168,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     auto guard =
         per_level_timers.timer(level, PerLevelTimerType::kAccess).start();
     vc_.Access(key, vlen);
-    if (key_hit_level_chan_) {
-      key_hit_level_chan_->push(std::make_pair(key.ToString(), level));
+    if (switches_ & MASK_KEY_HIT_LEVEL) {
+      get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
     }
   }
 
@@ -216,8 +214,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
   std::atomic<size_t> new_iter_cnt_;
   std::atomic<size_t> count_access_hot_per_tier_[2];
-
-  buffered_channel<std::pair<std::string, int>> *key_hit_level_chan_;
 };
 
 bool has_background_work(rocksdb::DB *db) {
@@ -311,15 +307,6 @@ void bg_stat_printer(const rocksdb::Options *options,
     promoted_flush_out << timestamp << ' ' << promoted_flush_bytes << std::endl;
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
-  }
-}
-
-void key_hit_level_print(const std::filesystem::path &dir,
-                         buffered_channel<std::pair<std::string, int>> *chan) {
-  if (chan == NULL) return;
-  std::ofstream out(dir / "key_hit_level");
-  for (const auto &p : *chan) {
-    out << p.first << ' ' << p.second << std::endl;
   }
 }
 
@@ -444,24 +431,13 @@ int main(int argc, char **argv) {
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;
 
-  size_t buf_len = next_power_of_two(num_threads * 10);
-  buffered_channel<std::pair<std::string, int>> *key_hit_level_chan;
-  if (switches & MASK_KEY_HIT_LEVEL) {
-    key_hit_level_chan =
-        new buffered_channel<std::pair<std::string, int>>(buf_len);
-  } else {
-    key_hit_level_chan = nullptr;
-  }
-  std::thread key_hit_level_printer(key_hit_level_print, db_path,
-                                    key_hit_level_chan);
-
   // options.compaction_router = new RouterTrivial;
   // options.compaction_router = new RouterProb(0.5, 233);
   RouterVisCnts *router = nullptr;
   if (first_level_in_cd != 0) {
-    router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                               first_level_in_cd - 1, max_hot_set_size,
-                               switches, key_hit_level_chan);
+    router =
+        new RouterVisCnts(options.comparator, viscnts_path_str,
+                          first_level_in_cd - 1, max_hot_set_size, switches);
     options.compaction_router = router;
   }
 
@@ -625,8 +601,6 @@ int main(int argc, char **argv) {
   rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
   std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
-  if (key_hit_level_chan) key_hit_level_chan->close();
-  key_hit_level_printer.join();
   stat_printer.join();
   period_print_thread.join();
   delete db;

@@ -36,6 +36,7 @@
 
 #include "ycsbgen/ycsbgen.hpp"
 
+std::optional<std::ofstream>& get_key_hit_level_out();
 
 enum class FormatType {
   Plain,
@@ -75,6 +76,8 @@ static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
+static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x4;
+static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
 
 struct Operation {
   OpType type;
@@ -295,6 +298,11 @@ class Tester {
             ? std::optional<std::ofstream>(options_.db_path /
                                           ("latency_" + std::to_string(id)))
             : std::nullopt;
+    if (options_.switches & MASK_KEY_HIT_LEVEL) {
+      get_key_hit_level_out() = std::optional<std::ofstream>(
+          options_.db_path / ("key_hit_level_" + std::to_string(id)));
+    }
+
     std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
     
     rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
