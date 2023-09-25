@@ -232,6 +232,7 @@ class Tester {
   std::atomic<size_t> notfound_counts_{0};
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
+  std::mutex thread_local_m_;
 
  public:
   Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
@@ -271,11 +272,13 @@ class Tester {
     return notfound_counts_.load(std::memory_order_relaxed);
   }
 
-  std::string GetRocksdbPerf() const {
+  std::string GetRocksdbPerf() {
+    std::unique_lock lck(thread_local_m_);
     return perf_contexts_[0] ? perf_contexts_[0]->ToString() : "";
   }
 
-  std::string GetRocksdbIOStats() const {
+  std::string GetRocksdbIOStats() {
+    std::unique_lock lck(thread_local_m_);
     return iostats_contexts_[0] ? iostats_contexts_[0]->ToString() : "";
   }
 
@@ -338,6 +341,12 @@ class Tester {
           options_.progress->fetch_add(1, std::memory_order_relaxed);
         }
       }
+    }
+
+    {
+      std::unique_lock lck(thread_local_m_);
+      perf_contexts_[id] = nullptr;
+      iostats_contexts_[id] = nullptr;
     }
   }
 
