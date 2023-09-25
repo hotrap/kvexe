@@ -4,3 +4,6 @@
 [submodule "3rdparty/counter-timer"]
 	path = 3rdparty/counter-timer
 	url = https://github.com/seekstar/counter-timer-cpp.git
+[submodule "3rdparty/ycsbgen"]
+	path = 3rdparty/ycsbgen
+	url = git@github.com:hotrap/YCSBGenerator.git
