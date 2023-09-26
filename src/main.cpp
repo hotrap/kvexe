@@ -432,8 +432,6 @@ int main(int argc, char **argv) {
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;
 
-  // options.compaction_router = new RouterTrivial;
-  // options.compaction_router = new RouterProb(0.5, 233);
   RouterVisCnts *router = nullptr;
   if (first_level_in_cd != 0) {
     router =
