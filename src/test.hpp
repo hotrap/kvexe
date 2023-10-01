@@ -1,10 +1,10 @@
 #include <rocksdb/cache.h>
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
+#include <rocksdb/iostats_context.h>
+#include <rocksdb/perf_context.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
-#include <rocksdb/perf_context.h>
-#include <rocksdb/iostats_context.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
@@ -36,6 +36,7 @@
 
 #include "ycsbgen/ycsbgen.hpp"
 
+std::optional<std::ofstream>& get_key_hit_level_out();
 
 enum class FormatType {
   Plain,
@@ -75,6 +76,8 @@ static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
+static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x4;
+static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
 
 struct Operation {
   OpType type;
@@ -195,6 +198,7 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
+  bool export_key_only_trace{false};
 };
 
 struct WorkerEnv {
@@ -235,7 +239,10 @@ class Tester {
   std::mutex thread_local_m_;
 
  public:
-  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
+  Tester(const WorkOptions& option)
+      : options_(option),
+        channel_for_workers_(option.num_threads),
+        ycsb_generator_(option.ycsb_gen_options) {
     env_.db = options_.db;
     env_.read_options = rocksdb::ReadOptions();
     env_.write_options = rocksdb::WriteOptions();
@@ -248,14 +255,16 @@ class Tester {
     std::vector<std::thread> threads;
 
     if (options_.enable_fast_generator) {
-      std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
+      std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
+                << std::endl;
     }
 
     perf_contexts_.resize(options_.num_threads);
     iostats_contexts_.resize(options_.num_threads);
     for (size_t i = 0; i < options_.num_threads; i++) {
       threads.emplace_back([this, i]() {
-        work(i, options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
+        work(i,
+             options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
       });
     }
 
@@ -266,7 +275,11 @@ class Tester {
     for (auto& t : threads) t.join();
   }
 
-  size_t GetOpParseCounts() const { return options_.enable_fast_generator ? options_.progress->load(std::memory_order_relaxed) : parse_counts_; }
+  size_t GetOpParseCounts() const {
+    return options_.enable_fast_generator
+               ? options_.progress->load(std::memory_order_relaxed)
+               : parse_counts_;
+  }
 
   size_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
@@ -293,15 +306,25 @@ class Tester {
     std::optional<std::ofstream> latency_out =
         options_.switches & MASK_LATENCY
             ? std::optional<std::ofstream>(options_.db_path /
-                                          ("latency_" + std::to_string(id)))
+                                           ("latency_" + std::to_string(id)))
             : std::nullopt;
+    std::optional<std::ofstream> key_only_trace_out =
+        options_.export_key_only_trace
+            ? std::optional<std::ofstream>(
+                  options_.db_path / ("key_only_trace_" + std::to_string(id)))
+            : std::nullopt;
+    if (options_.switches & MASK_KEY_HIT_LEVEL) {
+      get_key_hit_level_out() = std::optional<std::ofstream>(
+          options_.db_path / ("key_hit_level_" + std::to_string(id)));
+    }
+
     std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
-    
+
     rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
     perf_contexts_[id] = rocksdb::get_perf_context();
     iostats_contexts_[id] = rocksdb::get_iostats_context();
 
-    auto process_op = [&] (const Operation& op) {
+    auto process_op = [&](const Operation& op) {
       if (op.type == OpType::INSERT) {
         do_insert(latency_out, op);
       } else if (op.type == OpType::READ) {
@@ -310,7 +333,7 @@ class Tester {
           print_ans(ans_out.value(), value);
         }
         if (value == "") {
-          notfound_counts_ += 1; // unlikely
+          notfound_counts_ += 1;  // unlikely
         }
       } else if (op.type == OpType::UPDATE) {
         do_update(latency_out, op);
@@ -326,9 +349,21 @@ class Tester {
         auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
         op.value = std::move(ycsb_op.value);
-        if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
-        else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
-        else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
+        if (ycsb_op.type == YCSBGen::OpType::INSERT) {
+          op.type = OpType::INSERT;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "INSERT ";
+        } else if (ycsb_op.type == YCSBGen::OpType::READ) {
+          op.type = OpType::READ;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "READ ";
+        } else if (ycsb_op.type == YCSBGen::OpType::UPDATE) {
+          op.type = OpType::UPDATE;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "UPDATE ";
+        }
+        if (key_only_trace_out.has_value())
+          key_only_trace_out.value() << op.key << '\n';
         process_op(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       } else {
