@@ -193,6 +193,7 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
+  bool export_key_only_trace{false};
 };
 
 struct WorkerEnv {
@@ -279,6 +280,11 @@ class Tester {
             ? std::optional<std::ofstream>(options_.db_path /
                                           ("latency_" + std::to_string(id)))
             : std::nullopt;
+    std::optional<std::ofstream> key_only_trace_out =
+        options_.export_key_only_trace
+            ? std::optional<std::ofstream>(
+                  options_.db_path / ("key_only_trace_" + std::to_string(id)))
+            : std::nullopt;
     std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
     size_t local_notfound_counts = 0;
     size_t local_read_progress = 0;
@@ -313,9 +319,21 @@ class Tester {
         auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
         op.value = std::move(ycsb_op.value);
-        if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
-        else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
-        else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
+        if (ycsb_op.type == YCSBGen::OpType::INSERT) {
+          op.type = OpType::INSERT;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "INSERT ";
+        } else if (ycsb_op.type == YCSBGen::OpType::READ) {
+          op.type = OpType::READ;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "READ ";
+        } else if (ycsb_op.type == YCSBGen::OpType::UPDATE) {
+          op.type = OpType::UPDATE;
+          if (key_only_trace_out.has_value())
+            key_only_trace_out.value() << "UPDATE ";
+        }
+        if (key_only_trace_out.has_value())
+          key_only_trace_out.value() << op.key << '\n';
         process_op(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       } else {
