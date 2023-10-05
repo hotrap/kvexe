@@ -287,12 +287,16 @@ class Tester {
 
   std::string GetRocksdbPerf() {
     std::unique_lock lck(thread_local_m_);
-    return perf_contexts_[0] ? perf_contexts_[0]->ToString() : "";
+    if (perf_contexts_.empty()) return "";
+    if (perf_contexts_[0] == nullptr) return "";
+    return perf_contexts_[0]->ToString();
   }
 
   std::string GetRocksdbIOStats() {
     std::unique_lock lck(thread_local_m_);
-    return iostats_contexts_[0] ? iostats_contexts_[0]->ToString() : "";
+    if (iostats_contexts_.empty()) return "";
+    if (iostats_contexts_[0] == nullptr) return "";
+    return iostats_contexts_[0]->ToString();
   }
 
  private:
