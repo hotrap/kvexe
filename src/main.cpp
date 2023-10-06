@@ -45,8 +45,9 @@ double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-// Return the first level in the last path
-int predict_level_assignment(const rocksdb::Options &options) {
+std::vector<std::pair<size_t, std::string>> predict_level_assignment(
+    const rocksdb::Options &options) {
+  std::vector<std::pair<size_t, std::string>> ret;
   uint32_t p = 0;
   int level = 0;
   assert(!options.db_paths.empty());
@@ -72,8 +73,8 @@ int predict_level_assignment(const rocksdb::Options &options) {
     }
     if (cur_level == level) {
       // Does desired level fit in this path?
-      std::cerr << level << ' ' << options.db_paths[p].path << ' ' << level_size
-                << std::endl;
+      rusty_assert(ret.size() == (size_t)level);
+      ret.emplace_back(level_size, options.db_paths[p].path);
       ++level;
     }
     current_path_size -= level_size;
@@ -96,9 +97,9 @@ int predict_level_assignment(const rocksdb::Options &options) {
     }
     cur_level++;
   }
-  std::cerr << level << "+ " << options.db_paths[p].path << ' ' << level_size
-            << std::endl;
-  return level;
+  rusty_assert(ret.size() == (size_t)level);
+  ret.emplace_back(level_size, options.db_paths[p].path);
+  return ret;
 }
 
 void empty_directory(std::filesystem::path dir_path) {
@@ -428,7 +429,36 @@ int main(int argc, char **argv) {
     empty_directory(viscnts_path_str);
   }
 
-  int first_level_in_cd = predict_level_assignment(options);
+  auto ret = predict_level_assignment(options);
+  rusty_assert(ret.size() > 0);
+  size_t first_level_in_cd = ret.size() - 1;
+  if (max_hot_set_size != 0) {
+    for (;;) {
+      rusty_assert(first_level_in_cd >= 2);
+      size_t last_level_in_sd = first_level_in_cd - 1;
+      options.max_bytes_for_level_multiplier_additional.clear();
+      for (size_t level = 1; level < last_level_in_sd; ++level) {
+        options.max_bytes_for_level_multiplier_additional.push_back(1.0);
+      }
+      options.max_bytes_for_level_multiplier_additional.push_back(
+          1 + (double)max_hot_set_size / ret[last_level_in_sd].first);
+      ret = predict_level_assignment(options);
+      if (ret.size() - 1 == first_level_in_cd) break;
+      rusty_assert(ret.size() - 1 < first_level_in_cd);
+      first_level_in_cd = ret.size() - 1;
+    }
+    std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
+    for (double x : options.max_bytes_for_level_multiplier_additional) {
+      std::cerr << x << ',';
+    }
+    std::cerr << "]\n";
+  }
+  for (size_t level = 0; level < first_level_in_cd; ++level) {
+    std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
+              << std::endl;
+  }
+  std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second << ' '
+            << ret[first_level_in_cd].first << std::endl;
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;
 
