@@ -37,7 +37,7 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-int MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
+double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   if (level >= static_cast<int>(
                    options.max_bytes_for_level_multiplier_additional.size())) {
     return 1;
