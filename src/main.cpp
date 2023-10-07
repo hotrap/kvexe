@@ -104,49 +104,6 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-bool has_background_work(rocksdb::DB *db) {
-  uint64_t flush_pending;
-  uint64_t compaction_pending;
-  uint64_t flush_running;
-  uint64_t compaction_running;
-  bool ok = db->GetIntProperty(
-      rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
-  rusty_assert(ok);
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.compaction-pending"),
-                          &compaction_pending);
-  rusty_assert(ok);
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-flushes"),
-                          &flush_running);
-  rusty_assert(ok);
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-compactions"),
-                          &compaction_running);
-  rusty_assert(ok);
-  return flush_pending || compaction_pending || flush_running ||
-         compaction_running;
-}
-
-void wait_for_background_work(rocksdb::DB *db) {
-  while (1) {
-    if (has_background_work(db)) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-    // The properties are not get atomically. Test for more 20 times more.
-    int i;
-    for (i = 0; i < 20; ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (has_background_work(db)) {
-        break;
-      }
-    }
-    if (i == 20) {
-      // std::cerr << "There is no background work detected for more than 2
-      // seconds. Exiting...\n";
-      break;
-    }
-  }
-}
-
 auto timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::system_clock::now().time_since_epoch())
