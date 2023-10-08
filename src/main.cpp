@@ -52,8 +52,6 @@ std::vector<std::pair<size_t, std::string>> predict_level_assignment(
   int level = 0;
   assert(!options.db_paths.empty());
 
-  std::cerr << "Predicted level assignment:\n";
-
   // size remaining in the most recent path
   uint64_t current_path_size = options.db_paths[0].target_size;
 
@@ -391,7 +389,9 @@ int main(int argc, char **argv) {
   size_t first_level_in_cd = ret.size() - 1;
   if (max_hot_set_size != 0) {
     for (;;) {
-      rusty_assert(first_level_in_cd >= 2);
+      // It seems that L0 and L1 are not affected by
+      // options.max_bytes_for_level_multiplier_additional
+      rusty_assert(first_level_in_cd >= 3);
       size_t last_level_in_sd = first_level_in_cd - 1;
       options.max_bytes_for_level_multiplier_additional.clear();
       for (size_t level = 1; level < last_level_in_sd; ++level) {
