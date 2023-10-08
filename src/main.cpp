@@ -13,27 +13,27 @@ std::optional<std::ofstream> &get_key_hit_level_out() {
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
   std::vector<rocksdb::DbPath> ret;
-  rusty_assert(in.get() == '{', "Invalid db_paths");
+  rusty_assert_eq(in.get(), '{', "Invalid db_paths");
   char c = static_cast<char>(in.get());
   if (c == '}') return ret;
-  rusty_assert(c == '{', "Invalid db_paths");
+  rusty_assert_eq(c, '{', "Invalid db_paths");
   while (1) {
     std::string path;
     size_t size;
     if (in.peek() == '"') {
       in >> std::quoted(path);
-      rusty_assert(in.get() == ',', "Invalid db_paths");
+      rusty_assert_eq(in.get(), ',', "Invalid db_paths");
     } else {
       while ((c = static_cast<char>(in.get())) != ',') path.push_back(c);
     }
     in >> size;
     ret.emplace_back(std::move(path), size);
-    rusty_assert(in.get() == '}', "Invalid db_paths");
+    rusty_assert_eq(in.get(), '}', "Invalid db_paths");
     c = static_cast<char>(in.get());
     if (c != ',') break;
-    rusty_assert(in.get() == '{', "Invalid db_paths");
+    rusty_assert_eq(in.get(), '{', "Invalid db_paths");
   }
-  rusty_assert(c == '}', "Invalid db_paths");
+  rusty_assert_eq(c, '}', "Invalid db_paths");
   return ret;
 }
 
@@ -174,9 +174,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
 
-  bool IsStablyHot(rocksdb::Slice key) override {
-    return vc_.IsStablyHot(key);
-  }
+  bool IsStablyHot(rocksdb::Slice key) override { return vc_.IsStablyHot(key); }
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
   rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
@@ -216,49 +214,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   std::atomic<size_t> new_iter_cnt_;
   std::atomic<size_t> count_access_hot_per_tier_[2];
 };
-
-bool has_background_work(rocksdb::DB *db) {
-  uint64_t flush_pending;
-  uint64_t compaction_pending;
-  uint64_t flush_running;
-  uint64_t compaction_running;
-  bool ok = db->GetIntProperty(
-      rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.compaction-pending"),
-                          &compaction_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-flushes"),
-                          &flush_running);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-compactions"),
-                          &compaction_running);
-  rusty_assert(ok, "");
-  return flush_pending || compaction_pending || flush_running ||
-         compaction_running;
-}
-
-void wait_for_background_work(rocksdb::DB *db) {
-  while (1) {
-    if (has_background_work(db)) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-    // The properties are not get atomically. Test for more 20 times more.
-    int i;
-    for (i = 0; i < 20; ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (has_background_work(db)) {
-        break;
-      }
-    }
-    if (i == 20) {
-      // std::cerr << "There is no background work detected for more than 2
-      // seconds. Exiting...\n";
-      break;
-    }
-  }
-}
 
 template <typename T>
 void print_vector(const std::vector<T> &v) {
@@ -342,7 +297,9 @@ int main(int argc, char **argv) {
       po::value<bool>(&options.use_direct_reads)->default_value(true), "");
   desc.add_options()(
       "use_direct_io_for_flush_and_compaction",
-      po::value<bool>(&options.use_direct_io_for_flush_and_compaction)->default_value(true), "");
+      po::value<bool>(&options.use_direct_io_for_flush_and_compaction)
+          ->default_value(true),
+      "");
   desc.add_options()("db_path",
                      po::value<std::string>(&arg_db_path)->required(),
                      "Path to database");
@@ -635,7 +592,7 @@ int main(int argc, char **argv) {
   stats_print_func(std::cerr);
 
   std::string rocksdb_stats;
-  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
+  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats));
   std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
   stat_printer.join();
