@@ -391,6 +391,11 @@ class Tester {
                     options_.db_path /
                     ("key_only_trace_" + std::to_string(id_)))
               : std::nullopt;
+      if (options_.switches & MASK_KEY_HIT_LEVEL) {
+        get_key_hit_level_out() = std::optional<std::ofstream>(
+            options_.db_path / ("key_hit_level_" + std::to_string(id_)));
+      }
+
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
       rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);

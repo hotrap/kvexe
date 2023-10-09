@@ -167,7 +167,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     auto guard =
         per_level_timers.timer(level, PerLevelTimerType::kAccess).start();
     vc_.Access(key, vlen);
-    if (switches_ & MASK_KEY_HIT_LEVEL) {
+    if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
     }
   }
