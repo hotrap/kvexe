@@ -240,6 +240,9 @@ void bg_stat_printer(const rocksdb::Options *options,
   promoted_2sdlast_out << "Timestamp(ns) num-bytes\n";
   std::ofstream promoted_flush_out(db_path / "promoted-flush-bytes");
   promoted_flush_out << "Timestamp(ns) num-bytes\n";
+
+  std::ofstream num_accesses_out(db_path / "num-accesses");
+
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
 
@@ -259,6 +262,15 @@ void bg_stat_printer(const rocksdb::Options *options,
     auto promoted_flush_bytes =
         options->statistics->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES);
     promoted_flush_out << timestamp << ' ' << promoted_flush_bytes << std::endl;
+
+    size_t num_level = per_level_timers.len();
+    num_accesses_out << timestamp;
+    for (size_t level = 0; level < num_level; ++level) {
+      num_accesses_out
+          << ' '
+          << per_level_timers.timer(level, PerLevelTimerType::kAccess).count();
+    }
+    num_accesses_out << std::endl;
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
