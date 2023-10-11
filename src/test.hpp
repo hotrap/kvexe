@@ -34,6 +34,48 @@
 
 #include "ycsbgen/ycsbgen.hpp"
 
+static bool has_background_work(rocksdb::DB* db) {
+  uint64_t flush_pending;
+  uint64_t compaction_pending;
+  uint64_t flush_running;
+  uint64_t compaction_running;
+  bool ok = db->GetIntProperty(
+      rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
+  rusty_assert(ok);
+  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.compaction-pending"),
+                          &compaction_pending);
+  rusty_assert(ok);
+  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-flushes"),
+                          &flush_running);
+  rusty_assert(ok);
+  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-compactions"),
+                          &compaction_running);
+  rusty_assert(ok);
+  return flush_pending || compaction_pending || flush_running ||
+         compaction_running;
+}
+
+static void wait_for_background_work(rocksdb::DB* db) {
+  while (1) {
+    if (has_background_work(db)) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      continue;
+    }
+    // The properties are not get atomically. Test for more 20 times more.
+    int i;
+    for (i = 0; i < 20; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (has_background_work(db)) {
+        break;
+      }
+    }
+    if (i == 20) {
+      // std::cerr << "There is no background work detected for more than 2
+      // seconds. Exiting...\n";
+      break;
+    }
+  }
+}
 
 enum class FormatType {
   Plain,
@@ -196,13 +238,6 @@ struct WorkOptions {
   bool export_key_only_trace{false};
 };
 
-struct WorkerEnv {
-  rocksdb::DB* db;
-  rocksdb::ReadOptions read_options;
-  rocksdb::WriteOptions write_options;
-  bool ignore_notfound{false};
-};
-
 void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
 
 void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
@@ -222,43 +257,61 @@ void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
 
 class Tester {
   WorkOptions options_;
-  WorkerEnv env_;
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
-  YCSBGen::YCSBGenerator ycsb_generator_;
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
 
  public:
-  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
-    env_.db = options_.db;
-    env_.read_options = rocksdb::ReadOptions();
-    env_.write_options = rocksdb::WriteOptions();
-    if (options_.enable_fast_process) {
-      env_.ignore_notfound = true;
-    }
-  }
+  Tester(const WorkOptions& option)
+      : options_(option), channel_for_workers_(option.num_threads) {}
 
   void Test() {
     std::vector<std::thread> threads;
-
+    std::vector<Worker> workers;
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      workers.emplace_back(i, options_, notfound_counts_);
+    }
     if (options_.enable_fast_generator) {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
-    }
+      YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options);
+      for (size_t i = 0; i < options_.num_threads; ++i) {
+        threads.emplace_back(
+            [&loader, &workers, i]() { workers[i].load(loader); });
+      }
+      for (auto& t : threads) t.join();
+      threads.clear();
+      std::string rocksdb_stats;
+      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+      std::ofstream(options_.db_path / "rocksdb-stats-load.txt")
+          << rocksdb_stats;
 
-    for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, i]() {
-        work(i,
-             options_.enable_fast_process ? channel_ : channel_for_workers_[i]);
-      });
-    }
+      wait_for_background_work(options_.db);
+      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+      std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
+          << rocksdb_stats;
 
-    if (!options_.enable_fast_generator) {
-      parse();
+      YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+      for (size_t i = 0; i < options_.num_threads; ++i) {
+        threads.emplace_back(
+            [&workers, &runner, i]() { workers[i].run(runner); });
+      }
+      for (auto& t : threads) t.join();
+      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+      std::ofstream(options_.db_path / "rocksdb-stats-run.txt")
+          << rocksdb_stats;
+    } else {
+      for (size_t i = 0; i < options_.num_threads; i++) {
+        threads.emplace_back([&]() {
+          workers[i].work(options_.enable_fast_process
+                              ? channel_
+                              : channel_for_workers_[i]);
+        });
+        parse();
+        for (auto& t : threads) t.join();
+      }
     }
-
-    for (auto& t : threads) t.join();
   }
 
   size_t GetOpParseCounts() const { return parse_counts_; }
@@ -268,55 +321,49 @@ class Tester {
   }
 
  private:
-  void work(size_t id, BlockChannel<Operation>& chan) {
-    std::optional<std::ofstream> ans_out =
-        options_.switches & MASK_OUTPUT_ANS
-            ? std::optional<std::ofstream>(options_.db_path /
-                                           ("ans_" + std::to_string(id)))
-            : std::nullopt;
+  class Worker {
+   public:
+    Worker(size_t id, const WorkOptions& options,
+           std::atomic<size_t>& notfound_counts)
+        : id_(id),
+          options_(options),
+          ignore_notfound(options_.enable_fast_process),
+          notfound_counts_(notfound_counts),
+          ans_out_(options_.switches & MASK_OUTPUT_ANS
+                       ? std::optional<std::ofstream>(
+                             options_.db_path / ("ans_" + std::to_string(id)))
+                       : std::nullopt),
+          latency_out_(
+              options_.switches & MASK_LATENCY
+                  ? std::optional<std::ofstream>(
+                        options_.db_path / ("latency_" + std::to_string(id)))
+                  : std::nullopt) {}
 
-    std::optional<std::ofstream> latency_out =
-        options_.switches & MASK_LATENCY
-            ? std::optional<std::ofstream>(options_.db_path /
-                                          ("latency_" + std::to_string(id)))
-            : std::nullopt;
-    std::optional<std::ofstream> key_only_trace_out =
-        options_.export_key_only_trace
-            ? std::optional<std::ofstream>(
-                  options_.db_path / ("key_only_trace_" + std::to_string(id)))
-            : std::nullopt;
-    std::mt19937_64 rndgen(id + options_.ycsb_gen_options.base_seed);
-    size_t local_notfound_counts = 0;
-    size_t local_read_progress = 0;
-
-    auto process_op = [&] (const Operation& op) {
-      if (op.type == OpType::INSERT) {
+    void load(YCSBGen::YCSBLoadGenerator& loader) {
+      std::optional<std::ofstream> latency_out = std::nullopt;
+      Operation op;
+      while (!loader.IsEOF()) {
+        auto ycsb_op = loader.GetNextOp();
+        op.key = std::move(ycsb_op.key);
+        op.value = std::move(ycsb_op.value);
+        rusty_assert(ycsb_op.type == YCSBGen::OpType::INSERT);
+        op.type = OpType::INSERT;
         do_insert(latency_out, op);
-      } else if (op.type == OpType::READ) {
-        auto value = do_read(latency_out, op);
-        if (ans_out) {
-          print_ans(ans_out.value(), value);
-        }
-        if (value == "") {
-          local_notfound_counts++;
-          if ((local_read_progress & 15) == 15) {
-            notfound_counts_ += local_notfound_counts;
-            local_notfound_counts = 0;
-          }
-        }
-        local_read_progress++;
-      } else if (op.type == OpType::UPDATE) {
-        do_update(latency_out, op);
+        options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
-    };
+    }
+    void run(YCSBGen::YCSBRunGenerator& runner) {
+      std::optional<std::ofstream> key_only_trace_out =
+          options_.export_key_only_trace
+              ? std::optional<std::ofstream>(
+                    options_.db_path /
+                    ("key_only_trace_" + std::to_string(id_)))
+              : std::nullopt;
+      std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
-    while (true) {
-      if (options_.enable_fast_generator) {
-        if (ycsb_generator_.IsEOF()) {
-          break;
-        }
-        Operation op;
-        auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
+      Operation op;
+      while (!runner.IsEOF()) {
+        auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
         op.value = std::move(ycsb_op.value);
         if (ycsb_op.type == YCSBGen::OpType::INSERT) {
@@ -336,7 +383,10 @@ class Tester {
           key_only_trace_out.value() << op.key << '\n';
         process_op(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
-      } else {
+      }
+    }
+    void work(BlockChannel<Operation>& chan) {
+      for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
@@ -347,65 +397,99 @@ class Tester {
         }
       }
     }
-  }
 
-  void do_insert(std::optional<std::ofstream>& latency,
-                 const Operation& insert) {
-    auto guard = timers.timer(TimerType::kInsert).start();
-    auto put_start = rusty::time::Instant::now();
-    auto s =
-        env_.db->Put(env_.write_options, insert.key,
-                     rocksdb::Slice(insert.value.data(), insert.value.size()));
-    auto put_time = put_start.elapsed();
-    if (!s.ok()) {
-      std::string err = s.ToString();
-      rusty_panic("INSERT failed with error: %s\n", err.c_str());
-    }
-    timers.timer(TimerType::kPut).add(put_time);
-    if (latency) {
-      print_latency(latency.value(), OpType::INSERT, put_time.as_nanos());
-    }
-  }
-
-  std::string do_read(std::optional<std::ofstream>& latency,
-                      const Operation& read) {
-    auto guard = timers.timer(TimerType::kRead).start();
-    std::string value;
-    auto get_start = rusty::time::Instant::now();
-    auto s = env_.db->Get(env_.read_options, read.key, &value);
-    auto get_time = get_start.elapsed();
-    if (!s.ok()) {
-      if (s.code() == rocksdb::Status::kNotFound && env_.ignore_notfound) {
-        value = "";
-      } else {
+   private:
+    void do_insert(std::optional<std::ofstream>& latency,
+                   const Operation& insert) {
+      auto guard = timers.timer(TimerType::kInsert).start();
+      auto put_start = rusty::time::Instant::now();
+      auto s = options_.db->Put(
+          write_options_, insert.key,
+          rocksdb::Slice(insert.value.data(), insert.value.size()));
+      auto put_time = put_start.elapsed();
+      if (!s.ok()) {
         std::string err = s.ToString();
-        rusty_panic("GET failed with error: %s\n", err.c_str());
+        rusty_panic("INSERT failed with error: %s\n", err.c_str());
+      }
+      timers.timer(TimerType::kPut).add(put_time);
+      if (latency) {
+        print_latency(latency.value(), OpType::INSERT, put_time.as_nanos());
       }
     }
-    timers.timer(TimerType::kGet).add(get_time);
-    if (latency) {
-      print_latency(latency.value(), OpType::READ, get_time.as_nanos());
-    }
-    return value;
-  }
 
-  void do_update(std::optional<std::ofstream>& latency,
-                 const Operation& update) {
-    auto guard = timers.timer(TimerType::kUpdate).start();
-    auto put_start = rusty::time::Instant::now();
-    auto s =
-        env_.db->Put(env_.write_options, update.key,
-                     rocksdb::Slice(update.value.data(), update.value.size()));
-    auto put_time = put_start.elapsed();
-    if (!s.ok()) {
+    std::string do_read(std::optional<std::ofstream>& latency,
+                        const Operation& read) {
+      auto guard = timers.timer(TimerType::kRead).start();
+      std::string value;
+      auto get_start = rusty::time::Instant::now();
+      auto s = options_.db->Get(read_options_, read.key, &value);
+      auto get_time = get_start.elapsed();
+      if (!s.ok()) {
+        if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
+          value = "";
+        } else {
+          std::string err = s.ToString();
+          rusty_panic("GET failed with error: %s\n", err.c_str());
+        }
+      }
+      timers.timer(TimerType::kGet).add(get_time);
+      if (latency) {
+      print_latency(latency.value(), OpType::READ, get_time.as_nanos());
+      }
+      return value;
+    }
+
+    void do_update(std::optional<std::ofstream>& latency,
+                   const Operation& update) {
+      auto guard = timers.timer(TimerType::kUpdate).start();
+      auto put_start = rusty::time::Instant::now();
+      auto s = options_.db->Put(
+          write_options_, update.key,
+          rocksdb::Slice(update.value.data(), update.value.size()));
+      auto put_time = put_start.elapsed();
+      if (!s.ok()) {
       std::string err = s.ToString();
       rusty_panic("Update failed with error: %s\n", err.c_str());
-    }
-    timers.timer(TimerType::kUpdate).add(put_time);
-    if (latency) {
+      }
+      timers.timer(TimerType::kUpdate).add(put_time);
+      if (latency) {
       print_latency(latency.value(), OpType::UPDATE, put_time.as_nanos());
+      }
     }
-  }
+
+    void process_op(const Operation& op) {
+      if (op.type == OpType::INSERT) {
+        do_insert(latency_out_, op);
+      } else if (op.type == OpType::READ) {
+        auto value = do_read(latency_out_, op);
+        if (ans_out_) {
+          print_ans(ans_out_.value(), value);
+        }
+        if (value == "") {
+          local_notfound_counts++;
+          if ((local_read_progress & 15) == 15) {
+            notfound_counts_ += local_notfound_counts;
+            local_notfound_counts = 0;
+          }
+        }
+        local_read_progress++;
+      } else if (op.type == OpType::UPDATE) {
+        do_update(latency_out_, op);
+      }
+    }
+
+    size_t id_;
+    const WorkOptions& options_;
+    rocksdb::ReadOptions read_options_;
+    rocksdb::WriteOptions write_options_;
+    bool ignore_notfound{false};
+    std::atomic<size_t>& notfound_counts_;
+
+    size_t local_notfound_counts{0};
+    size_t local_read_progress{0};
+    std::optional<std::ofstream> ans_out_;
+    std::optional<std::ofstream> latency_out_;
+  };
 
   void parse() {
     std::vector<BlockChannelClient<Operation>> opblocks;
