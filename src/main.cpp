@@ -71,7 +71,7 @@ std::vector<std::pair<size_t, std::string>> predict_level_assignment(
     }
     if (cur_level == level) {
       // Does desired level fit in this path?
-      rusty_assert(ret.size() == (size_t)level);
+      rusty_assert_eq(ret.size(), (size_t)level);
       ret.emplace_back(level_size, options.db_paths[p].path);
       ++level;
     }
@@ -95,7 +95,7 @@ std::vector<std::pair<size_t, std::string>> predict_level_assignment(
     }
     cur_level++;
   }
-  rusty_assert(ret.size() == (size_t)level);
+  rusty_assert_eq(ret.size(), (size_t)level);
   ret.emplace_back(level_size, options.db_paths[p].path);
   return ret;
 }
