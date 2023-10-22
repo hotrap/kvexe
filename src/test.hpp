@@ -26,6 +26,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <queue>
 #include <set>
 #include <string>
