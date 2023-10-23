@@ -29,6 +29,37 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
+// Return the first level in CD
+size_t calculate_multiplier_addtional(rocksdb::Options &options) {
+  rusty_assert_eq(options.db_paths.size(), 2.0);
+  size_t sd_size = options.db_paths[0].target_size;
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    rusty_assert(x - 1 < 1e-6);
+  }
+  options.max_bytes_for_level_multiplier_additional.clear();
+  size_t level = 0;
+  uint64_t level_size = options.max_bytes_for_level_base;
+  while (level_size <= sd_size) {
+    sd_size -= level_size;
+    if (level > 0) {
+      level_size *= options.max_bytes_for_level_multiplier;
+    }
+    level += 1;
+  }
+  level_size /= options.max_bytes_for_level_multiplier;
+  // It seems that L0 and L1 are not affected by
+  // options.max_bytes_for_level_multiplier_additional
+  if (level <= 2) return level;
+  size_t last_level_in_sd = level - 1;
+  for (size_t i = 1; i < last_level_in_sd; ++i) {
+    options.max_bytes_for_level_multiplier_additional.push_back(1.0);
+  }
+  // Multiply 0.99 to make room for floating point error
+  options.max_bytes_for_level_multiplier_additional.push_back(
+      1 + (double)sd_size / level_size * 0.99);
+  return level;
+}
+
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   if (level >= static_cast<int>(
                    options.max_bytes_for_level_multiplier_additional.size())) {
@@ -227,9 +258,13 @@ int main(int argc, char **argv) {
       empty_directory(path.path);
     }
   }
-  options.max_bytes_for_level_multiplier_additional =
-      std::vector<double>({1.0, 1.745});
-  int first_level_in_cd = predict_level_assignment(options);
+  size_t first_level_in_cd = calculate_multiplier_addtional(options);
+  std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]\n";
+  rusty_assert_eq((size_t)predict_level_assignment(options), first_level_in_cd);
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;
 
