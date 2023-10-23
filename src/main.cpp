@@ -205,13 +205,6 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.statistics = rocksdb::CreateDBStatistics();
 
-  options.max_background_jobs = 4;
-
-  // To slow down the execution to make time for compactions
-  options.level0_file_num_compaction_trigger = 1;
-  // options.level0_slowdown_writes_trigger = 2;
-  // options.level0_stop_writes_trigger = 4;
-
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
