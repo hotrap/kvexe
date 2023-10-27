@@ -356,6 +356,7 @@ int main(int argc, char **argv) {
   desc.add_options()("compaction_pri,p",
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
+  desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
                      "Max hot set size in bytes");
@@ -416,6 +417,10 @@ int main(int argc, char **argv) {
   if (vm.count("level0_file_num_compaction_trigger")) {
     options.level0_file_num_compaction_trigger =
         vm["level0_file_num_compaction_trigger"].as<int>();
+  }
+  if (vm.count("max_bytes_for_level_base")) {
+    options.max_bytes_for_level_base =
+        vm["max_bytes_for_level_base"].as<uint64_t>();
   }
 
   if (vm.count("cleanup")) {
