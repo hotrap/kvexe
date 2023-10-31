@@ -166,6 +166,7 @@ int main(int argc, char **argv) {
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
+  desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
   desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
   desc.add_options()(
       "switches", po::value<std::string>(&arg_switches)->default_value("none"),
@@ -209,6 +210,9 @@ int main(int argc, char **argv) {
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+  if (vm.count("block_size")) {
+    table_options.block_size = vm["block_size"].as<size_t>();
+  }
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
 
