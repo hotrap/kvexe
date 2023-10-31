@@ -152,6 +152,11 @@ int main(int argc, char **argv) {
   desc.add_options()(
       "use_direct_reads",
       po::value<bool>(&options.use_direct_reads)->default_value(true), "");
+  desc.add_options()(
+      "use_direct_io_for_flush_and_compaction",
+      po::value<bool>(&options.use_direct_io_for_flush_and_compaction)
+          ->default_value(true),
+      "");
   desc.add_options()("db_path",
                      po::value<std::string>(&arg_db_path)->required(),
                      "Path to database");
