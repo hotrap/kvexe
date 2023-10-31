@@ -104,11 +104,6 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-auto timestamp_ns() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
 void bg_stat_printer(std::filesystem::path db_path,
                      std::atomic<bool> *should_stop,
                      std::atomic<size_t> *progress) {
@@ -341,23 +336,7 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  auto start = std::chrono::steady_clock::now();
   tester.Test();
-  auto end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) for work\n";
-
-  start = std::chrono::steady_clock::now();
-  wait_for_background_work(db);
-  end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) waiting for background work\n";
 
   should_stop.store(true, std::memory_order_relaxed);
 
