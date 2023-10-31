@@ -253,11 +253,6 @@ void print_vector(const std::vector<T> &v) {
   std::cerr << "}";
 }
 
-auto timestamp_ns() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
 void bg_stat_printer(const rocksdb::Options *options,
                      std::filesystem::path db_path,
                      std::atomic<bool> *should_stop,
@@ -356,6 +351,7 @@ int main(int argc, char **argv) {
   desc.add_options()("compaction_pri,p",
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
+  desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
   desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
@@ -407,6 +403,9 @@ int main(int argc, char **argv) {
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+  if (vm.count("block_size")) {
+    table_options.block_size = vm["block_size"].as<size_t>();
+  }
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
 
@@ -599,23 +598,7 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  auto start = std::chrono::steady_clock::now();
   tester.Test();
-  auto end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) for work\n";
-
-  start = std::chrono::steady_clock::now();
-  wait_for_background_work(db);
-  end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) waiting for background work\n";
 
   should_stop.store(true, std::memory_order_relaxed);
   stats_print_func(std::cerr);

@@ -8,6 +8,7 @@
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
 #include <rusty/primitive.h>
+#include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
 
@@ -38,6 +39,12 @@
 #include "ycsbgen/ycsbgen.hpp"
 
 std::optional<std::ofstream>& get_key_hit_level_out();
+
+static inline auto timestamp_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
 
 static bool has_background_work(rocksdb::DB* db) {
   uint64_t flush_pending;
@@ -281,14 +288,19 @@ class Tester {
     perf_contexts_.resize(options_.num_threads);
     iostats_contexts_.resize(options_.num_threads);
 
+    rusty::sync::Mutex<std::ofstream> info_json_out(
+        std::ofstream(options_.db_path / "info.json"));
+    *info_json_out.lock() << "{" << std::endl;
+
     std::vector<std::thread> threads;
     std::vector<Worker> workers;
     for (size_t i = 0; i < options_.num_threads; ++i) {
-      workers.emplace_back(*this, i, options_, notfound_counts_);
+      workers.emplace_back(*this, i, options_, notfound_counts_, info_json_out);
     }
     if (options_.enable_fast_generator) {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
                 << std::endl;
+      auto load_start = rusty::time::Instant::now();
       YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options);
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
@@ -296,22 +308,37 @@ class Tester {
       }
       for (auto& t : threads) t.join();
       threads.clear();
+      *info_json_out.lock()
+          << "\t\"load-time(secs)\": " << load_start.elapsed().as_secs_double()
+          << ',' << std::endl;
       std::string rocksdb_stats;
       rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
       std::ofstream(options_.db_path / "rocksdb-stats-load.txt")
           << rocksdb_stats;
 
+      auto load_wait_start = rusty::time::Instant::now();
       wait_for_background_work(options_.db);
+      *info_json_out.lock()
+          << "\t\"load-wait-time(secs)\": "
+          << load_wait_start.elapsed().as_secs_double() << ',' << std::endl;
       rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
       std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
           << rocksdb_stats;
 
+      *info_json_out.lock()
+          << "\t\"run-start-timestamp(ns)\": " << timestamp_ns() << ','
+          << std::endl;
+      auto run_start = rusty::time::Instant::now();
       YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
             [&workers, &runner, i]() { workers[i].run(runner); });
       }
       for (auto& t : threads) t.join();
+      *info_json_out.lock()
+          << "\t\"run-end-timestamp(ns)\": " << timestamp_ns() << ",\n"
+          << "\t\"run-time(secs)\": " << run_start.elapsed().as_secs_double()
+          << ',' << std::endl;
       rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
       std::ofstream(options_.db_path / "rocksdb-stats-run.txt")
           << rocksdb_stats;
@@ -326,6 +353,11 @@ class Tester {
         for (auto& t : threads) t.join();
       }
     }
+    auto run_wait_start = rusty::time::Instant::now();
+    wait_for_background_work(options_.db);
+    *info_json_out.lock() << "\t\"run_wait_time(secs)\": "
+                          << run_wait_start.elapsed().as_secs_double() << ",\n}"
+                          << std::endl;
   }
 
   size_t GetOpParseCounts() const {
@@ -356,12 +388,14 @@ class Tester {
   class Worker {
    public:
     Worker(Tester& tester, size_t id, const WorkOptions& options,
-           std::atomic<size_t>& notfound_counts)
+           std::atomic<size_t>& notfound_counts,
+           const rusty::sync::Mutex<std::ofstream>& info_json_out)
         : tester_(tester),
           id_(id),
           options_(options),
           ignore_notfound(options_.enable_fast_process),
           notfound_counts_(notfound_counts),
+          info_json_out_(info_json_out),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -407,6 +441,7 @@ class Tester {
       }
 
       Operation op;
+      size_t run_op_70p = options_.ycsb_gen_options.operation_count * 0.7;
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
@@ -427,7 +462,13 @@ class Tester {
         if (key_only_trace_out.has_value())
           key_only_trace_out.value() << op.key << '\n';
         process_op(op);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        size_t progress =
+            options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (progress == run_op_70p) {
+          *info_json_out_.lock()
+              << "\t\"run-70\%-timestamp(ns)\": " << timestamp_ns() << ','
+              << std::endl;
+        }
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
@@ -538,6 +579,7 @@ class Tester {
 
     size_t local_notfound_counts{0};
     size_t local_read_progress{0};
+    const rusty::sync::Mutex<std::ofstream>& info_json_out_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
