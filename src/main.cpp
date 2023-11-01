@@ -156,20 +156,6 @@ static_assert(PER_LEVEL_TIMER_NUM ==
 counter_timer_vec::TypedTimersVector<PerLevelTimerType> per_level_timers(
     PER_LEVEL_TIMER_NUM);
 
-enum class PerTierTimerType : size_t {
-  kTransferRange,
-  kEnd,
-};
-constexpr size_t PER_TIER_TIMER_NUM =
-    static_cast<size_t>(PerTierTimerType::kEnd);
-const char *per_tier_timer_names[] = {
-    "TransferRange",
-};
-static_assert(PER_TIER_TIMER_NUM ==
-              sizeof(per_tier_timer_names) / sizeof(const char *));
-counter_timer_vec::TypedTimersVector<PerTierTimerType> per_tier_timers(
-    PER_TIER_TIMER_NUM);
-
 class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
@@ -546,19 +532,6 @@ int main(int argc, char **argv) {
         assert(counters.size() == 2);
         log << "Access hot per tier: " << counters[0] << ' ' << counters[1]
             << "\n";
-      }
-
-      size_t num_tiers = per_tier_timers.len();
-      for (size_t tier = 0; tier < num_tiers; ++tier) {
-        log << "Tier timers: {tier: " << tier << ", timers: [\n";
-        const auto &timers = per_tier_timers.timers(tier);
-        size_t num_types = timers.len();
-        for (size_t type = 0; type < num_types; ++type) {
-          const auto &timer = timers.timer(type);
-          log << per_tier_timer_names[type] << ": count " << timer.count()
-              << ", total " << timer.time().as_secs_double() << " s,\n";
-        }
-        log << "]},\n";
       }
       log << "end===\n";
 
