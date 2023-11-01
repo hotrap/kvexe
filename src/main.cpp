@@ -383,7 +383,11 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  tester.Test();
+  rusty::sync::Mutex<std::ofstream> info_json_out(
+      std::ofstream(db_path / "info.json"));
+  *info_json_out.lock() << "{" << std::endl;
+  tester.Test(info_json_out);
+  *info_json_out.lock() << "}" << std::endl;
 
   should_stop.store(true, std::memory_order_relaxed);
 

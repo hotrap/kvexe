@@ -275,11 +275,7 @@ class Tester {
   Tester(const WorkOptions& option)
       : options_(option), channel_for_workers_(option.num_threads) {}
 
-  void Test() {
-    rusty::sync::Mutex<std::ofstream> info_json_out(
-        std::ofstream(options_.db_path / "info.json"));
-    *info_json_out.lock() << "{" << std::endl;
-
+  void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     std::vector<std::thread> threads;
     std::vector<Worker> workers;
     for (size_t i = 0; i < options_.num_threads; ++i) {
@@ -344,7 +340,7 @@ class Tester {
     auto run_wait_start = rusty::time::Instant::now();
     wait_for_background_work(options_.db);
     *info_json_out.lock() << "\t\"run_wait_time(secs)\": "
-                          << run_wait_start.elapsed().as_secs_double() << ",\n}"
+                          << run_wait_start.elapsed().as_secs_double() << ","
                           << std::endl;
   }
 
