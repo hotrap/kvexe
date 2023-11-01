@@ -1,5 +1,6 @@
 #include <counter_timer_vec.hpp>
 
+#include "rusty/time.h"
 #include "test.hpp"
 #include "viscnts.h"
 
@@ -164,7 +165,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size)),
         tier0_last_level_(tier0_last_level),
-        new_iter_cnt_(0),
         count_access_hot_per_tier_{0, 0} {}
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
@@ -189,15 +189,19 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
 
-  bool IsStablyHot(rocksdb::Slice key) override { return vc_.IsStablyHot(key); }
+  bool IsStablyHot(rocksdb::Slice key) override {
+    auto guard = timers.timer(TimerType::kIsStablyHot).start();
+    return vc_.IsStablyHot(key);
+  }
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
   rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
-    new_iter_cnt_.fetch_add(1, std::memory_order_relaxed);
+    auto guard = timers.timer(TimerType::kLowerBound).start();
     return vc_.LowerBound(key);
   }
   size_t RangeHotSize(rocksdb::Slice smallest,
                       rocksdb::Slice largest) override {
+    auto guard = timers.timer(TimerType::kRangeHotSize).start();
     rocksdb::Bound start{
         .user_key = smallest,
         .excluded = false,
@@ -209,9 +213,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     rocksdb::RangeBounds range{.start = start, .end = end};
     size_t ret = vc_.RangeHotSize(range);
     return ret;
-  }
-  size_t new_iter_cnt() {
-    return new_iter_cnt_.load(std::memory_order_relaxed);
   }
   std::vector<size_t> hit_count() {
     std::vector<size_t> ret;
@@ -226,7 +227,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   VisCnts vc_;
   int tier0_last_level_;
 
-  std::atomic<size_t> new_iter_cnt_;
   std::atomic<size_t> count_access_hot_per_tier_[2];
 };
 
@@ -526,7 +526,6 @@ int main(int argc, char **argv) {
 
     /* Statistics of router */
     if (router) {
-      log << "New iterator count: " << router->new_iter_cnt() << "\n";
       if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
         auto counters = router->hit_count();
         assert(counters.size() == 2);
@@ -583,7 +582,27 @@ int main(int argc, char **argv) {
       std::ofstream(db_path / "info.json"));
   *info_json_out.lock() << "{" << std::endl;
   tester.Test(info_json_out);
-  *info_json_out.lock() << "}" << std::endl;
+  {
+    auto info_json_out_locked = info_json_out.lock();
+    *info_json_out_locked
+        << "\t\"IsStablyHot(secs)\": "
+        << timers.timer(TimerType::kIsStablyHot).time().as_secs_double()
+        << ",\n"
+        << "\t\"LowerBound(secs)\": "
+        << timers.timer(TimerType::kLowerBound).time().as_secs_double() << ",\n"
+        << "\t\"RangeHotSize(secs)\": "
+        << timers.timer(TimerType::kRangeHotSize).time().as_secs_double()
+        << ",\n";
+    auto access_time = rusty::time::Duration::from_nanos(0);
+    size_t num_levels = per_level_timers.len();
+    for (size_t level = 0; level < num_levels; ++level) {
+      access_time +=
+          per_level_timers.timer(level, PerLevelTimerType::kAccess).time();
+    }
+    *info_json_out_locked << "\t\"Access(secs)\": "
+                          << access_time.as_secs_double() << ",\n}"
+                          << std::endl;
+  }
 
   should_stop.store(true, std::memory_order_relaxed);
   stats_print_func(std::cerr);
