@@ -116,6 +116,7 @@ enum class TimerType : size_t {
   kIsStablyHot,
   kLowerBound,
   kRangeHotSize,
+  kNextHot,
   kEnd,
 };
 
@@ -124,7 +125,7 @@ static const char* timer_names[] = {
     "Insert",      "Read",           "Update",       "Put",
     "Get",         "InputOperation", "InputInsert",  "InputRead",
     "InputUpdate", "Output",         "Serialize",    "Deserialize",
-    "IsStablyHot", "LowerBound",     "RangeHotSize",
+    "IsStablyHot", "LowerBound",     "RangeHotSize", "NextHot",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);

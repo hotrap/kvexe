@@ -1,5 +1,6 @@
 #include <counter_timer_vec.hpp>
 
+#include "rocksdb/compaction_router.h"
 #include "rusty/time.h"
 #include "test.hpp"
 #include "viscnts.h"
@@ -157,6 +158,20 @@ static_assert(PER_LEVEL_TIMER_NUM ==
 counter_timer_vec::TypedTimersVector<PerLevelTimerType> per_level_timers(
     PER_LEVEL_TIMER_NUM);
 
+template <typename T>
+class TimedIter : public rocksdb::TraitIterator<T> {
+ public:
+  TimedIter(std::unique_ptr<rocksdb::TraitIterator<T>> iter)
+      : iter_(std::move(iter)) {}
+  std::unique_ptr<T> next() override {
+    auto guard = timers.timer(TimerType::kNextHot).start();
+    return iter_->next();
+  }
+
+ private:
+  std::unique_ptr<rocksdb::TraitIterator<T>> iter_;
+};
+
 class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
@@ -197,7 +212,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   // NextHot with this iterator
   rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
     auto guard = timers.timer(TimerType::kLowerBound).start();
-    return vc_.LowerBound(key);
+    return rocksdb::CompactionRouter::Iter(
+        std::make_unique<TimedIter<rocksdb::HotRecInfo>>(vc_.LowerBound(key)));
   }
   size_t RangeHotSize(rocksdb::Slice smallest,
                       rocksdb::Slice largest) override {
@@ -592,7 +608,9 @@ int main(int argc, char **argv) {
         << timers.timer(TimerType::kLowerBound).time().as_secs_double() << ",\n"
         << "\t\"RangeHotSize(secs)\": "
         << timers.timer(TimerType::kRangeHotSize).time().as_secs_double()
-        << ",\n";
+        << ",\n"
+        << "\t\"NextHot(secs)\": "
+        << timers.timer(TimerType::kNextHot).time().as_secs_double() << ",\n";
     auto access_time = rusty::time::Duration::from_nanos(0);
     size_t num_levels = per_level_timers.len();
     for (size_t level = 0; level < num_levels; ++level) {
