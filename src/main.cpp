@@ -265,7 +265,7 @@ void bg_stat_printer(const rocksdb::Options *options,
   std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
 
   std::ofstream promoted_bytes_out(db_path / "promoted-bytes");
-  promoted_bytes_out << "Timestamp(ns) by-flush 2sdlast\n";
+  promoted_bytes_out << "Timestamp(ns) by-flush 2sdlast 2cdfront\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-stably-hot has-newer-version\n";
@@ -289,6 +289,9 @@ void bg_stat_printer(const rocksdb::Options *options,
                        << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES)
                        << ' '
                        << stats->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES)
+                       << ' '
+                       << stats->getTickerCount(
+                              rocksdb::PROMOTED_2CDFRONT_BYTES)
                        << std::endl;
 
     not_promoted_bytes_out
