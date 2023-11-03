@@ -264,12 +264,15 @@ void bg_stat_printer(const rocksdb::Options *options,
   auto mem_path = db_path / "mem";
   std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
 
-  std::ofstream promoted_2sdlast_out(db_path / "promoted-2sdlast-bytes");
-  promoted_2sdlast_out << "Timestamp(ns) num-bytes\n";
-  std::ofstream promoted_flush_out(db_path / "promoted-flush-bytes");
-  promoted_flush_out << "Timestamp(ns) num-bytes\n";
+  std::ofstream promoted_bytes_out(db_path / "promoted-bytes");
+  promoted_bytes_out << "Timestamp(ns) by-flush 2sdlast\n";
+
+  std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
+  not_promoted_bytes_out << "Timestamp(ns) not-stably-hot has-newer-version\n";
 
   std::ofstream num_accesses_out(db_path / "num-accesses");
+
+  auto stats = options->statistics;
 
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
@@ -282,14 +285,16 @@ void bg_stat_printer(const rocksdb::Options *options,
                  " -o rss | tail -n 1 >> " + mem_path.c_str())
                     .c_str());
 
-    auto promoted_2sdlast_bytes =
-        options->statistics->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES);
-    promoted_2sdlast_out << timestamp << ' ' << promoted_2sdlast_bytes
-                         << std::endl;
+    promoted_bytes_out << timestamp << ' '
+                       << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES)
+                       << ' '
+                       << stats->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES)
+                       << std::endl;
 
-    auto promoted_flush_bytes =
-        options->statistics->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES);
-    promoted_flush_out << timestamp << ' ' << promoted_flush_bytes << std::endl;
+    not_promoted_bytes_out
+        << timestamp << ' '
+        << stats->getTickerCount(rocksdb::NOT_STABLY_HOT_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
     size_t num_level = per_level_timers.len();
     num_accesses_out << timestamp;
