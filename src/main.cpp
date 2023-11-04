@@ -163,7 +163,7 @@ class TimedIter : public rocksdb::TraitIterator<T> {
  public:
   TimedIter(std::unique_ptr<rocksdb::TraitIterator<T>> iter)
       : iter_(std::move(iter)) {}
-  std::unique_ptr<T> next() override {
+  rocksdb::optional<T> next() override {
     auto guard = timers.timer(TimerType::kNextHot).start();
     return iter_->next();
   }
