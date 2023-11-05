@@ -442,7 +442,8 @@ class Tester {
       }
 
       Operation op;
-      size_t run_op_70p = options_.ycsb_gen_options.operation_count * 0.7;
+      size_t run_op_70p = options_.ycsb_gen_options.record_count +
+                          options_.ycsb_gen_options.operation_count * 0.7;
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
