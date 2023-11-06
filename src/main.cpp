@@ -246,15 +246,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   std::atomic<size_t> count_access_hot_per_tier_[2];
 };
 
-template <typename T>
-void print_vector(const std::vector<T> &v) {
-  std::cerr << "{";
-  for (size_t i = 0; i < v.size(); ++i) {
-    std::cerr << i << ':' << v[i] << ',';
-  }
-  std::cerr << "}";
-}
-
 void bg_stat_printer(const rocksdb::Options *options,
                      std::filesystem::path db_path,
                      std::atomic<bool> *should_stop,
@@ -318,6 +309,7 @@ int main(int argc, char **argv) {
   std::cout.tie(0);
 
   rocksdb::Options options;
+  WorkOptions work_option;
 
   namespace po = boost::program_options;
   po::options_description desc("Available options");
@@ -392,6 +384,10 @@ int main(int argc, char **argv) {
   desc.add_options()("compaction_pri,p",
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
+  desc.add_options()(
+      "db_paths_soft_size_limit_multiplier",
+      po::value<double>(&work_option.db_paths_soft_size_limit_multiplier)
+          ->default_value(1.1));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -449,11 +445,9 @@ int main(int argc, char **argv) {
     empty_directory(viscnts_path_str);
   }
   size_t first_level_in_cd = calculate_multiplier_addtional(options);
-  std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
-  for (double x : options.max_bytes_for_level_multiplier_additional) {
-    std::cerr << x << ',';
-  }
-  std::cerr << "]\n";
+  std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
+  print_vector(options.max_bytes_for_level_multiplier_additional);
+  std::cerr << std::endl;
   auto ret = predict_level_assignment(options);
   rusty_assert_eq(ret.size() - 1, first_level_in_cd);
   for (size_t level = 0; level < first_level_in_cd; ++level) {
@@ -497,7 +491,6 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  WorkOptions work_option;
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;

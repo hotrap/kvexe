@@ -46,6 +46,15 @@ static inline auto timestamp_ns() {
       .count();
 }
 
+template <typename T>
+void print_vector(const std::vector<T>& v) {
+  std::cerr << '[';
+  for (double x : v) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]";
+}
+
 static bool has_background_work(rocksdb::DB* db) {
   uint64_t flush_pending;
   uint64_t compaction_pending;
@@ -254,6 +263,7 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
+  double db_paths_soft_size_limit_multiplier;
   bool export_key_only_trace{false};
 };
 
@@ -325,6 +335,14 @@ class Tester {
       rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
       std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
           << rocksdb_stats;
+
+      options_.db->SetOptions(
+          {{"db_paths_soft_size_limit_multiplier",
+            std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
+      std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
+      print_vector(
+          options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
+      std::cerr << std::endl;
 
       *info_json_out.lock()
           << "\t\"run-start-timestamp(ns)\": " << timestamp_ns() << ','
