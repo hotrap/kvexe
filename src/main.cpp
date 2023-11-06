@@ -255,8 +255,10 @@ void bg_stat_printer(const rocksdb::Options *options,
   auto mem_path = db_path / "mem";
   std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
 
-  std::ofstream promoted_bytes_out(db_path / "promoted-bytes");
-  promoted_bytes_out << "Timestamp(ns) by-flush 2sdlast 2cdfront\n";
+  std::ofstream promoted_or_retained_out(db_path /
+                                         "promoted-or-retained-bytes");
+  promoted_or_retained_out
+      << "Timestamp(ns) by-flush 2sdlast 2cdfront retained\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-stably-hot has-newer-version\n";
@@ -276,14 +278,12 @@ void bg_stat_printer(const rocksdb::Options *options,
                  " -o rss | tail -n 1 >> " + mem_path.c_str())
                     .c_str());
 
-    promoted_bytes_out << timestamp << ' '
-                       << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES)
-                       << ' '
-                       << stats->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES)
-                       << ' '
-                       << stats->getTickerCount(
-                              rocksdb::PROMOTED_2CDFRONT_BYTES)
-                       << std::endl;
+    promoted_or_retained_out
+        << timestamp << ' '
+        << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::PROMOTED_2SDLAST_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::PROMOTED_2CDFRONT_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::RETAINED_BYTES) << std::endl;
 
     not_promoted_bytes_out
         << timestamp << ' '
