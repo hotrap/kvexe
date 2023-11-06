@@ -177,10 +177,17 @@ void bg_stat_printer(std::filesystem::path db_path,
                      std::atomic<size_t> *progress) {
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed\n";
+  
+  auto mem_path = db_path / "mem";
+  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
     auto value = progress->load(std::memory_order_relaxed);
     progress_out << timestamp << ' ' << value << std::endl;
+    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
+    std::system(("ps -q " + std::to_string(getpid()) +
+                 " -o rss | tail -n 1 >> " + mem_path.c_str())
+                    .c_str());
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 }
@@ -251,8 +258,8 @@ int main(int argc, char **argv) {
     in >> std::hex >> switches;
   }
 
-  // Set 7 threads for compaction, 1 thread for flush.
-  options.IncreaseParallelism(8);
+  // Set 3 threads for compaction, 1 thread for flush.
+  options.IncreaseParallelism(4);
 
   options.OptimizeLevelStyleCompaction();
   options.compaction_readahead_size = 2 * 1024 * 1024;
@@ -272,7 +279,9 @@ int main(int argc, char **argv) {
   options.compression = rocksdb::kNoCompression;
 
   options.min_write_buffer_number_to_merge = 1;
-  options.max_write_buffer_number = 4;
+  options.max_write_buffer_number = 2;
+  // To prevent preload all table handlers! It lets one SST be opened twice then when it closes, the pointer in _sstMap becomes nullptr!! 
+  options.max_open_files = 500000;
   options.statistics = rocksdb::CreateDBStatistics();
 
   // Mutant set table options in DB::Open.
