@@ -236,14 +236,13 @@ class Tester {
   WorkerEnv env_;
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
-  YCSBGen::YCSBGenerator ycsb_generator_;
 
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
   
  public:
-  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads), ycsb_generator_(option.ycsb_gen_options) {
+  Tester(const WorkOptions& option) : options_(option), channel_for_workers_(option.num_threads) {
     env_.db = options_.db;
     env_.read_options = leveldb::ReadOptions();
     env_.write_options = leveldb::WriteOptions();
@@ -258,16 +257,33 @@ class Tester {
     if (options_.enable_fast_generator) {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString() << std::endl;
     }
-
-    for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, i]() { work(i, options_.enable_fast_process ? channel_ : channel_for_workers_[i]); });
-    }
-
-    if (!options_.enable_fast_generator) {
+    
+    if (!options_.enable_fast_generator) { 
+      for (size_t i = 0; i < options_.num_threads; i++) {
+        threads.emplace_back([this, i]() {
+          auto _ = YCSBGen::YCSBLoadGenerator(options_.ycsb_gen_options);
+          work(i,
+              options_.enable_fast_process ? channel_ : channel_for_workers_[i], _);
+        });
+      }
       parse();
-    }
+      for (auto& t : threads) t.join();
+    } else {
+      YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options);
+      for (size_t i = 0; i < options_.num_threads; ++i) {
+        threads.emplace_back(
+            [&loader, this, i]() { work(i, channel_, loader); });
+      }
+      for (auto& t : threads) t.join();
+      threads.clear();
 
-    for (auto& t : threads) t.join();
+      YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+      for (size_t i = 0; i < options_.num_threads; ++i) {
+        threads.emplace_back(
+            [&runner, this, i]() { work(i, channel_, runner); });
+      }
+      for (auto& t : threads) t.join();
+    }
   }
 
   size_t GetOpParseCounts() const {
@@ -279,7 +295,8 @@ class Tester {
   }
 
  private:
-  void work(size_t id, BlockChannel<Operation>& chan) {
+  template<typename T>
+  void work(size_t id, BlockChannel<Operation>& chan, T& ycsb_generator) {
     std::optional<std::ofstream> ans_out =
         options_.switches & MASK_OUTPUT_ANS
             ? std::optional<std::ofstream>(options_.db_path /
@@ -319,18 +336,18 @@ class Tester {
 
     while (true) {
       if (options_.enable_fast_generator) {
-        if (ycsb_generator_.IsEOF()) {
+        if (ycsb_generator.IsEOF()) {
           break;
         }
         Operation op;
-        auto ycsb_op = ycsb_generator_.GetNextOp(rndgen);
+        auto ycsb_op = ycsb_generator.GetNextOp(rndgen);
         op.key = gen_prism_key(ycsb_op.key, 0, options_.num_keys);
         op.value = std::move(ycsb_op.value);
         if (ycsb_op.type == YCSBGen::OpType::INSERT) op.type = OpType::INSERT;
         else if (ycsb_op.type == YCSBGen::OpType::READ) op.type = OpType::READ;
         else if (ycsb_op.type == YCSBGen::OpType::UPDATE) op.type = OpType::UPDATE;
         process_op(op);
-        if(options_.progress->fetch_add(1, std::memory_order_relaxed) == options_.num_load_ops) {
+        if(options_.progress->fetch_add(1, std::memory_order_relaxed) == options_.ycsb_gen_options.record_count) {
           env_.db->SetDbMode(0);
           env_.db->ResetMigrationStats();
         }

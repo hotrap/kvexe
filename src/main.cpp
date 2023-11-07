@@ -78,10 +78,16 @@ void bg_stat_printer(std::filesystem::path db_path,
                      std::atomic<size_t> *progress) {
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed\n";
+  auto mem_path = db_path / "mem";
+  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
     auto value = progress->load(std::memory_order_relaxed);
     progress_out << timestamp << ' ' << value << std::endl;
+    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
+    std::system(("ps -q " + std::to_string(getpid()) +
+                 " -o rss | tail -n 1 >> " + mem_path.c_str())
+                    .c_str());
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 }
@@ -147,6 +153,7 @@ int main(int argc, char **argv) {
   desc.add_options()("enable_fast_generator", "Enable fast generator");
   desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
   desc.add_options()("read_dominated_threshold", po::value(&options.read_dominated_threshold)->default_value(0.95), "read_dominated_threshold");
+  desc.add_options()("stop_upsert_trigger", po::value(&options.stop_upsert_trigger)->default_value(250 * 1e6), "stop_upsert_trigger");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
