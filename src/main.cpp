@@ -261,7 +261,6 @@ int main(int argc, char **argv) {
   // Set 3 threads for compaction, 1 thread for flush.
   options.IncreaseParallelism(4);
 
-  options.OptimizeLevelStyleCompaction();
   options.compaction_readahead_size = 2 * 1024 * 1024;
 
   std::filesystem::path db_path(arg_db_path);
@@ -277,6 +276,7 @@ int main(int argc, char **argv) {
   options.mutant_options.monitor_temp = true;
   options.mutant_options.fast_dev_size = options.db_paths[0].target_size;
   options.compression = rocksdb::kNoCompression;
+  options.max_bytes_for_level_base = 128 << 20;
 
   options.min_write_buffer_number_to_merge = 1;
   options.max_write_buffer_number = 2;
