@@ -173,6 +173,7 @@ int main(int argc, char **argv) {
   }
 
   //PrismDB
+  num_keys = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file).record_count : num_keys;
   options.env = leveldb::Env::Default();
   options.block_cache = leveldb::NewLRUCache(cache_size);
   options.filter_policy = leveldb::NewBloomFilterPolicy(10);
