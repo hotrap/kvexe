@@ -109,6 +109,19 @@ enum class OpType {
   UPDATE,
   RMW,
 };
+static inline const char* to_string(OpType type) {
+  switch (type) {
+    case OpType::INSERT:
+      return "INSERT";
+    case OpType::READ:
+      return "READ";
+    case OpType::UPDATE:
+      return "UPDATE";
+    case OpType::RMW:
+      return "RMW";
+  }
+  rusty_panic();
+}
 
 enum class TimerType : size_t {
   kInsert,
@@ -271,21 +284,7 @@ struct WorkOptions {
 void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
 
 void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
-  switch (op) {
-    case OpType::INSERT:
-      out << "INSERT";
-      break;
-    case OpType::READ:
-      out << "READ";
-      break;
-    case OpType::UPDATE:
-      out << "UPDATE";
-      break;
-    case OpType::RMW:
-      out << "RMW";
-      break;
-  }
-  out << ' ' << nanos << '\n';
+  out << to_string(op) << ' ' << nanos << '\n';
 }
 
 class Tester {
@@ -437,17 +436,6 @@ class Tester {
       }
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
-      std::optional<std::ofstream> key_only_trace_out =
-          options_.export_key_only_trace
-              ? std::optional<std::ofstream>(
-                    options_.db_path /
-                    ("key_only_trace_" + std::to_string(id_)))
-              : std::nullopt;
-      if (options_.switches & MASK_KEY_HIT_LEVEL) {
-        get_key_hit_level_out() = std::optional<std::ofstream>(
-            options_.db_path / ("key_hit_level_" + std::to_string(id_)));
-      }
-
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
       rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
@@ -462,8 +450,18 @@ class Tester {
                           options_.ycsb_gen_options.operation_count * 0.7;
       size_t last_op_in_current_stage = run_op_70p;
       if (options_.switches & MASK_LATENCY) {
-        latency_out_ = std::optional<std::ofstream>(
+        latency_out_ = std::make_optional<std::ofstream>(
             options_.db_path / (std::to_string(id_) + "_latency_0_70"));
+      }
+      std::optional<std::ofstream> key_only_trace_out =
+          options_.export_key_only_trace
+              ? std::make_optional<std::ofstream>(
+                    options_.db_path /
+                    (std::to_string(id_) + "_key_only_trace_0_70"))
+              : std::nullopt;
+      if (options_.switches & MASK_KEY_HIT_LEVEL) {
+        get_key_hit_level_out() = std::make_optional<std::ofstream>(
+            options_.db_path / (std::to_string(id_) + "_key_hit_level_0_70"));
       }
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
@@ -472,27 +470,20 @@ class Tester {
         switch (ycsb_op.type) {
           case YCSBGen::OpType::INSERT:
             op.type = OpType::INSERT;
-            if (key_only_trace_out.has_value())
-              key_only_trace_out.value() << "INSERT ";
             break;
           case YCSBGen::OpType::READ:
             op.type = OpType::READ;
-            if (key_only_trace_out.has_value())
-              key_only_trace_out.value() << "READ ";
             break;
           case YCSBGen::OpType::UPDATE:
             op.type = OpType::UPDATE;
-            if (key_only_trace_out.has_value())
-              key_only_trace_out.value() << "UPDATE ";
             break;
           case YCSBGen::OpType::RMW:
             op.type = OpType::RMW;
-            if (key_only_trace_out.has_value())
-              key_only_trace_out.value() << "RMW ";
             break;
         }
         if (key_only_trace_out.has_value())
-          key_only_trace_out.value() << op.key << '\n';
+          key_only_trace_out.value()
+              << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op);
         size_t progress =
             options_.progress->fetch_add(1, std::memory_order_relaxed);
@@ -505,8 +496,18 @@ class Tester {
           last_op_in_current_stage = options_.ycsb_gen_options.record_count +
                                      options_.ycsb_gen_options.operation_count;
           if (options_.switches & MASK_LATENCY) {
-            latency_out_ = std::optional<std::ofstream>(
+            latency_out_ = std::make_optional<std::ofstream>(
                 options_.db_path / (std::to_string(id_) + "_latency_70_100"));
+          }
+          if (options_.export_key_only_trace) {
+            key_only_trace_out = std::make_optional<std::ofstream>(
+                options_.db_path /
+                (std::to_string(id_) + "_key_only_trace_70_100"));
+          }
+          if (options_.switches & MASK_KEY_HIT_LEVEL) {
+            get_key_hit_level_out() = std::make_optional<std::ofstream>(
+                options_.db_path /
+                (std::to_string(id_) + "_key_hit_level_70_100"));
           }
         }
       }
