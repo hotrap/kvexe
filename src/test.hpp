@@ -107,6 +107,7 @@ enum class OpType {
   INSERT,
   READ,
   UPDATE,
+  RMW,
 };
 
 enum class TimerType : size_t {
@@ -280,6 +281,9 @@ void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
     case OpType::UPDATE:
       out << "UPDATE";
       break;
+    case OpType::RMW:
+      out << "RMW";
+      break;
   }
   out << ' ' << nanos << '\n';
 }
@@ -421,7 +425,6 @@ class Tester {
                        : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      std::optional<std::ofstream> latency_out = std::nullopt;
       Operation op;
       while (!loader.IsEOF()) {
         auto ycsb_op = loader.GetNextOp();
@@ -429,7 +432,7 @@ class Tester {
         op.value = std::move(ycsb_op.value);
         rusty_assert(ycsb_op.type == YCSBGen::OpType::INSERT);
         op.type = OpType::INSERT;
-        do_insert(latency_out, op);
+        do_insert(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
@@ -466,18 +469,27 @@ class Tester {
         auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
         op.value = std::move(ycsb_op.value);
-        if (ycsb_op.type == YCSBGen::OpType::INSERT) {
-          op.type = OpType::INSERT;
-          if (key_only_trace_out.has_value())
-            key_only_trace_out.value() << "INSERT ";
-        } else if (ycsb_op.type == YCSBGen::OpType::READ) {
-          op.type = OpType::READ;
-          if (key_only_trace_out.has_value())
-            key_only_trace_out.value() << "READ ";
-        } else if (ycsb_op.type == YCSBGen::OpType::UPDATE) {
-          op.type = OpType::UPDATE;
-          if (key_only_trace_out.has_value())
-            key_only_trace_out.value() << "UPDATE ";
+        switch (ycsb_op.type) {
+          case YCSBGen::OpType::INSERT:
+            op.type = OpType::INSERT;
+            if (key_only_trace_out.has_value())
+              key_only_trace_out.value() << "INSERT ";
+            break;
+          case YCSBGen::OpType::READ:
+            op.type = OpType::READ;
+            if (key_only_trace_out.has_value())
+              key_only_trace_out.value() << "READ ";
+            break;
+          case YCSBGen::OpType::UPDATE:
+            op.type = OpType::UPDATE;
+            if (key_only_trace_out.has_value())
+              key_only_trace_out.value() << "UPDATE ";
+            break;
+          case YCSBGen::OpType::RMW:
+            op.type = OpType::RMW;
+            if (key_only_trace_out.has_value())
+              key_only_trace_out.value() << "RMW ";
+            break;
         }
         if (key_only_trace_out.has_value())
           key_only_trace_out.value() << op.key << '\n';
@@ -518,8 +530,7 @@ class Tester {
     }
 
    private:
-    void do_insert(std::optional<std::ofstream>& latency,
-                   const Operation& insert) {
+    void do_insert(const Operation& insert) {
       auto guard = timers.timer(TimerType::kInsert).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
@@ -531,13 +542,13 @@ class Tester {
         rusty_panic("INSERT failed with error: %s\n", err.c_str());
       }
       timers.timer(TimerType::kPut).add(put_time);
-      if (latency) {
-        print_latency(latency.value(), OpType::INSERT, put_time.as_nanos());
+      if (latency_out_) {
+        print_latency(latency_out_.value(), OpType::INSERT,
+                      put_time.as_nanos());
       }
     }
 
-    std::string do_read(std::optional<std::ofstream>& latency,
-                        const Operation& read) {
+    std::string do_read(const Operation& read) {
       auto guard = timers.timer(TimerType::kRead).start();
       std::string value;
       auto get_start = rusty::time::Instant::now();
@@ -552,14 +563,13 @@ class Tester {
         }
       }
       timers.timer(TimerType::kGet).add(get_time);
-      if (latency) {
-        print_latency(latency.value(), OpType::READ, get_time.as_nanos());
+      if (latency_out_) {
+        print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
       return value;
     }
 
-    void do_update(std::optional<std::ofstream>& latency,
-                   const Operation& update) {
+    void do_update(const Operation& update) {
       auto guard = timers.timer(TimerType::kUpdate).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
@@ -571,29 +581,61 @@ class Tester {
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
       timers.timer(TimerType::kUpdate).add(put_time);
-      if (latency) {
-        print_latency(latency.value(), OpType::UPDATE, put_time.as_nanos());
+      if (latency_out_) {
+        print_latency(latency_out_.value(), OpType::UPDATE,
+                      put_time.as_nanos());
+      }
+    }
+
+    void do_read_modify_write(const Operation& op) {
+      auto start = rusty::time::Instant::now();
+      std::string value;
+      auto s = options_.db->Get(read_options_, op.key, &value);
+      if (!s.ok()) {
+        if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
+          value = "";
+        } else {
+          std::string err = s.ToString();
+          rusty_panic("GET failed with error: %s\n", err.c_str());
+        }
+      }
+      s = options_.db->Put(write_options_, op.key,
+                           rocksdb::Slice(op.value.data(), op.value.size()));
+      if (!s.ok()) {
+        std::string err = s.ToString();
+        rusty_panic("Update failed with error: %s\n", err.c_str());
+      }
+      if (latency_out_) {
+        print_latency(latency_out_.value(), OpType::RMW,
+                      start.elapsed().as_nanos());
       }
     }
 
     void process_op(const Operation& op) {
-      if (op.type == OpType::INSERT) {
-        do_insert(latency_out_, op);
-      } else if (op.type == OpType::READ) {
-        auto value = do_read(latency_out_, op);
-        if (ans_out_) {
-          print_ans(ans_out_.value(), value);
-        }
-        if (value == "") {
-          local_notfound_counts++;
-          if ((local_read_progress & 15) == 15) {
-            notfound_counts_ += local_notfound_counts;
-            local_notfound_counts = 0;
+      switch (op.type) {
+        case OpType::INSERT:
+          do_insert(op);
+          break;
+        case OpType::READ: {
+          auto value = do_read(op);
+          if (ans_out_) {
+            print_ans(ans_out_.value(), value);
           }
-        }
-        local_read_progress++;
-      } else if (op.type == OpType::UPDATE) {
-        do_update(latency_out_, op);
+          if (value == "") {
+            local_notfound_counts++;
+            if ((local_read_progress & 15) == 15) {
+              notfound_counts_ += local_notfound_counts;
+              local_notfound_counts = 0;
+            }
+          }
+          local_read_progress++;
+        } break;
+        case OpType::UPDATE:
+          do_update(op);
+          break;
+        case OpType::RMW:
+          do_read_modify_write(op);
+          break;
       }
     }
 
