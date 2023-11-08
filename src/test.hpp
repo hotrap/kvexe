@@ -29,6 +29,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <queue>
 #include <set>
@@ -493,8 +494,7 @@ class Tester {
               << std::endl;
         }
         if (progress >= last_op_in_current_stage) {
-          last_op_in_current_stage = options_.ycsb_gen_options.record_count +
-                                     options_.ycsb_gen_options.operation_count;
+          last_op_in_current_stage = std::numeric_limits<size_t>::max();
           if (options_.switches & MASK_LATENCY) {
             latency_out_ = std::make_optional<std::ofstream>(
                 options_.db_path / (std::to_string(id_) + "_latency_70_100"));
