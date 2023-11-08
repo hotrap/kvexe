@@ -364,12 +364,7 @@ class Tester {
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
-                       : std::nullopt),
-          latency_out_(
-              options_.switches & MASK_LATENCY
-                  ? std::optional<std::ofstream>(
-                        options_.db_path / ("latency_" + std::to_string(id)))
-                  : std::nullopt) {}
+                       : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
       std::optional<std::ofstream> latency_out = std::nullopt;
@@ -396,6 +391,11 @@ class Tester {
       Operation op;
       size_t run_op_70p = options_.ycsb_gen_options.record_count +
                           options_.ycsb_gen_options.operation_count * 0.7;
+      size_t last_op_in_current_stage = run_op_70p;
+      if (options_.switches & MASK_LATENCY) {
+        latency_out_ = std::optional<std::ofstream>(
+            options_.db_path / (std::to_string(id_) + "_latency_0_70"));
+      }
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
@@ -422,6 +422,14 @@ class Tester {
           *info_json_out_.lock()
               << "\t\"run-70\%-timestamp(ns)\": " << timestamp_ns() << ','
               << std::endl;
+        }
+        if (progress >= last_op_in_current_stage) {
+          last_op_in_current_stage = options_.ycsb_gen_options.record_count +
+                                     options_.ycsb_gen_options.operation_count;
+          if (options_.switches & MASK_LATENCY) {
+            latency_out_ = std::optional<std::ofstream>(
+                options_.db_path / (std::to_string(id_) + "_latency_70_100"));
+          }
         }
       }
     }
