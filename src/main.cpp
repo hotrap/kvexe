@@ -250,10 +250,21 @@ void bg_stat_printer(const rocksdb::Options *options,
                      std::filesystem::path db_path,
                      std::atomic<bool> *should_stop,
                      std::atomic<size_t> *progress) {
+  std::string pid = std::to_string(getpid());
+
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed\n";
+
   auto mem_path = db_path / "mem";
+  std::string mem_command =
+      "ps -q " + pid + " -o rss | tail -n 1 >> " + mem_path.c_str();
   std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+
+  auto cputimes_path = db_path / "cputimes";
+  std::string cputimes_command = "echo $(ps -q " + pid +
+                                 " -o cputimes | tail -n 1) >> " +
+                                 cputimes_path.c_str();
+  std::ofstream(cputimes_path) << "Timestamp(ns) cputime(s)\n";
 
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
@@ -274,9 +285,10 @@ void bg_stat_printer(const rocksdb::Options *options,
     progress_out << timestamp << ' ' << value << std::endl;
 
     std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
-    std::system(("ps -q " + std::to_string(getpid()) +
-                 " -o rss | tail -n 1 >> " + mem_path.c_str())
-                    .c_str());
+    std::system(mem_command.c_str());
+
+    std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
+    std::system(cputimes_command.c_str());
 
     promoted_or_retained_out
         << timestamp << ' '
