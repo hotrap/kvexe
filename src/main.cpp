@@ -40,7 +40,8 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
 }
 
 // Return the first level in CD
-size_t calculate_multiplier_addtional(rocksdb::Options &options) {
+size_t calculate_multiplier_addtional(rocksdb::Options &options,
+                                      size_t max_hot_set_size) {
   rusty_assert_eq(options.db_paths.size(), 2.0);
   size_t sd_size = options.db_paths[0].target_size;
   for (double x : options.max_bytes_for_level_multiplier_additional) {
@@ -67,6 +68,13 @@ size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   // Multiply 0.99 to make room for floating point error
   options.max_bytes_for_level_multiplier_additional.push_back(
       1 + (double)sd_size / level_size * 0.99);
+  uint64_t last_level_in_sd_size = sd_size + level_size;
+  rusty_assert(last_level_in_sd_size > max_hot_set_size);
+  uint64_t last_level_in_sd_effective_size =
+      last_level_in_sd_size - max_hot_set_size;
+  uint64_t first_level_in_cd_size = last_level_in_sd_effective_size * 10;
+  options.max_bytes_for_level_multiplier_additional.push_back(
+      (double)first_level_in_cd_size / (last_level_in_sd_size * 10));
   return level;
 }
 
@@ -456,7 +464,8 @@ int main(int argc, char **argv) {
     }
     empty_directory(viscnts_path_str);
   }
-  size_t first_level_in_cd = calculate_multiplier_addtional(options);
+  size_t first_level_in_cd =
+      calculate_multiplier_addtional(options, max_hot_set_size);
   std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
   print_vector(options.max_bytes_for_level_multiplier_additional);
   std::cerr << std::endl;
