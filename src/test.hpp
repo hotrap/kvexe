@@ -492,6 +492,11 @@ class Tester {
           *info_json_out_.lock()
               << "\t\"run-70\%-timestamp(ns)\": " << timestamp_ns() << ','
               << std::endl;
+          std::string rocksdb_stats;
+          rusty_assert(
+              options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+          std::ofstream(options_.db_path / "rocksdb-stats-run-70p.txt")
+              << rocksdb_stats;
         }
         if (progress >= last_op_in_current_stage) {
           last_op_in_current_stage = std::numeric_limits<size_t>::max();
