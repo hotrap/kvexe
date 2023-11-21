@@ -232,6 +232,8 @@ int main(int argc, char **argv) {
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
   desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
   desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
+  desc.add_options()("optimize_filters_for_hits",
+                     "Do not build filters for the last level");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -275,6 +277,9 @@ int main(int argc, char **argv) {
   if (vm.count("max_bytes_for_level_base")) {
     options.max_bytes_for_level_base =
         vm["max_bytes_for_level_base"].as<uint64_t>();
+  }
+  if (vm.count("optimize_filters_for_hits")) {
+    options.optimize_filters_for_hits = true;
   }
 
   if (vm.count("cleanup")) {
