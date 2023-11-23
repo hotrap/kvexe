@@ -1,3 +1,5 @@
+#include <RocksCachelibWrapper.h>
+
 #include "test.hpp"
 
 typedef uint16_t field_size_t;
@@ -154,6 +156,7 @@ int main(int argc, char **argv) {
   std::string arg_db_path;
   std::string arg_db_paths;
   size_t cache_size;
+  size_t secondary_cache_size;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -201,6 +204,9 @@ int main(int argc, char **argv) {
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
   desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
   desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
+  desc.add_options()("secondary_cache_size",
+                     po::value<size_t>(&secondary_cache_size)->required());
+  desc.add_options()("secondary_cache_volatile_size", po::value<size_t>());
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -224,8 +230,31 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.statistics = rocksdb::CreateDBStatistics();
 
+  if (vm.count("cleanup")) {
+    std::cerr << "Emptying directories\n";
+    empty_directory(db_path);
+    for (auto path : options.db_paths) {
+      empty_directory(path.path);
+    }
+  }
+
+  facebook::rocks_secondary_cache::RocksCachelibOptions cachelib_options;
+  cachelib_options.cacheName = "secondary-cache";
+  cachelib_options.fileName = (db_path / "secondary-cache").string();
+  cachelib_options.size = secondary_cache_size;
+  if (vm.count("secondary_cache_volatile_size")) {
+    cachelib_options.volatileSize =
+        vm["secondary_cache_volatile_size"].as<size_t>();
+  }
+  auto secondary_cache =
+      facebook::rocks_secondary_cache::NewRocksCachelibWrapper(
+          cachelib_options);
+
+  rocksdb::LRUCacheOptions lru_cache_opts;
+  lru_cache_opts.capacity = cache_size;
+  lru_cache_opts.secondary_cache = std::move(secondary_cache);
   rocksdb::BlockBasedTableOptions table_options;
-  table_options.block_cache = rocksdb::NewLRUCache(cache_size);
+  table_options.block_cache = rocksdb::NewLRUCache(lru_cache_opts);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   if (vm.count("block_size")) {
     table_options.block_size = vm["block_size"].as<size_t>();
@@ -246,13 +275,6 @@ int main(int argc, char **argv) {
         vm["max_bytes_for_level_base"].as<uint64_t>();
   }
 
-  if (vm.count("cleanup")) {
-    std::cerr << "Emptying directories\n";
-    empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
-  }
   int first_level_in_cd = predict_level_assignment(options);
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;

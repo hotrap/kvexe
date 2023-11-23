@@ -7,3 +7,6 @@
 [submodule "3rdparty/ycsbgen"]
 	path = 3rdparty/ycsbgen
 	url = git@github.com:hotrap/YCSBGenerator.git
+[submodule "3rdparty/RocksCachelibWrapper"]
+	path = 3rdparty/RocksCachelibWrapper
+	url = git@github.com:seekstar/RocksCachelibWrapper.git
