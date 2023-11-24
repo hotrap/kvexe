@@ -8,6 +8,9 @@ if(NOT DEFINED CACHELIB_HOME)
 	set(CACHELIB_HOME $ENV{CACHELIB_HOME})
 endif()
 
+include_directories(${ROCKSDB_INCLUDE} ${CACHELIB_HOME}/include)
+link_directories(${ROCKSDB_LIB} ${CACHELIB_HOME}/lib)
+
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
 add_subdirectory(3rdparty/RocksCachelibWrapper)
@@ -20,11 +23,7 @@ ENDIF()
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
-include_directories(
-    ${ROCKSDB_INCLUDE}
-)
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
 target_link_libraries(${PROJECT_NAME}
 	PRIVATE
 		RocksCachelibWrapper
