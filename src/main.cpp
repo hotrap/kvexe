@@ -106,9 +106,11 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-void bg_stat_printer(std::filesystem::path db_path,
-                     std::atomic<bool> *should_stop,
-                     std::atomic<size_t> *progress) {
+void bg_stat_printer(WorkOptions work_options, std::atomic<bool> *should_stop) {
+  rocksdb::DB *db = work_options.db;
+  const std::filesystem::path &db_path = work_options.db_path;
+  std::atomic<size_t> *progress = work_options.progress;
+
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
@@ -125,6 +127,8 @@ void bg_stat_printer(std::filesystem::path db_path,
                                  cputimes_path.c_str();
   std::ofstream(cputimes_path) << "Timestamp(ns) cputime(s)\n";
 
+  std::ofstream compaction_stats_out(db_path / "compaction-stats");
+
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
     auto value = progress->load(std::memory_order_relaxed);
@@ -135,6 +139,11 @@ void bg_stat_printer(std::filesystem::path db_path,
 
     std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
     std::system(cputimes_command.c_str());
+
+    std::string compaction_stats;
+    rusty_assert(db->GetProperty("rocksdb.compactions", &compaction_stats));
+    compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
+                         << compaction_stats << std::endl;
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
@@ -296,16 +305,14 @@ int main(int argc, char **argv) {
     }
   }
 
-  std::atomic<bool> should_stop(false);
-  std::atomic<size_t> progress(0);
-  std::thread stat_printer(bg_stat_printer, db_path, &should_stop, &progress);
-
   std::string cmd =
       "pidstat -p " + std::to_string(getpid()) +
       " -Hu 1 | awk '{if(NR>3){print $1,$8; fflush(stdout)}}' > " +
       db_path.c_str() + "/cpu &";
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
+
+  std::atomic<size_t> progress(0);
 
   WorkOptions work_option;
   work_option.db = db;
@@ -329,6 +336,10 @@ int main(int argc, char **argv) {
                  "export_key_only_trace only works with built-in generator!");
     work_option.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
+
+  std::atomic<bool> should_stop(false);
+  std::thread stat_printer(bg_stat_printer, work_option, &should_stop);
+
   Tester tester(work_option);
 
   auto stats_print_func = [&](std::ostream &log) {
