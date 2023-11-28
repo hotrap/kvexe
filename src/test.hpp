@@ -1,6 +1,8 @@
 #include <rocksdb/cache.h>
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
+#include <rocksdb/iostats_context.h>
+#include <rocksdb/perf_context.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rusty/keyword.h>
@@ -274,16 +276,22 @@ class Tester {
 
   size_t parse_counts_{0};
   std::atomic<size_t> notfound_counts_{0};
+  std::vector<rocksdb::PerfContext*> perf_contexts_;
+  std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
+  std::mutex thread_local_m_;
 
  public:
   Tester(const WorkOptions& option)
       : options_(option), channel_for_workers_(option.num_threads) {}
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    perf_contexts_.resize(options_.num_threads);
+    iostats_contexts_.resize(options_.num_threads);
+
     std::vector<std::thread> threads;
     std::vector<Worker> workers;
     for (size_t i = 0; i < options_.num_threads; ++i) {
-      workers.emplace_back(i, options_, notfound_counts_, info_json_out);
+      workers.emplace_back(*this, i, options_, notfound_counts_, info_json_out);
     }
     if (options_.enable_fast_generator) {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
@@ -354,13 +362,28 @@ class Tester {
     return notfound_counts_.load(std::memory_order_relaxed);
   }
 
+  std::string GetRocksdbPerf() {
+    std::unique_lock lck(thread_local_m_);
+    if (perf_contexts_.empty()) return "";
+    if (perf_contexts_[0] == nullptr) return "";
+    return perf_contexts_[0]->ToString();
+  }
+
+  std::string GetRocksdbIOStats() {
+    std::unique_lock lck(thread_local_m_);
+    if (iostats_contexts_.empty()) return "";
+    if (iostats_contexts_[0] == nullptr) return "";
+    return iostats_contexts_[0]->ToString();
+  }
+
  private:
   class Worker {
    public:
-    Worker(size_t id, const WorkOptions& options,
+    Worker(Tester& tester, size_t id, const WorkOptions& options,
            std::atomic<size_t>& notfound_counts,
            const rusty::sync::Mutex<std::ofstream>& info_json_out)
-        : id_(id),
+        : tester_(tester),
+          id_(id),
           options_(options),
           ignore_notfound(options_.enable_fast_process),
           notfound_counts_(notfound_counts),
@@ -384,6 +407,13 @@ class Tester {
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
+
+      rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
+        tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
+      }
 
       Operation op;
       size_t run_op_70p = options_.ycsb_gen_options.record_count +
@@ -445,6 +475,11 @@ class Tester {
                 (std::to_string(id_) + "_key_only_trace_70_100"));
           }
         }
+      }
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = nullptr;
+        tester_.iostats_contexts_[id_] = nullptr;
       }
     }
     void work(BlockChannel<Operation>& chan) {
@@ -570,6 +605,7 @@ class Tester {
       }
     }
 
+    Tester& tester_;
     size_t id_;
     const WorkOptions& options_;
     rocksdb::ReadOptions read_options_;

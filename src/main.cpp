@@ -366,6 +366,8 @@ int main(int argc, char **argv) {
     log << "rocksdb.rocksdb.l2andup.hit: "
         << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
         << "\n";
+    log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
+    log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
 
     /* Timer data */
     std::vector<counter_timer::CountTime> timers_status;
