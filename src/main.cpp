@@ -566,6 +566,10 @@ int main(int argc, char **argv) {
         << options.statistics->getTickerCount(
                rocksdb::BLOOM_FILTER_FULL_POSITIVE)
         << "\n";
+    log << "rocksdb.bloom.filter.full.true.positive: "
+        << options.statistics->getTickerCount(
+               rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+        << "\n";
     log << "rocksdb.memtable.hit: "
         << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
     log << "rocksdb.l0.hit: "
