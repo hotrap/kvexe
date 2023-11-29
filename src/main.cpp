@@ -184,9 +184,10 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
                 int tier0_last_level, size_t max_hot_set_size,
-                uint64_t switches)
+                size_t max_viscnts_size, uint64_t switches)
       : switches_(switches),
-        vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size)),
+        vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size,
+                         max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0} {}
   const char *Name() const override { return "RouterVisCnts"; }
@@ -354,6 +355,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
 
   double arg_max_hot_set_size;
+  double arg_max_viscnts_size;
   int compaction_pri;
 
   // Options of executor
@@ -411,6 +413,9 @@ int main(int argc, char **argv) {
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
                      "Max hot set size in bytes");
+  desc.add_options()("max_viscnts_size",
+                     po::value<double>(&arg_max_viscnts_size)->required(),
+                     "Max physical size of viscnts in bytes");
   desc.add_options()("viscnts_path",
                      po::value<std::string>(&viscnts_path_str)->required(),
                      "Path to VisCnts");
@@ -431,6 +436,7 @@ int main(int argc, char **argv) {
   po::notify(vm);
 
   size_t max_hot_set_size = arg_max_hot_set_size;
+  size_t max_viscnts_size = arg_max_viscnts_size;
   uint64_t switches;
   if (arg_switches == "none") {
     switches = 0;
@@ -498,9 +504,9 @@ int main(int argc, char **argv) {
 
   RouterVisCnts *router = nullptr;
   if (first_level_in_cd != 0) {
-    router =
-        new RouterVisCnts(options.comparator, viscnts_path_str,
-                          first_level_in_cd - 1, max_hot_set_size, switches);
+    router = new RouterVisCnts(options.comparator, viscnts_path_str,
+                               first_level_in_cd - 1, max_hot_set_size,
+                               max_viscnts_size, switches);
     options.compaction_router = router;
   }
 
