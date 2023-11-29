@@ -255,6 +255,7 @@ struct WorkOptions {
   uint64_t switches;
   std::filesystem::path db_path;
   std::atomic<size_t>* progress;
+  std::atomic<size_t>* progress_get;
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
@@ -532,6 +533,7 @@ class Tester {
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
+      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       return value;
     }
 
@@ -575,6 +577,7 @@ class Tester {
         print_latency(latency_out_.value(), OpType::RMW,
                       start.elapsed().as_nanos());
       }
+      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
     }
 
     void process_op(const Operation& op) {
