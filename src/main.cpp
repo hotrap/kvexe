@@ -254,16 +254,15 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   std::atomic<size_t> count_access_hot_per_tier_[2];
 };
 
-void bg_stat_printer(WorkOptions work_options, const rocksdb::Options *options,
+void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
-  rocksdb::DB *db = work_options.db;
-  const std::filesystem::path &db_path = work_options.db_path;
-  std::atomic<size_t> *progress = work_options.progress;
+  rocksdb::DB *db = work_options->db;
+  const std::filesystem::path &db_path = work_options->db_path;
 
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed\n";
+  progress_out << "Timestamp(ns) operations-executed get\n";
 
   auto mem_path = db_path / "mem";
   std::string mem_command =
@@ -293,8 +292,11 @@ void bg_stat_printer(WorkOptions work_options, const rocksdb::Options *options,
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
 
-    auto value = progress->load(std::memory_order_relaxed);
-    progress_out << timestamp << ' ' << value << std::endl;
+    progress_out << timestamp << ' '
+                 << work_options->progress->load(std::memory_order_relaxed)
+                 << ' '
+                 << work_options->progress_get->load(std::memory_order_relaxed)
+                 << std::endl;
 
     std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
     std::system(mem_command.c_str());
@@ -522,11 +524,13 @@ int main(int argc, char **argv) {
   std::system(cmd.c_str());
 
   std::atomic<size_t> progress(0);
+  std::atomic<size_t> progress_get(0);
 
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;
   work_option.progress = &progress;
+  work_option.progress_get = &progress_get;
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
   work_option.format_type =
@@ -546,7 +550,7 @@ int main(int argc, char **argv) {
   }
 
   std::atomic<bool> should_stop(false);
-  std::thread stat_printer(bg_stat_printer, work_option, &options,
+  std::thread stat_printer(bg_stat_printer, &work_option, &options,
                            &should_stop);
 
   Tester tester(work_option);
