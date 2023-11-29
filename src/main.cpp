@@ -238,6 +238,8 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.statistics = rocksdb::CreateDBStatistics();
   options.compression = rocksdb::CompressionType::kNoCompression;
+  // Doesn't make sense for tiered storage
+  options.level_compaction_dynamic_level_bytes = false;
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
