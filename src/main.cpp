@@ -452,6 +452,7 @@ int main(int argc, char **argv) {
   options.db_paths = decode_db_paths(arg_db_paths);
   options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
+  options.compression = rocksdb::CompressionType::kNoCompression;
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
