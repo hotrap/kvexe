@@ -243,6 +243,7 @@ int main(int argc, char **argv) {
   std::filesystem::path db_path(arg_db_path);
   options.db_paths = decode_db_paths(arg_db_paths);
   options.statistics = rocksdb::CreateDBStatistics();
+  options.compression = rocksdb::CompressionType::kNoCompression;
 
   if (vm.count("cleanup")) {
     std::cerr << "Emptying directories\n";
