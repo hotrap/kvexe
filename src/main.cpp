@@ -290,6 +290,8 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   auto stats = options->statistics;
 
+  auto interval = rusty::time::Duration::from_secs(1);
+  auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
 
@@ -331,7 +333,13 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     }
     num_accesses_out << std::endl;
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto sleep_time =
+        next_begin.checked_duration_since(rusty::time::Instant::now());
+    if (sleep_time.has_value()) {
+      std::this_thread::sleep_for(
+          std::chrono::nanoseconds(sleep_time.value().as_nanos()));
+    }
+    next_begin += interval;
   }
 }
 
@@ -453,6 +461,8 @@ int main(int argc, char **argv) {
   options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
   options.compression = rocksdb::CompressionType::kNoCompression;
+  // Doesn't make sense for tiered storage
+  options.level_compaction_dynamic_level_bytes = false;
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
