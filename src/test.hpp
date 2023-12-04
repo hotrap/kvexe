@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <rocksdb/cache.h>
 #include <rocksdb/db.h>
 #include <rocksdb/filter_policy.h>
@@ -21,9 +22,12 @@
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <counter_timer.hpp>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -45,6 +49,16 @@ static inline auto timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
+}
+
+static inline time_t cpu_timestamp_ns(
+    clockid_t clockid = CLOCK_THREAD_CPUTIME_ID) {
+  struct timespec t;
+  if (-1 == clock_gettime(clockid, &t)) {
+    perror("clock_gettime");
+    rusty_panic();
+  }
+  return t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
 template <typename T>
@@ -354,10 +368,69 @@ class Tester {
           << std::endl;
       auto run_start = rusty::time::Instant::now();
       YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+      std::vector<clockid_t> clockids;
+      std::atomic<size_t> finished(0);
+      bool permit_join = false;
+      std::condition_variable cv;
+      std::mutex mu;
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
-            [&workers, &runner, i]() { workers[i].run(runner); });
+            [&workers, &runner, i, &finished, &permit_join, &cv, &mu]() {
+              workers[i].run(runner);
+              finished.fetch_add(1, std::memory_order_relaxed);
+              std::unique_lock lock(mu);
+              cv.wait(lock, [&permit_join]() { return permit_join; });
+            });
+        pthread_t thread_id = threads[i].native_handle();
+        clockid_t clock_id;
+        int ret = pthread_getcpuclockid(thread_id, &clock_id);
+        if (ret) {
+          switch (ret) {
+            case ENOENT:
+              rusty_panic(
+                  "pthread_getcpuclockid: Per-thread CPU time clocks are not "
+                  "supported by the system.");
+            case ESRCH:
+              rusty_panic(
+                  "pthread_getcpuclockid: No thread with the ID %lu could "
+                  "be found.",
+                  thread_id);
+            default:
+              rusty_panic("pthread_getcpuclockid returns %d", ret);
+          }
+        }
+        clockids.push_back(clock_id);
       }
+      std::ofstream out(options_.db_path / "worker-cpu-nanos");
+      out << "Timestamp(ns) cpu-time(ns)\n";
+      auto interval = rusty::time::Duration::from_secs(1);
+      auto next_begin = rusty::time::Instant::now() + interval;
+      std::vector<uint64_t> ori_cpu_timestamp_ns;
+      for (size_t i = 0; i < clockids.size(); ++i) {
+        ori_cpu_timestamp_ns.push_back(cpu_timestamp_ns(clockids[i]));
+      }
+      while (finished.load(std::memory_order_relaxed) != threads.size()) {
+        auto sleep_time =
+            next_begin.checked_duration_since(rusty::time::Instant::now());
+        if (sleep_time.has_value()) {
+          std::this_thread::sleep_for(
+              std::chrono::nanoseconds(sleep_time.value().as_nanos()));
+        }
+        next_begin += interval;
+
+        auto timestamp = timestamp_ns();
+
+        uint64_t nanos = 0;
+        for (size_t i = 0; i < clockids.size(); ++i) {
+          nanos += cpu_timestamp_ns(clockids[i]) - ori_cpu_timestamp_ns[i];
+        }
+        out << timestamp << ' ' << nanos << std::endl;
+      }
+      {
+        std::unique_lock<std::mutex> lock(mu);
+        permit_join = true;
+      }
+      cv.notify_all();
       for (auto& t : threads) t.join();
       *info_json_out.lock()
           << "\t\"run-end-timestamp(ns)\": " << timestamp_ns() << ",\n"
