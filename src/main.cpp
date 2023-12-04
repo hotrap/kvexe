@@ -278,6 +278,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
+  std::ofstream timers_out(db_path / "timers");
+  timers_out << "Timestamp(ns) compaction-cpu-micros\n";
+
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
   promoted_or_retained_out
@@ -311,6 +314,11 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     rusty_assert(db->GetProperty("rocksdb.compactions", &compaction_stats));
     compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
                          << compaction_stats << std::endl;
+
+    uint64_t compaction_cpu_micros;
+    rusty_assert(db->GetIntProperty("rocksdb.compactions.cpu.micros",
+                                    &compaction_cpu_micros));
+    timers_out << timestamp << ' ' << compaction_cpu_micros << std::endl;
 
     promoted_or_retained_out
         << timestamp << ' '
