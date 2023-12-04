@@ -127,6 +127,9 @@ void bg_stat_printer(WorkOptions *work_options,
 
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
+  std::ofstream timers_out(db_path / "timers");
+  timers_out << "Timestamp(ns) compaction-cpu-micros\n";
+
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
@@ -147,6 +150,11 @@ void bg_stat_printer(WorkOptions *work_options,
     rusty_assert(db->GetProperty("rocksdb.compactions", &compaction_stats));
     compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
                          << compaction_stats << std::endl;
+
+    uint64_t compaction_cpu_micros;
+    rusty_assert(db->GetIntProperty("rocksdb.compactions.cpu.micros",
+                                    &compaction_cpu_micros));
+    timers_out << timestamp << ' ' << compaction_cpu_micros << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
