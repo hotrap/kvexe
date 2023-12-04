@@ -127,6 +127,8 @@ void bg_stat_printer(WorkOptions *work_options,
 
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
+  auto interval = rusty::time::Duration::from_secs(1);
+  auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
     progress_out << timestamp << ' '
@@ -146,7 +148,13 @@ void bg_stat_printer(WorkOptions *work_options,
     compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
                          << compaction_stats << std::endl;
 
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    auto sleep_time =
+        next_begin.checked_duration_since(rusty::time::Instant::now());
+    if (sleep_time.has_value()) {
+      std::this_thread::sleep_for(
+          std::chrono::nanoseconds(sleep_time.value().as_nanos()));
+    }
+    next_begin += interval;
   }
 }
 
