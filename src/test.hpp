@@ -128,9 +128,6 @@ static inline const char* to_string(OpType type) {
 }
 
 enum class TimerType : size_t {
-  kInsert,
-  kRead,
-  kUpdate,
   kPut,
   kGet,
   kInputOperation,
@@ -145,9 +142,8 @@ enum class TimerType : size_t {
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Insert",      "Read",           "Update",      "Put",
-    "Get",         "InputOperation", "InputInsert", "InputRead",
-    "InputUpdate", "Output",         "Serialize",   "Deserialize",
+    "Put",         "Get",    "InputOperation", "InputInsert", "InputRead",
+    "InputUpdate", "Output", "Serialize",      "Deserialize",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
@@ -575,7 +571,6 @@ class Tester {
    private:
     void do_insert(const Operation& insert) {
       time_t cpu_ts_start = cpu_timestamp_ns();
-      auto guard = timers.timer(TimerType::kInsert).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, insert.key,
@@ -595,7 +590,6 @@ class Tester {
 
     std::string do_read(const Operation& read) {
       time_t cpu_ts_start = cpu_timestamp_ns();
-      auto guard = timers.timer(TimerType::kRead).start();
       std::string value;
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, &value);
@@ -618,7 +612,6 @@ class Tester {
     }
 
     void do_update(const Operation& update) {
-      auto guard = timers.timer(TimerType::kUpdate).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, update.key,
@@ -628,7 +621,6 @@ class Tester {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
-      timers.timer(TimerType::kUpdate).add(put_time);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::UPDATE,
                       put_time.as_nanos());
