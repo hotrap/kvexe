@@ -128,9 +128,6 @@ static inline const char* to_string(OpType type) {
 }
 
 enum class TimerType : size_t {
-  kInsert,
-  kRead,
-  kUpdate,
   kPut,
   kGet,
   kInputOperation,
@@ -145,12 +142,14 @@ enum class TimerType : size_t {
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Insert",      "Read",           "Update",      "Put",
-    "Get",         "InputOperation", "InputInsert", "InputRead",
-    "InputUpdate", "Output",         "Serialize",   "Deserialize",
+    "Put",         "Get",    "InputOperation", "InputInsert", "InputRead",
+    "InputUpdate", "Output", "Serialize",      "Deserialize",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
+
+static std::atomic<time_t> insert_cpu_nanos(0);
+static std::atomic<time_t> read_cpu_nanos(0);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
@@ -571,7 +570,7 @@ class Tester {
 
    private:
     void do_insert(const Operation& insert) {
-      auto guard = timers.timer(TimerType::kInsert).start();
+      time_t cpu_ts_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, insert.key,
@@ -586,10 +585,11 @@ class Tester {
         print_latency(latency_out_.value(), OpType::INSERT,
                       put_time.as_nanos());
       }
+      insert_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
     }
 
     std::string do_read(const Operation& read) {
-      auto guard = timers.timer(TimerType::kRead).start();
+      time_t cpu_ts_start = cpu_timestamp_ns();
       std::string value;
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, &value);
@@ -607,11 +607,11 @@ class Tester {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      read_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
       return value;
     }
 
     void do_update(const Operation& update) {
-      auto guard = timers.timer(TimerType::kUpdate).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, update.key,
@@ -621,7 +621,6 @@ class Tester {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
-      timers.timer(TimerType::kUpdate).add(put_time);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::UPDATE,
                       put_time.as_nanos());
