@@ -239,6 +239,11 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     size_t ret = vc_.RangeHotSize(range);
     return ret;
   }
+
+  bool get_viscnts_int_property(std::string_view property, uint64_t *value) {
+    return vc_.GetIntProperty(property, value);
+  }
+
   std::vector<size_t> hit_count() {
     std::vector<size_t> ret;
     for (size_t i = 0; i < 2; ++i)
@@ -258,6 +263,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options->db;
+  auto router = static_cast<RouterVisCnts *>(options->compaction_router);
   const std::filesystem::path &db_path = work_options->db_path;
 
   std::string pid = std::to_string(getpid());
@@ -279,8 +285,10 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
   std::ofstream timers_out(db_path / "timers");
-  timers_out << "Timestamp(ns) compaction-cpu-micros insert-cpu-nanos "
-                "read-cpu-nanos\n";
+  timers_out
+      << "Timestamp(ns) compaction-cpu-micros insert-cpu-nanos "
+         "read-cpu-nanos viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
+         "viscnts.decay.scan.cpu.nanos viscnts.decay.write.cpu.nanos\n";
 
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
@@ -319,9 +327,27 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     uint64_t compaction_cpu_micros;
     rusty_assert(db->GetIntProperty("rocksdb.compactions.cpu.micros",
                                     &compaction_cpu_micros));
+    uint64_t viscnts_compaction_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kCompactionCPUNanos,
+        &viscnts_compaction_cpu_nanos));
+    uint64_t viscnts_flush_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kFlushCPUNanos, &viscnts_flush_cpu_nanos));
+    uint64_t viscnts_decay_scan_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kDecayScanCPUNanos,
+        &viscnts_decay_scan_cpu_nanos));
+    uint64_t viscnts_decay_write_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kDecayWriteCPUNanos,
+        &viscnts_decay_write_cpu_nanos));
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
                << insert_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << read_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
+               << read_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << viscnts_compaction_cpu_nanos << ' ' << viscnts_flush_cpu_nanos
+               << ' ' << viscnts_decay_scan_cpu_nanos << ' '
+               << viscnts_decay_write_cpu_nanos << std::endl;
 
     promoted_or_retained_out
         << timestamp << ' '
