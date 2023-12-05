@@ -152,6 +152,9 @@ static const char* timer_names[] = {
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
+static std::atomic<time_t> insert_cpu_nanos(0);
+static std::atomic<time_t> read_cpu_nanos(0);
+
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
 
@@ -571,6 +574,7 @@ class Tester {
 
    private:
     void do_insert(const Operation& insert) {
+      time_t cpu_ts_start = cpu_timestamp_ns();
       auto guard = timers.timer(TimerType::kInsert).start();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
@@ -586,9 +590,11 @@ class Tester {
         print_latency(latency_out_.value(), OpType::INSERT,
                       put_time.as_nanos());
       }
+      insert_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
     }
 
     std::string do_read(const Operation& read) {
+      time_t cpu_ts_start = cpu_timestamp_ns();
       auto guard = timers.timer(TimerType::kRead).start();
       std::string value;
       auto get_start = rusty::time::Instant::now();
@@ -607,6 +613,7 @@ class Tester {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      read_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
       return value;
     }
 
