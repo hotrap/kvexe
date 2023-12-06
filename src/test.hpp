@@ -148,8 +148,8 @@ static const char* timer_names[] = {
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
-static std::atomic<time_t> insert_cpu_nanos(0);
-static std::atomic<time_t> read_cpu_nanos(0);
+static std::atomic<time_t> put_cpu_nanos(0);
+static std::atomic<time_t> get_cpu_nanos(0);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
@@ -570,30 +570,32 @@ class Tester {
 
    private:
     void do_insert(const Operation& insert) {
-      time_t cpu_ts_start = cpu_timestamp_ns();
+      time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, insert.key,
           rocksdb::Slice(insert.value.data(), insert.value.size()));
       auto put_time = put_start.elapsed();
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("INSERT failed with error: %s\n", err.c_str());
       }
       timers.timer(TimerType::kPut).add(put_time);
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::INSERT,
                       put_time.as_nanos());
       }
-      insert_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
     }
 
     std::string do_read(const Operation& read) {
-      time_t cpu_ts_start = cpu_timestamp_ns();
       std::string value;
+      time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, &value);
       auto get_time = get_start.elapsed();
+      time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
         if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
           value = "";
@@ -603,24 +605,27 @@ class Tester {
         }
       }
       timers.timer(TimerType::kGet).add(get_time);
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
-      read_cpu_nanos.fetch_add(cpu_timestamp_ns() - cpu_ts_start);
       return value;
     }
 
     void do_update(const Operation& update) {
+      time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, update.key,
           rocksdb::Slice(update.value.data(), update.value.size()));
       auto put_time = put_start.elapsed();
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::UPDATE,
                       put_time.as_nanos());
@@ -628,6 +633,7 @@ class Tester {
     }
 
     void do_read_modify_write(const Operation& op) {
+      time_t get_cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
@@ -639,12 +645,17 @@ class Tester {
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
       }
+      time_t put_cpu_start = cpu_timestamp_ns();
+      time_t get_cpu_ns = put_cpu_start - get_cpu_start;
       s = options_.db->Put(write_options_, op.key,
                            rocksdb::Slice(op.value.data(), op.value.size()));
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::RMW,
                       start.elapsed().as_nanos());
