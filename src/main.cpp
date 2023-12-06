@@ -300,6 +300,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   std::ofstream num_accesses_out(db_path / "num-accesses");
 
+  std::ofstream viscnts_io_out(db_path / "viscnts-io");
+  viscnts_io_out << "Timestamp(ns) read write\n";
+
   auto stats = options->statistics;
 
   auto interval = rusty::time::Duration::from_secs(1);
@@ -369,6 +372,15 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
           << per_level_timers.timer(level, PerLevelTimerType::kAccess).count();
     }
     num_accesses_out << std::endl;
+
+    uint64_t viscnts_read;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kReadBytes, &viscnts_read));
+    uint64_t viscnts_write;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kWriteBytes, &viscnts_write));
+    viscnts_io_out << timestamp << ' ' << viscnts_read << ' ' << viscnts_write
+                   << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
