@@ -128,8 +128,8 @@ void bg_stat_printer(WorkOptions *work_options,
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
   std::ofstream timers_out(db_path / "timers");
-  timers_out << "Timestamp(ns) compaction-cpu-micros insert-cpu-nanos "
-                "read-cpu-nanos\n";
+  timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
+                "get-cpu-nanos\n";
 
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
@@ -156,8 +156,8 @@ void bg_stat_printer(WorkOptions *work_options,
     rusty_assert(db->GetIntProperty("rocksdb.compactions.cpu.micros",
                                     &compaction_cpu_micros));
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
-               << insert_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << read_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
+               << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << get_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
