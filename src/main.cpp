@@ -286,8 +286,8 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   std::ofstream timers_out(db_path / "timers");
   timers_out
-      << "Timestamp(ns) compaction-cpu-micros insert-cpu-nanos "
-         "read-cpu-nanos viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
+      << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
+         "get-cpu-nanos viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
          "viscnts.decay.scan.cpu.nanos viscnts.decay.write.cpu.nanos\n";
 
   std::ofstream promoted_or_retained_out(db_path /
@@ -346,8 +346,8 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
         VisCnts::Properties::kDecayWriteCPUNanos,
         &viscnts_decay_write_cpu_nanos));
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
-               << insert_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << read_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << viscnts_compaction_cpu_nanos << ' ' << viscnts_flush_cpu_nanos
                << ' ' << viscnts_decay_scan_cpu_nanos << ' '
                << viscnts_decay_write_cpu_nanos << std::endl;
