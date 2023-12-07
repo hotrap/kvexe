@@ -305,6 +305,8 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   auto stats = options->statistics;
 
+  std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
+
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
@@ -323,13 +325,14 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     std::system(cputimes_command.c_str());
 
     std::string compaction_stats;
-    rusty_assert(db->GetProperty("rocksdb.compactions", &compaction_stats));
+    rusty_assert(db->GetProperty(rocksdb::DB::Properties::kCompactionStats,
+                                 &compaction_stats));
     compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
                          << compaction_stats << std::endl;
 
     uint64_t compaction_cpu_micros;
-    rusty_assert(db->GetIntProperty("rocksdb.compactions.cpu.micros",
-                                    &compaction_cpu_micros));
+    rusty_assert(db->GetIntProperty(
+        rocksdb::DB::Properties::kCompactionCPUMicros, &compaction_cpu_micros));
     uint64_t viscnts_compaction_cpu_nanos;
     rusty_assert(router->get_viscnts_int_property(
         VisCnts::Properties::kCompactionCPUNanos,
@@ -351,6 +354,11 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                << viscnts_compaction_cpu_nanos << ' ' << viscnts_flush_cpu_nanos
                << ' ' << viscnts_decay_scan_cpu_nanos << ' '
                << viscnts_decay_write_cpu_nanos << std::endl;
+
+    std::string rand_read_bytes;
+    rusty_assert(db->GetProperty(rocksdb::DB::Properties::kRandReadBytes,
+                                 &rand_read_bytes));
+    rand_read_bytes_out << timestamp << ' ' << rand_read_bytes << std::endl;
 
     promoted_or_retained_out
         << timestamp << ' '
