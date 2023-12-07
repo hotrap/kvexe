@@ -128,9 +128,6 @@ static inline const char* to_string(OpType type) {
 }
 
 enum class TimerType : size_t {
-  kInsert,
-  kRead,
-  kUpdate,
   kPut,
   kGet,
   kInputOperation,
@@ -145,12 +142,14 @@ enum class TimerType : size_t {
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Insert",      "Read",           "Update",      "Put",
-    "Get",         "InputOperation", "InputInsert", "InputRead",
-    "InputUpdate", "Output",         "Serialize",   "Deserialize",
+    "Put",         "Get",    "InputOperation", "InputInsert", "InputRead",
+    "InputUpdate", "Output", "Serialize",      "Deserialize",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
+
+static std::atomic<time_t> put_cpu_nanos(0);
+static std::atomic<time_t> get_cpu_nanos(0);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
@@ -571,17 +570,19 @@ class Tester {
 
    private:
     void do_insert(const Operation& insert) {
-      auto guard = timers.timer(TimerType::kInsert).start();
+      time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, insert.key,
           rocksdb::Slice(insert.value.data(), insert.value.size()));
       auto put_time = put_start.elapsed();
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("INSERT failed with error: %s\n", err.c_str());
       }
       timers.timer(TimerType::kPut).add(put_time);
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::INSERT,
                       put_time.as_nanos());
@@ -589,11 +590,12 @@ class Tester {
     }
 
     std::string do_read(const Operation& read) {
-      auto guard = timers.timer(TimerType::kRead).start();
       std::string value;
+      time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, &value);
       auto get_time = get_start.elapsed();
+      time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
         if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
           value = "";
@@ -603,6 +605,7 @@ class Tester {
         }
       }
       timers.timer(TimerType::kGet).add(get_time);
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
@@ -611,17 +614,18 @@ class Tester {
     }
 
     void do_update(const Operation& update) {
-      auto guard = timers.timer(TimerType::kUpdate).start();
+      time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, update.key,
           rocksdb::Slice(update.value.data(), update.value.size()));
       auto put_time = put_start.elapsed();
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
-      timers.timer(TimerType::kUpdate).add(put_time);
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::UPDATE,
                       put_time.as_nanos());
@@ -629,6 +633,7 @@ class Tester {
     }
 
     void do_read_modify_write(const Operation& op) {
+      time_t get_cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
@@ -640,12 +645,17 @@ class Tester {
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
       }
+      time_t put_cpu_start = cpu_timestamp_ns();
+      time_t get_cpu_ns = put_cpu_start - get_cpu_start;
       s = options_.db->Put(write_options_, op.key,
                            rocksdb::Slice(op.value.data(), op.value.size()));
+      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
         rusty_panic("Update failed with error: %s\n", err.c_str());
       }
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
+      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
         print_latency(latency_out_.value(), OpType::RMW,
                       start.elapsed().as_nanos());
