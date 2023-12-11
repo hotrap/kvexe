@@ -567,6 +567,9 @@ int main(int argc, char **argv) {
   }
   std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second << ' '
             << ret[first_level_in_cd].first << std::endl;
+  if (options.db_paths.size() == 1) {
+    first_level_in_cd = 100;
+  }
   std::ofstream(db_path / "first-level-in-cd")
       << first_level_in_cd << std::endl;
 
