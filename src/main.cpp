@@ -337,7 +337,7 @@ int main(int argc, char **argv) {
   }
   std::cerr << "]\n";
   auto ret = predict_level_assignment(options);
-  rusty_assert(ret.size() - 1 == first_level_in_cd);
+  rusty_assert_eq(ret.size() - 1, first_level_in_cd);
   for (size_t level = 0; level < first_level_in_cd; ++level) {
     std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
               << std::endl;
