@@ -1,7 +1,6 @@
 #include <counter_timer_vec.hpp>
 
 #include "rocksdb/compaction_router.h"
-#include "rusty/time.h"
 #include "test.hpp"
 #include "viscnts.h"
 
