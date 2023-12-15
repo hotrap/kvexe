@@ -279,7 +279,7 @@ struct WorkOptions {
 void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
 
 void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
-  out << to_string(op) << ' ' << nanos << '\n';
+  out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
 
 class Tester {
@@ -493,7 +493,7 @@ class Tester {
       size_t last_op_in_current_stage = run_op_70p;
       if (options_.switches & MASK_LATENCY) {
         latency_out_ = std::make_optional<std::ofstream>(
-            options_.db_path / (std::to_string(id_) + "_latency_0_70"));
+            options_.db_path / ("latency-" + std::to_string(id_)));
       }
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
@@ -537,10 +537,6 @@ class Tester {
         }
         if (progress >= last_op_in_current_stage) {
           last_op_in_current_stage = std::numeric_limits<size_t>::max();
-          if (options_.switches & MASK_LATENCY) {
-            latency_out_ = std::make_optional<std::ofstream>(
-                options_.db_path / (std::to_string(id_) + "_latency_70_100"));
-          }
           if (options_.export_key_only_trace) {
             key_only_trace_out = std::make_optional<std::ofstream>(
                 options_.db_path /
