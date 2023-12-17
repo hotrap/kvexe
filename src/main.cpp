@@ -182,6 +182,7 @@ int main(int argc, char **argv) {
   std::cout.tie(0);
 
   rocksdb::Options options;
+  WorkOptions work_option;
 
   namespace po = boost::program_options;
   po::options_description desc("Available options");
@@ -259,6 +260,17 @@ int main(int argc, char **argv) {
   }
   po::notify(vm);
 
+  if (vm.count("load")) {
+    work_option.load = true;
+  }
+  if (vm.count("run")) {
+    work_option.run = true;
+  }
+  if (work_option.load == false && work_option.run == false) {
+    work_option.load = true;
+    work_option.run = true;
+  }
+
   uint64_t switches;
   if (arg_switches == "none") {
     switches = 0;
@@ -301,21 +313,8 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  bool load = false;
-  bool run = false;
-  if (vm.count("load")) {
-    load = true;
-  }
-  if (vm.count("run")) {
-    run = true;
-  }
-  if (load == false && run == false) {
-    load = true;
-    run = true;
-  }
-
   rocksdb::DB *db;
-  if (load) {
+  if (work_option.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
@@ -355,9 +354,6 @@ int main(int argc, char **argv) {
   std::atomic<size_t> progress(0);
   std::atomic<size_t> progress_get(0);
 
-  WorkOptions work_option;
-  work_option.load = load;
-  work_option.run = run;
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;
@@ -448,7 +444,7 @@ int main(int argc, char **argv) {
 
   std::filesystem::path info_json_path = db_path / "info.json";
   std::ofstream info_json_out;
-  if (load) {
+  if (work_option.load) {
     info_json_out = std::ofstream(info_json_path);
     info_json_out << "{" << std::endl;
   } else {
@@ -456,7 +452,7 @@ int main(int argc, char **argv) {
   }
   rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
   tester.Test(info_json);
-  if (run) {
+  if (work_option.run) {
     *info_json.lock() << "}" << std::endl;
   }
 

@@ -262,8 +262,8 @@ class BlockChannelClient {
 };
 
 struct WorkOptions {
-  bool load;
-  bool run;
+  bool load{false};
+  bool run{false};
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
