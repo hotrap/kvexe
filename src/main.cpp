@@ -226,10 +226,19 @@ int main(int argc, char **argv) {
 
   // Options of executor
   desc.add_options()("help", "Print help message");
-  desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
+  desc.add_options()(
+      "load", "Execute the load phase. Will empty the directories first.");
+  desc.add_options()(
+      "run",
+      "Execute the run phase. "
+      "If --load is not provided, the run phase will be directly executed "
+      "without executing the load phase, and the directories won't be cleaned "
+      "up. "
+      "If none of --load and --run is provided, the both phases will be "
+      "executed.");
   desc.add_options()(
       "switches", po::value<std::string>(&arg_switches)->default_value("none"),
       "Switches for statistics: none/all/<hex value>\n"
@@ -323,43 +332,53 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  if (vm.count("cleanup")) {
+  bool load = false;
+  bool run = false;
+  if (vm.count("load")) {
+    load = true;
+  }
+  if (vm.count("run")) {
+    run = true;
+  }
+  if (load == false && run == false) {
+    load = true;
+    run = true;
+  }
+
+  rocksdb::DB *db;
+  if (load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-  }
-  size_t first_level_in_cd = calculate_multiplier_addtional(options);
-  std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
-  for (double x : options.max_bytes_for_level_multiplier_additional) {
-    std::cerr << x << ',';
-  }
-  std::cerr << "]\n";
-  auto ret = predict_level_assignment(options);
-  rusty_assert_eq(ret.size() - 1, first_level_in_cd);
-  for (size_t level = 0; level < first_level_in_cd; ++level) {
-    std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
-              << std::endl;
-  }
-  std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second << ' '
-            << ret[first_level_in_cd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_cd = 100;
-  }
-  std::ofstream(db_path / "first-level-in-cd")
-      << first_level_in_cd << std::endl;
+    size_t first_level_in_cd = calculate_multiplier_addtional(options);
+    std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
+    for (double x : options.max_bytes_for_level_multiplier_additional) {
+      std::cerr << x << ',';
+    }
+    std::cerr << "]\n";
+    auto ret = predict_level_assignment(options);
+    rusty_assert_eq(ret.size() - 1, first_level_in_cd);
+    for (size_t level = 0; level < first_level_in_cd; ++level) {
+      std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
+                << std::endl;
+    }
+    std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second
+              << ' ' << ret[first_level_in_cd].first << std::endl;
+    if (options.db_paths.size() == 1) {
+      first_level_in_cd = 100;
+    }
+    std::ofstream(db_path / "first-level-in-cd")
+        << first_level_in_cd << std::endl;
 
-  rocksdb::DB *db;
-  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
-  if (!s.ok()) {
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
-    s = rocksdb::DB::Open(options, db_path.string(), &db);
-    if (!s.ok()) {
-      std::cerr << s.ToString() << std::endl;
-      return -1;
-    }
+  }
+  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
+  if (!s.ok()) {
+    std::cerr << s.ToString() << std::endl;
+    return -1;
   }
 
   std::string cmd =
@@ -373,6 +392,8 @@ int main(int argc, char **argv) {
   std::atomic<size_t> progress_get(0);
 
   WorkOptions work_option;
+  work_option.load = load;
+  work_option.run = run;
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;
@@ -461,19 +482,23 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  rusty::sync::Mutex<std::ofstream> info_json_out(
-      std::ofstream(db_path / "info.json"));
-  *info_json_out.lock() << "{" << std::endl;
-  tester.Test(info_json_out);
-  *info_json_out.lock() << "}" << std::endl;
+  std::filesystem::path info_json_path = db_path / "info.json";
+  std::ofstream info_json_out;
+  if (load) {
+    info_json_out = std::ofstream(info_json_path);
+    info_json_out << "{" << std::endl;
+  } else {
+    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
+  }
+  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
+  tester.Test(info_json);
+  if (run) {
+    *info_json.lock() << "}" << std::endl;
+  }
 
   should_stop.store(true, std::memory_order_relaxed);
 
   stats_print_func(std::cerr);
-
-  std::string rocksdb_stats;
-  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats));
-  std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
   stat_printer.join();
   period_print_thread.join();
