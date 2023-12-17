@@ -8,7 +8,8 @@ if(NOT DEFINED CACHELIB_HOME)
 	set(CACHELIB_HOME $ENV{CACHELIB_HOME})
 endif()
 
-include_directories(${ROCKSDB_INCLUDE} ${CACHELIB_HOME}/include)
+include_directories(SYSTEM ${CACHELIB_HOME}/include)
+include_directories(${ROCKSDB_INCLUDE})
 link_directories(${ROCKSDB_LIB} ${CACHELIB_HOME}/lib)
 
 add_subdirectory(3rdparty/rusty-cpp)
