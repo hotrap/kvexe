@@ -424,10 +424,19 @@ int main(int argc, char **argv) {
 
   // Options of executor
   desc.add_options()("help", "Print help message");
-  desc.add_options()("cleanup,c", "Empty the directories first.");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
+  desc.add_options()(
+      "load", "Execute the load phase. Will empty the directories first.");
+  desc.add_options()(
+      "run",
+      "Execute the run phase. "
+      "If --load is not provided, the run phase will be directly executed "
+      "without executing the load phase, and the directories won't be cleaned "
+      "up. "
+      "If none of --load and --run is provided, the both phases will be "
+      "executed.");
   desc.add_options()(
       "switches", po::value<std::string>(&arg_switches)->default_value("none"),
       "Switches for statistics: none/all/<hex value>\n"
@@ -545,14 +554,19 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  if (vm.count("cleanup")) {
-    std::cerr << "Emptying directories\n";
-    empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
-    empty_directory(viscnts_path_str);
+  bool load = false;
+  bool run = false;
+  if (vm.count("load")) {
+    load = true;
   }
+  if (vm.count("run")) {
+    run = true;
+  }
+  if (load == false && run == false) {
+    load = true;
+    run = true;
+  }
+
   size_t first_level_in_cd =
       calculate_multiplier_addtional(options, max_hot_set_size);
   std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
@@ -569,8 +583,6 @@ int main(int argc, char **argv) {
   if (options.db_paths.size() == 1) {
     first_level_in_cd = 100;
   }
-  std::ofstream(db_path / "first-level-in-cd")
-      << first_level_in_cd << std::endl;
 
   RouterVisCnts *router = nullptr;
   if (first_level_in_cd != 0) {
@@ -581,15 +593,22 @@ int main(int argc, char **argv) {
   }
 
   rocksdb::DB *db;
-  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
-  if (!s.ok()) {
+  if (load) {
+    std::cerr << "Emptying directories\n";
+    empty_directory(db_path);
+    for (auto path : options.db_paths) {
+      empty_directory(path.path);
+    }
+    std::ofstream(db_path / "first-level-in-cd")
+        << first_level_in_cd << std::endl;
+
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
-    s = rocksdb::DB::Open(options, db_path.string(), &db);
-    if (!s.ok()) {
-      std::cerr << s.ToString() << std::endl;
-      return -1;
-    }
+  }
+  auto s = rocksdb::DB::Open(options, db_path.string(), &db);
+  if (!s.ok()) {
+    std::cerr << s.ToString() << std::endl;
+    return -1;
   }
 
   std::string cmd =
@@ -602,6 +621,8 @@ int main(int argc, char **argv) {
   std::atomic<size_t> progress(0);
   std::atomic<size_t> progress_get(0);
 
+  work_option.load = load;
+  work_option.run = run;
   work_option.db = db;
   work_option.switches = switches;
   work_option.db_path = db_path;
@@ -716,13 +737,19 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  rusty::sync::Mutex<std::ofstream> info_json_out(
-      std::ofstream(db_path / "info.json"));
-  *info_json_out.lock() << "{" << std::endl;
-  tester.Test(info_json_out);
-  {
-    auto info_json_out_locked = info_json_out.lock();
-    *info_json_out_locked
+  std::filesystem::path info_json_path = db_path / "info.json";
+  std::ofstream info_json_out;
+  if (load) {
+    info_json_out = std::ofstream(info_json_path);
+    info_json_out << "{" << std::endl;
+  } else {
+    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
+  }
+  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
+  tester.Test(info_json);
+  if (run) {
+    auto info_json_locked = info_json.lock();
+    *info_json_locked
         << "\t\"IsStablyHot(secs)\": "
         << timers.timer(TimerType::kIsStablyHot).time().as_secs_double()
         << ",\n"
@@ -739,17 +766,12 @@ int main(int argc, char **argv) {
       access_time +=
           per_level_timers.timer(level, PerLevelTimerType::kAccess).time();
     }
-    *info_json_out_locked << "\t\"Access(secs)\": "
-                          << access_time.as_secs_double() << ",\n}"
-                          << std::endl;
+    *info_json_locked << "\t\"Access(secs)\": " << access_time.as_secs_double()
+                      << ",\n}" << std::endl;
   }
 
   should_stop.store(true, std::memory_order_relaxed);
   stats_print_func(std::cerr);
-
-  std::string rocksdb_stats;
-  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats));
-  std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
   stat_printer.join();
   period_print_thread.join();
