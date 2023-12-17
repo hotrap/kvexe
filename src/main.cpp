@@ -284,10 +284,13 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   std::ofstream compaction_stats_out(db_path / "compaction-stats");
 
   std::ofstream timers_out(db_path / "timers");
-  timers_out
-      << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
-         "get-cpu-nanos viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
-         "viscnts.decay.scan.cpu.nanos viscnts.decay.write.cpu.nanos\n";
+  timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
+                "get-cpu-nanos "
+             << VisCnts::Properties::kCompactionThreadCPUNanos << ' '
+             << VisCnts::Properties::kFlushThreadCPUNanos << ' '
+             << VisCnts::Properties::kDecayThreadCPUNanos << ' '
+             << "viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
+                "viscnts.decay.scan.cpu.nanos viscnts.decay.write.cpu.nanos\n";
 
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
@@ -332,6 +335,18 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     uint64_t compaction_cpu_micros;
     rusty_assert(db->GetIntProperty(
         rocksdb::DB::Properties::kCompactionCPUMicros, &compaction_cpu_micros));
+    uint64_t viscnts_compaction_thread_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kCompactionThreadCPUNanos,
+        &viscnts_compaction_thread_cpu_nanos));
+    uint64_t viscnts_flush_thread_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kFlushThreadCPUNanos,
+        &viscnts_flush_thread_cpu_nanos));
+    uint64_t viscnts_decay_thread_cpu_nanos;
+    rusty_assert(router->get_viscnts_int_property(
+        VisCnts::Properties::kDecayThreadCPUNanos,
+        &viscnts_decay_thread_cpu_nanos));
     uint64_t viscnts_compaction_cpu_nanos;
     rusty_assert(router->get_viscnts_int_property(
         VisCnts::Properties::kCompactionCPUNanos,
@@ -350,6 +365,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
                << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << viscnts_compaction_thread_cpu_nanos << ' '
+               << viscnts_flush_thread_cpu_nanos << ' '
+               << viscnts_decay_thread_cpu_nanos << ' '
                << viscnts_compaction_cpu_nanos << ' ' << viscnts_flush_cpu_nanos
                << ' ' << viscnts_decay_scan_cpu_nanos << ' '
                << viscnts_decay_write_cpu_nanos << std::endl;
