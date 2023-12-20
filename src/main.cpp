@@ -204,6 +204,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       if (vc_.IsHot(key)) count_access_hot_per_tier_[tier].fetch_add(1);
     }
 
+    count_access_per_tier_[tier].fetch_add(1, std::memory_order_relaxed);
+
     auto guard =
         per_level_timers.timer(level, PerLevelTimerType::kAccess).start();
     vc_.Access(key, vlen);
@@ -243,12 +245,24 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return vc_.GetIntProperty(property, value);
   }
 
-  std::vector<size_t> hit_count() {
+  std::vector<size_t> hit_hot_count() {
     std::vector<size_t> ret;
     for (size_t i = 0; i < 2; ++i)
       ret.push_back(
           count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
     return ret;
+  }
+  
+  std::vector<size_t> hit_tier_count() {
+    std::vector<size_t> ret;
+    for (size_t i = 0; i < 2; ++i)
+      ret.push_back(
+          count_access_per_tier_[i].load(std::memory_order_relaxed));
+    return ret;
+  }
+
+  VisCnts& get_vc() {
+    return vc_;
   }
 
  private:
@@ -257,7 +271,241 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   int tier0_last_level_;
 
   std::atomic<size_t> count_access_hot_per_tier_[2];
+  std::atomic<size_t> count_access_per_tier_[2];
 };
+
+class HitRateMonitor {
+  public:
+    HitRateMonitor() = default;
+
+    void BeginPeriod(const std::vector<size_t>& hr) {
+      lst_hr_ = hr;
+      period_first_hr_ = hr;
+      is_stable_ = false;
+      tick_ = 0;
+      max_rate_ = 0;
+      min_rate_ = 1;
+      eq_tick_ = 0;
+      is_in_per_ = true;
+    }
+
+    double AddPeriodData(const std::vector<size_t>& hr) {
+      if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < 100) {
+        return -1;
+      }
+      double rate = CalcRate(lst_hr_, hr);
+      if (max_rate_ + 0.005 < rate || min_rate_ - 0.005 > rate) {
+        max_rate_ = std::max(max_rate_, rate);
+        min_rate_ = std::min(min_rate_, rate);
+        eq_tick_ = 0;
+      } else {
+        eq_tick_ += 1;
+      }
+      if (eq_tick_ == 1) {
+        period_first_hr_ = hr;
+      }
+      if (eq_tick_ == 4) {
+        is_stable_ = true;
+      }
+      lst_hr_ = hr;
+      tick_ += 1;
+      return rate;
+    }
+
+    bool IsStable() const {
+      return is_stable_;
+    }
+
+    double GetStableRate() const {
+      return CalcRate(period_first_hr_, lst_hr_);
+    }
+
+    bool IsInPeriod() const {
+      return is_in_per_;
+    }
+
+    void EndPeriod() {
+      is_in_per_ = false;
+    }
+
+  private:
+    double CalcRate(const std::vector<size_t>& L, const std::vector<size_t>& R) const {
+      double rate = ((double)R[0] - L[0]) / ((double)R[0] - L[0] + R[1] - L[1]);
+      return rate;
+    }
+
+    std::vector<size_t> lst_hr_; 
+    std::vector<size_t> period_first_hr_;
+
+    double lst_rate_{0};
+    double max_rate_{0};
+    double min_rate_{0};
+    bool is_stable_{false};
+    bool is_in_per_{false};
+    size_t tick_{0};
+    size_t eq_tick_{0};
+};
+
+class VisCntsUpdater {
+  public:
+    VisCntsUpdater(size_t hot_set_size,
+                size_t max_viscnts_size,
+                size_t max_vc_hot_set_size,
+                size_t min_vc_hot_set_size,
+                size_t wait_op,
+                size_t wait_time_ns,
+                RouterVisCnts& router)
+      : cur_vc_hot_set_size_(hot_set_size),
+        max_viscnts_size_(max_viscnts_size),
+        max_vc_hot_set_size_(max_vc_hot_set_size),
+        min_vc_hot_set_size_(min_vc_hot_set_size),
+        wait_op_(wait_op),
+        wait_time_ns_(wait_time_ns),
+        router_(router) {
+      lst_time_ = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+      th_ = std::thread([&](){
+        update_thread();
+      });
+    }
+
+    ~VisCntsUpdater() {
+      Stop();
+    }
+
+    void Stop() {
+      stop_signal_ = true;
+      cv_.notify_one();
+      th_.join();
+    }
+
+    void UpdateProgress(ssize_t new_progress) {
+      progress_ = new_progress;
+      if (lst_progress_ + wait_op_ < new_progress) {
+        lst_progress_ = new_progress;
+        cv_.notify_one();
+      }
+    }
+
+    size_t GetCurHotSetSizeLimit() const {
+      return router_.get_vc().GetHotSetSizeLimit();
+    }
+
+    size_t GetCurPhySizeLimit() const {
+      return router_.get_vc().GetPhySizeLimit();
+    }
+
+  private:
+    void update_thread() {
+      while (!stop_signal_) {
+        std::unique_lock lck(m_);
+        cv_.wait(lck);
+        if (stop_signal_) {
+          break;
+        }
+        ssize_t cur_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        if (cur_time - lst_time_ < wait_time_ns_) {
+          continue;
+        }
+        auto hits = router_.hit_tier_count();
+        if (!hr_mon_.IsInPeriod()) {
+          hr_mon_.BeginPeriod(hits);
+        } else {
+          double rate = hr_mon_.AddPeriodData(hits);
+          std::cerr << "[VC Updater] Rate: " << rate << std::endl;
+        }
+
+        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
+        ssize_t new_vc_hs = cur_vc_hot_set_size_;
+        if (hr_mon_.IsStable()) {
+          double rate = hr_mon_.GetStableRate();
+          std::cerr << "[VC Updater] Stable Rate: " << rate << std::endl;
+          if (lst_hit_rate_ == -1 || cur_vc_hot_set_size_ == max_vc_hot_set_size_) {
+            // Get the stable hit rate when it uses the maximum hot set size.
+            lst_hit_rate_ = rate;
+            lst_choose_ = -1;
+          } 
+          if (lst_hit_rate_ - rate > 0.1) {
+            // The data distribution may be changed.
+            new_vc_hs = max_vc_hot_set_size_;
+          } else {
+            if (lst_hit_rate_ < rate - 0.01) {
+              lst_hit_rate_ = rate;
+              lst_choose_ = -1;
+            }
+            // Try to decrease hot set size.
+            if (lst_hit_rate_ < rate + 0.01) {
+              if (lst_ret_cur_hot_set_size_ >= new_vc_hs + lst_choose_ * hs_step) {
+                lst_choose_ = std::max(0.05, lst_choose_ * 0.5);
+              }
+              new_vc_hs += lst_choose_ * hs_step;
+            } else {
+              lst_ret_cur_hot_set_size_ = new_vc_hs;
+              new_vc_hs -= lst_choose_ * hs_step;
+            }  
+          }
+
+          resize_tick_ += 1;
+          if (resize_tick_ % 20 == 0) {
+            router_.get_vc().SetProperPhysicalSizeLimit();
+            cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+            cur_vc_phy_size_ *= 1.05;
+            new_vc_hs = cur_vc_hot_set_size_ * 1.05;
+            new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs), max_vc_hot_set_size_);
+            lst_choose_ = -1;
+          }
+
+          hr_mon_.EndPeriod();
+          hr_mon_.BeginPeriod(hits);
+        }
+        
+
+        new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs), max_vc_hot_set_size_);
+        if (new_vc_hs != cur_vc_hot_set_size_) {
+          cur_vc_hot_set_size_ = new_vc_hs;
+          router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_, cur_vc_phy_size_);
+        }  
+        
+      }
+    }
+
+
+    ssize_t cur_vc_hot_set_size_;
+    ssize_t cur_vc_phy_size_;
+    ssize_t max_viscnts_size_;
+    ssize_t max_vc_hot_set_size_;
+    ssize_t min_vc_hot_set_size_;
+    ssize_t wait_op_;
+    ssize_t wait_time_ns_;
+    ssize_t lst_progress_{0};
+    ssize_t lst_time_{0};
+    double step_rate_{1};
+    RouterVisCnts& router_;
+
+    bool stop_signal_{false};
+    std::thread th_;
+    std::condition_variable cv_;
+    std::mutex m_;
+
+    std::atomic<size_t> progress_{0};
+    HitRateMonitor hr_mon_;
+    double lst_hit_rate_{-1};
+    double lst_choose_{-1};
+    ssize_t lst_ret_cur_hot_set_size_{0};
+    ssize_t resize_tick_{0};
+
+};
+
+void update_vc(VisCntsUpdater& vc_updater, WorkOptions *work_options, std::atomic<bool> *should_stop) {
+  const std::filesystem::path &db_path = work_options->db_path;
+  auto vc_parameter_path = db_path / "vc_param";
+  std::ofstream out(vc_parameter_path);
+  while (!should_stop->load(std::memory_order_relaxed)) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    vc_updater.UpdateProgress(work_options->progress->load(std::memory_order_relaxed));
+    auto timestamp = timestamp_ns();
+    out << timestamp << " " << vc_updater.GetCurHotSetSizeLimit() << " " << vc_updater.GetCurPhySizeLimit() << std::endl;
+  }
+}
 
 void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
@@ -491,6 +739,8 @@ int main(int argc, char **argv) {
       po::value<double>(&work_option.db_paths_soft_size_limit_multiplier)
           ->default_value(1.1));
 
+  desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -573,11 +823,15 @@ int main(int argc, char **argv) {
       << first_level_in_cd << std::endl;
 
   RouterVisCnts *router = nullptr;
+  VisCntsUpdater *updater = nullptr;
   if (first_level_in_cd != 0) {
     router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                first_level_in_cd - 1, max_hot_set_size,
                                max_viscnts_size, switches);
     options.compaction_router = router;
+    if (vm.count("enable_dynamic_vc_param")) {
+      updater = new VisCntsUpdater(max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
+    }
   }
 
   rocksdb::DB *db;
@@ -665,7 +919,7 @@ int main(int argc, char **argv) {
     /* Statistics of router */
     if (router) {
       if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-        auto counters = router->hit_count();
+        auto counters = router->hit_hot_count();
         assert(counters.size() == 2);
         log << "Access hot per tier: " << counters[0] << ' ' << counters[1]
             << "\n";
@@ -714,6 +968,13 @@ int main(int argc, char **argv) {
     }
   };
 
+  auto update_vc_func = [&]() {
+    if (updater != nullptr) {
+      update_vc(*updater, &work_option, &should_stop);
+    }
+  };
+
+  std::thread period_update_vc_thread(update_vc_func);
   std::thread period_print_thread(period_print_stat);
 
   rusty::sync::Mutex<std::ofstream> info_json_out(
@@ -753,8 +1014,10 @@ int main(int argc, char **argv) {
 
   stat_printer.join();
   period_print_thread.join();
+  period_update_vc_thread.join();
   delete db;
   delete router;
+  delete updater;
 
   return 0;
 }
