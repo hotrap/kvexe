@@ -281,6 +281,8 @@ class BlockChannelClient {
 };
 
 struct WorkOptions {
+  bool load{false};
+  bool run{false};
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
@@ -329,115 +331,129 @@ class Tester {
     if (options_.enable_fast_generator) {
       std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
                 << std::endl;
-      auto load_start = rusty::time::Instant::now();
-      YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options);
-      for (size_t i = 0; i < options_.num_threads; ++i) {
-        threads.emplace_back(
-            [&loader, &workers, i]() { workers[i].load(loader); });
-      }
-      for (auto& t : threads) t.join();
-      threads.clear();
-      *info_json_out.lock()
-          << "\t\"load-time(secs)\": " << load_start.elapsed().as_secs_double()
-          << ',' << std::endl;
       std::string rocksdb_stats;
-      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
-      std::ofstream(options_.db_path / "rocksdb-stats-load.txt")
-          << rocksdb_stats;
+      uint64_t now_key_num =
+          options_.load ? 0 : options_.ycsb_gen_options.record_count;
+      YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options, now_key_num);
+      if (options_.load) {
+        auto load_start = rusty::time::Instant::now();
+        for (size_t i = 0; i < options_.num_threads; ++i) {
+          threads.emplace_back(
+              [&loader, &workers, i]() { workers[i].load(loader); });
+        }
+        for (auto& t : threads) t.join();
+        threads.clear();
+        *info_json_out.lock()
+            << "\t\"load-time(secs)\": "
+            << load_start.elapsed().as_secs_double() << ',' << std::endl;
+        rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+        std::ofstream(options_.db_path / "rocksdb-stats-load.txt")
+            << rocksdb_stats;
 
-      auto load_wait_start = rusty::time::Instant::now();
-      wait_for_background_work(options_.db);
-      *info_json_out.lock()
-          << "\t\"load-wait-time(secs)\": "
-          << load_wait_start.elapsed().as_secs_double() << ',' << std::endl;
-      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
-      std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
-          << rocksdb_stats;
+        auto load_wait_start = rusty::time::Instant::now();
+        wait_for_background_work(options_.db);
+        *info_json_out.lock()
+            << "\t\"load-wait-time(secs)\": "
+            << load_wait_start.elapsed().as_secs_double() << ',' << std::endl;
+        rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+        std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
+            << rocksdb_stats;
+      }
 
-      options_.db->SetOptions(
-          {{"db_paths_soft_size_limit_multiplier",
-            std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
-      std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
-      print_vector(
-          options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
-      std::cerr << std::endl;
+      if (options_.run) {
+        options_.db->SetOptions(
+            {{"db_paths_soft_size_limit_multiplier",
+              std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
+        std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
+        print_vector(
+            options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
+        std::cerr << std::endl;
 
-      *info_json_out.lock()
-          << "\t\"run-start-timestamp(ns)\": " << timestamp_ns() << ','
-          << std::endl;
-      auto run_start = rusty::time::Instant::now();
-      YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
-      std::vector<clockid_t> clockids;
-      std::atomic<size_t> finished(0);
-      bool permit_join = false;
-      std::condition_variable cv;
-      std::mutex mu;
-      for (size_t i = 0; i < options_.num_threads; ++i) {
-        threads.emplace_back(
-            [&workers, &runner, i, &finished, &permit_join, &cv, &mu]() {
-              workers[i].run(runner);
-              finished.fetch_add(1, std::memory_order_relaxed);
-              std::unique_lock lock(mu);
-              cv.wait(lock, [&permit_join]() { return permit_join; });
-            });
-        pthread_t thread_id = threads[i].native_handle();
-        clockid_t clock_id;
-        int ret = pthread_getcpuclockid(thread_id, &clock_id);
-        if (ret) {
-          switch (ret) {
-            case ENOENT:
-              rusty_panic(
-                  "pthread_getcpuclockid: Per-thread CPU time clocks are not "
-                  "supported by the system.");
-            case ESRCH:
-              rusty_panic(
-                  "pthread_getcpuclockid: No thread with the ID %lu could "
-                  "be found.",
-                  thread_id);
-            default:
-              rusty_panic("pthread_getcpuclockid returns %d", ret);
+        *info_json_out.lock()
+            << "\t\"run-start-timestamp(ns)\": " << timestamp_ns() << ','
+            << std::endl;
+        auto run_start = rusty::time::Instant::now();
+        YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+        std::vector<clockid_t> clockids;
+        std::atomic<size_t> finished(0);
+        bool permit_join = false;
+        std::condition_variable cv;
+        std::mutex mu;
+        for (size_t i = 0; i < options_.num_threads; ++i) {
+          threads.emplace_back(
+              [&workers, &runner, i, &finished, &permit_join, &cv, &mu]() {
+                workers[i].run(runner);
+                finished.fetch_add(1, std::memory_order_relaxed);
+                std::unique_lock lock(mu);
+                cv.wait(lock, [&permit_join]() { return permit_join; });
+              });
+          pthread_t thread_id = threads[i].native_handle();
+          clockid_t clock_id;
+          int ret = pthread_getcpuclockid(thread_id, &clock_id);
+          if (ret) {
+            switch (ret) {
+              case ENOENT:
+                rusty_panic(
+                    "pthread_getcpuclockid: Per-thread CPU time clocks are not "
+                    "supported by the system.");
+              case ESRCH:
+                rusty_panic(
+                    "pthread_getcpuclockid: No thread with the ID %lu could "
+                    "be found.",
+                    thread_id);
+              default:
+                rusty_panic("pthread_getcpuclockid returns %d", ret);
+            }
           }
+          clockids.push_back(clock_id);
         }
-        clockids.push_back(clock_id);
-      }
-      std::ofstream out(options_.db_path / "worker-cpu-nanos");
-      out << "Timestamp(ns) cpu-time(ns)\n";
-      auto interval = rusty::time::Duration::from_secs(1);
-      auto next_begin = rusty::time::Instant::now() + interval;
-      std::vector<uint64_t> ori_cpu_timestamp_ns;
-      for (size_t i = 0; i < clockids.size(); ++i) {
-        ori_cpu_timestamp_ns.push_back(cpu_timestamp_ns(clockids[i]));
-      }
-      while (finished.load(std::memory_order_relaxed) != threads.size()) {
-        auto sleep_time =
-            next_begin.checked_duration_since(rusty::time::Instant::now());
-        if (sleep_time.has_value()) {
-          std::this_thread::sleep_for(
-              std::chrono::nanoseconds(sleep_time.value().as_nanos()));
-        }
-        next_begin += interval;
-
-        auto timestamp = timestamp_ns();
-
-        uint64_t nanos = 0;
+        std::ofstream out(options_.db_path / "worker-cpu-nanos");
+        out << "Timestamp(ns) cpu-time(ns)\n";
+        auto interval = rusty::time::Duration::from_secs(1);
+        auto next_begin = rusty::time::Instant::now() + interval;
+        std::vector<uint64_t> ori_cpu_timestamp_ns;
         for (size_t i = 0; i < clockids.size(); ++i) {
-          nanos += cpu_timestamp_ns(clockids[i]) - ori_cpu_timestamp_ns[i];
+          ori_cpu_timestamp_ns.push_back(cpu_timestamp_ns(clockids[i]));
         }
-        out << timestamp << ' ' << nanos << std::endl;
+        while (finished.load(std::memory_order_relaxed) != threads.size()) {
+          auto sleep_time =
+              next_begin.checked_duration_since(rusty::time::Instant::now());
+          if (sleep_time.has_value()) {
+            std::this_thread::sleep_for(
+                std::chrono::nanoseconds(sleep_time.value().as_nanos()));
+          }
+          next_begin += interval;
+
+          auto timestamp = timestamp_ns();
+
+          uint64_t nanos = 0;
+          for (size_t i = 0; i < clockids.size(); ++i) {
+            nanos += cpu_timestamp_ns(clockids[i]) - ori_cpu_timestamp_ns[i];
+          }
+          out << timestamp << ' ' << nanos << std::endl;
+        }
+        {
+          std::unique_lock<std::mutex> lock(mu);
+          permit_join = true;
+        }
+        cv.notify_all();
+        for (auto& t : threads) t.join();
+        *info_json_out.lock()
+            << "\t\"run-end-timestamp(ns)\": " << timestamp_ns() << ",\n"
+            << "\t\"run-time(secs)\": " << run_start.elapsed().as_secs_double()
+            << ',' << std::endl;
+        rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+        std::ofstream(options_.db_path / "rocksdb-stats-run.txt")
+            << rocksdb_stats;
+
+        auto run_wait_start = rusty::time::Instant::now();
+        wait_for_background_work(options_.db);
+        *info_json_out.lock()
+            << "\t\"run_wait_time(secs)\": "
+            << run_wait_start.elapsed().as_secs_double() << "," << std::endl;
+        rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
+        std::ofstream(options_.db_path / "rocksdb-stats.txt") << rocksdb_stats;
       }
-      {
-        std::unique_lock<std::mutex> lock(mu);
-        permit_join = true;
-      }
-      cv.notify_all();
-      for (auto& t : threads) t.join();
-      *info_json_out.lock()
-          << "\t\"run-end-timestamp(ns)\": " << timestamp_ns() << ",\n"
-          << "\t\"run-time(secs)\": " << run_start.elapsed().as_secs_double()
-          << ',' << std::endl;
-      rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
-      std::ofstream(options_.db_path / "rocksdb-stats-run.txt")
-          << rocksdb_stats;
     } else {
       for (size_t i = 0; i < options_.num_threads; i++) {
         threads.emplace_back([&]() {
@@ -447,13 +463,9 @@ class Tester {
         });
         parse();
         for (auto& t : threads) t.join();
+        wait_for_background_work(options_.db);
       }
     }
-    auto run_wait_start = rusty::time::Instant::now();
-    wait_for_background_work(options_.db);
-    *info_json_out.lock() << "\t\"run_wait_time(secs)\": "
-                          << run_wait_start.elapsed().as_secs_double() << ","
-                          << std::endl;
   }
 
   size_t GetOpParseCounts() const {
