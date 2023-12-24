@@ -1,16 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
-if(NOT DEFINED CACHELIB_HOME)
-	if(NOT DEFINED ENV{CACHELIB_HOME})
-		message(FATAL_ERROR "CACHELIB_HOME not set")  
-	endif()
-	set(CACHELIB_HOME $ENV{CACHELIB_HOME})
-endif()
-
-include_directories(SYSTEM ${CACHELIB_HOME}/include)
 include_directories(${ROCKSDB_INCLUDE})
-link_directories(${ROCKSDB_LIB} ${CACHELIB_HOME}/lib)
+link_directories(${ROCKSDB_LIB})
 
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
