@@ -458,6 +458,7 @@ class VisCntsUpdater {
               new_vc_phy = real_ps + delta;
             }
           } else if (phase_num_ == 1) {
+            log_ << "[VC Updater] Lst Choose: " << lst_choose_ << ", Lst Ret: " << lst_ret_cur_hot_set_size_ << std::endl;
             if (router_.get_vc().DecayCount() > 0) {
               // Try to decrease hot set size.
               if (lst_hit_rate_ < rate + 0.01) {
