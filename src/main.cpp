@@ -349,14 +349,14 @@ class HitRateMonitor {
 class VisCntsUpdater {
   public:
     VisCntsUpdater(size_t hot_set_size,
-                size_t max_viscnts_size,
+                size_t phy_size,
                 size_t max_vc_hot_set_size,
                 size_t min_vc_hot_set_size,
                 size_t wait_op,
                 size_t wait_time_ns,
                 RouterVisCnts& router)
       : cur_vc_hot_set_size_(hot_set_size),
-        max_viscnts_size_(max_viscnts_size),
+        cur_vc_phy_size_(phy_size),
         max_vc_hot_set_size_(max_vc_hot_set_size),
         min_vc_hot_set_size_(min_vc_hot_set_size),
         wait_op_(wait_op),
@@ -416,42 +416,60 @@ class VisCntsUpdater {
 
         double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
         ssize_t new_vc_hs = cur_vc_hot_set_size_;
+        ssize_t new_vc_phy = cur_vc_phy_size_;
         if (hr_mon_.IsStable()) {
           double rate = hr_mon_.GetStableRate();
           std::cerr << "[VC Updater] Stable Rate: " << rate << std::endl;
-          if (lst_hit_rate_ == -1 || cur_vc_hot_set_size_ == max_vc_hot_set_size_) {
-            // Get the stable hit rate when it uses the maximum hot set size.
+          if (lst_hit_rate_ == -1) {
+            // Get the stable hit rate
             lst_hit_rate_ = rate;
             lst_choose_ = -1;
+            cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
+            phase_num_ = 0;
           } 
           if (lst_hit_rate_ - rate > 0.1) {
             // The data distribution may be changed.
-            new_vc_hs = max_vc_hot_set_size_;
-          } else {
-            if (lst_hit_rate_ < rate - 0.01) {
-              lst_hit_rate_ = rate;
+            lst_hit_rate_ = rate;
+            cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
+            phase_num_ = 0;
+          } 
+
+          // maximum hit rate updates,
+          if (lst_hit_rate_ < rate - 0.01) {
+            lst_hit_rate_ = rate;
+            lst_choose_ = std::min(-1., lst_choose_ * 2);
+          }
+          
+          if (phase_num_ == 0) {
+            double real_hs = router_.get_vc().GetRealHotSetSize();
+            double real_ps = router_.get_vc().GetRealPhySize();
+            std::cerr << "[VC Updater] Real HS: " << real_hs << ", Real PS: " << real_ps << std::endl;
+            if (real_hs > cur_vc_hot_set_size_ * 0.95) {
+              phase_num_ = 1;
               lst_choose_ = -1;
+              router_.get_vc().SetProperPhysicalSizeLimit();
+              cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+            } else if (router_.get_vc().DecayCount() > 0 && real_hs > 0) {
+              double delta = (cur_vc_hot_set_size_ - real_hs) / (double) real_hs * real_ps;
+              delta = std::min(delta, (double)(128 << 20));
+              new_vc_phy = real_ps + delta;
             }
+          } else if (phase_num_ == 1) {
             // Try to decrease hot set size.
             if (lst_hit_rate_ < rate + 0.01) {
               if (lst_ret_cur_hot_set_size_ >= new_vc_hs + lst_choose_ * hs_step) {
-                lst_choose_ = std::max(0.05, lst_choose_ * 0.5);
+                lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
               }
               new_vc_hs += lst_choose_ * hs_step;
             } else {
               lst_ret_cur_hot_set_size_ = new_vc_hs;
               new_vc_hs -= lst_choose_ * hs_step;
-            }  
-          }
-
-          resize_tick_ += 1;
-          if (resize_tick_ % 20 == 0) {
-            router_.get_vc().SetProperPhysicalSizeLimit();
-            cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
-            cur_vc_phy_size_ *= 1.05;
-            new_vc_hs = cur_vc_hot_set_size_ * 1.05;
-            new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs), max_vc_hot_set_size_);
-            lst_choose_ = -1;
+            }
+            if (lst_choose_ == -0.02) {
+              phase_num_ = 2;
+              router_.get_vc().SetProperPhysicalSizeLimit();
+              cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+            }
           }
 
           hr_mon_.EndPeriod();
@@ -460,8 +478,9 @@ class VisCntsUpdater {
         
 
         new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs), max_vc_hot_set_size_);
-        if (new_vc_hs != cur_vc_hot_set_size_) {
+        if (new_vc_hs != cur_vc_hot_set_size_ || new_vc_phy != cur_vc_phy_size_) {
           cur_vc_hot_set_size_ = new_vc_hs;
+          cur_vc_phy_size_ = new_vc_phy;
           router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_, cur_vc_phy_size_);
         }  
         
@@ -471,13 +490,13 @@ class VisCntsUpdater {
 
     ssize_t cur_vc_hot_set_size_;
     ssize_t cur_vc_phy_size_;
-    ssize_t max_viscnts_size_;
     ssize_t max_vc_hot_set_size_;
     ssize_t min_vc_hot_set_size_;
     ssize_t wait_op_;
     ssize_t wait_time_ns_;
     ssize_t lst_progress_{0};
     ssize_t lst_time_{0};
+    size_t phase_num_{0};
     double step_rate_{1};
     RouterVisCnts& router_;
 
