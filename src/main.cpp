@@ -505,6 +505,7 @@ class VisCntsUpdater {
     size_t phase_num_{0};
     double step_rate_{1};
     RouterVisCnts& router_;
+    std::ofstream log_;
 
     bool stop_signal_{false};
     std::thread th_;
@@ -517,8 +518,6 @@ class VisCntsUpdater {
     double lst_choose_{-1};
     ssize_t lst_ret_cur_hot_set_size_{0};
     ssize_t resize_tick_{0};
-
-    std::ofstream log_;
 
 };
 
@@ -885,9 +884,6 @@ int main(int argc, char **argv) {
                                first_level_in_cd - 1, max_hot_set_size,
                                max_viscnts_size, switches);
     options.compaction_router = router;
-    if (vm.count("enable_dynamic_vc_param")) {
-      updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
-    }
   }
 
   rocksdb::DB *db;
@@ -903,6 +899,11 @@ int main(int argc, char **argv) {
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
   }
+
+  if (vm.count("enable_dynamic_vc_param") && router) {
+    updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
+  }
+
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
