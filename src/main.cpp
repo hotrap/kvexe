@@ -348,7 +348,9 @@ class HitRateMonitor {
 
 class VisCntsUpdater {
   public:
-    VisCntsUpdater(size_t hot_set_size,
+    VisCntsUpdater(
+                const std::filesystem::path &db_path,
+                size_t hot_set_size,
                 size_t phy_size,
                 size_t max_vc_hot_set_size,
                 size_t min_vc_hot_set_size,
@@ -361,7 +363,8 @@ class VisCntsUpdater {
         min_vc_hot_set_size_(min_vc_hot_set_size),
         wait_op_(wait_op),
         wait_time_ns_(wait_time_ns),
-        router_(router) {
+        router_(router),
+        log_(db_path / "vc_log") {
       lst_time_ = std::chrono::high_resolution_clock::now().time_since_epoch().count();
       th_ = std::thread([&](){
         update_thread();
@@ -411,7 +414,7 @@ class VisCntsUpdater {
           hr_mon_.BeginPeriod(hits);
         } else {
           double rate = hr_mon_.AddPeriodData(hits);
-          std::cerr << "[VC Updater] Rate: " << rate << std::endl;
+          log_ << "[VC Updater] Rate: " << rate << std::endl;
         }
 
         double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
@@ -419,7 +422,7 @@ class VisCntsUpdater {
         ssize_t new_vc_phy = cur_vc_phy_size_;
         if (hr_mon_.IsStable()) {
           double rate = hr_mon_.GetStableRate();
-          std::cerr << "[VC Updater] Stable Rate: " << rate << std::endl;
+          log_ << "[VC Updater] Stable Rate: " << rate << std::endl;
           if (lst_hit_rate_ == -1) {
             // Get the stable hit rate
             lst_hit_rate_ = rate;
@@ -443,7 +446,7 @@ class VisCntsUpdater {
           if (phase_num_ == 0) {
             double real_hs = router_.get_vc().GetRealHotSetSize();
             double real_ps = router_.get_vc().GetRealPhySize();
-            std::cerr << "[VC Updater] Real HS: " << real_hs << ", Real PS: " << real_ps << std::endl;
+            log_ << "[VC Updater] Real HS: " << real_hs << ", Real PS: " << real_ps << std::endl;
             if (real_hs > cur_vc_hot_set_size_ * 0.95) {
               phase_num_ = 1;
               lst_choose_ = -1;
@@ -455,15 +458,17 @@ class VisCntsUpdater {
               new_vc_phy = real_ps + delta;
             }
           } else if (phase_num_ == 1) {
-            // Try to decrease hot set size.
-            if (lst_hit_rate_ < rate + 0.01) {
-              if (lst_ret_cur_hot_set_size_ >= new_vc_hs + lst_choose_ * hs_step) {
-                lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
+            if (router_.get_vc().DecayCount() > 0) {
+              // Try to decrease hot set size.
+              if (lst_hit_rate_ < rate + 0.01) {
+                if (lst_ret_cur_hot_set_size_ >= new_vc_hs + lst_choose_ * hs_step) {
+                  lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
+                }
+                new_vc_hs += lst_choose_ * hs_step;
+              } else {
+                lst_ret_cur_hot_set_size_ = new_vc_hs;
+                new_vc_hs -= lst_choose_ * hs_step;
               }
-              new_vc_hs += lst_choose_ * hs_step;
-            } else {
-              lst_ret_cur_hot_set_size_ = new_vc_hs;
-              new_vc_hs -= lst_choose_ * hs_step;
             }
             if (lst_choose_ == -0.02) {
               phase_num_ = 2;
@@ -511,6 +516,8 @@ class VisCntsUpdater {
     double lst_choose_{-1};
     ssize_t lst_ret_cur_hot_set_size_{0};
     ssize_t resize_tick_{0};
+
+    std::ofstream log_;
 
 };
 
@@ -878,7 +885,7 @@ int main(int argc, char **argv) {
                                max_viscnts_size, switches);
     options.compaction_router = router;
     if (vm.count("enable_dynamic_vc_param")) {
-      updater = new VisCntsUpdater(max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
+      updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
     }
   }
 
