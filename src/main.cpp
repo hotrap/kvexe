@@ -184,11 +184,12 @@ class TimedIter : public rocksdb::TraitIterator<T> {
 class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-                int tier0_last_level, size_t max_hot_set_size,
-                size_t max_viscnts_size, uint64_t switches)
+                int tier0_last_level, size_t init_hot_set_size,
+                size_t max_viscnts_size, uint64_t switches, 
+                size_t max_hot_set_size, size_t min_hot_set_size)
       : switches_(switches),
-        vc_(VisCnts::New(ucmp, dir.c_str(), max_hot_set_size,
-                         max_viscnts_size)),
+        vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size,
+                         max_hot_set_size, min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0} {}
   const char *Name() const override { return "RouterVisCnts"; }
@@ -495,7 +496,7 @@ class VisCntsUpdater {
   ssize_t resize_tick_{0};
 };
 
-void update_vc(VisCntsUpdater &vc_updater, WorkOptions *work_options,
+void print_vc_param(RouterVisCnts& router, WorkOptions *work_options,
                std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
   auto vc_parameter_path = db_path / "vc_param";
@@ -503,8 +504,8 @@ void update_vc(VisCntsUpdater &vc_updater, WorkOptions *work_options,
   while (!should_stop->load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     auto timestamp = timestamp_ns();
-    out << timestamp << " " << vc_updater.GetCurHotSetSizeLimit() << " "
-        << vc_updater.GetCurPhySizeLimit() << std::endl;
+    out << timestamp << " " << router.get_vc().GetHotSetSizeLimit() << " "
+        << router.get_vc().GetPhySizeLimit() << std::endl;
   }
 }
 
@@ -788,6 +789,8 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
 
+  desc.add_options()("enable_dynamic_vc_param_in_lsm", "enable_dynami_vc_param_in_lsm");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -874,9 +877,17 @@ int main(int argc, char **argv) {
   RouterVisCnts *router = nullptr;
   VisCntsUpdater *updater = nullptr;
   if (first_level_in_cd != 0) {
-    router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                               first_level_in_cd - 1, max_hot_set_size,
-                               max_viscnts_size, switches);
+    if (vm.count("enable_dynamic_vc_param_in_lsm")) {
+      router = new RouterVisCnts(options.comparator, viscnts_path_str,
+                              first_level_in_cd - 1, max_hot_set_size,
+                              max_viscnts_size, switches, options.db_paths[0].target_size * 0.7, 
+                              options.db_paths[0].target_size * 0.1);
+    } else {
+      router = new RouterVisCnts(options.comparator, viscnts_path_str,
+                                first_level_in_cd - 1, max_hot_set_size,
+                                max_viscnts_size, switches, max_hot_set_size, max_hot_set_size);  
+    }
+    
     options.compaction_router = router;
   }
 
@@ -1026,13 +1037,11 @@ int main(int argc, char **argv) {
     }
   };
 
-  auto update_vc_func = [&]() {
-    if (updater != nullptr) {
-      update_vc(*updater, &work_option, &should_stop);
-    }
+  auto print_vc_param_func = [&]() {
+    print_vc_param(*router, &work_option, &should_stop);
   };
 
-  std::thread period_update_vc_thread(update_vc_func);
+  std::thread period_print_vc_param_thread(print_vc_param_func);
   std::thread period_print_thread(period_print_stat);
 
   std::filesystem::path info_json_path = db_path / "info.json";
@@ -1073,7 +1082,7 @@ int main(int argc, char **argv) {
 
   stat_printer.join();
   period_print_thread.join();
-  period_update_vc_thread.join();
+  period_print_vc_param_thread.join();
   delete db;
   delete router;
   delete updater;
