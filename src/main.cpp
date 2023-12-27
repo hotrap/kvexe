@@ -1,3 +1,5 @@
+#include <sys/resource.h>
+
 #include <counter_timer_vec.hpp>
 
 #include "rocksdb/compaction_router.h"
@@ -252,18 +254,15 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
           count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
     return ret;
   }
-  
+
   std::vector<size_t> hit_tier_count() {
     std::vector<size_t> ret;
     for (size_t i = 0; i < 2; ++i)
-      ret.push_back(
-          count_access_per_tier_[i].load(std::memory_order_relaxed));
+      ret.push_back(count_access_per_tier_[i].load(std::memory_order_relaxed));
     return ret;
   }
 
-  VisCnts& get_vc() {
-    return vc_;
-  }
+  VisCnts &get_vc() { return vc_; }
 
  private:
   const uint64_t switches_;
@@ -275,89 +274,77 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 };
 
 class HitRateMonitor {
-  public:
-    HitRateMonitor(size_t threshold) : threshold_(threshold) {}
+ public:
+  HitRateMonitor(size_t threshold) : threshold_(threshold) {}
 
-    void BeginPeriod(const std::vector<size_t>& hr) {
-      lst_hr_ = hr;
-      period_first_hr_ = hr;
-      is_stable_ = false;
-      tick_ = 0;
-      max_rate_ = 0;
-      min_rate_ = 1;
+  void BeginPeriod(const std::vector<size_t> &hr) {
+    lst_hr_ = hr;
+    period_first_hr_ = hr;
+    is_stable_ = false;
+    tick_ = 0;
+    max_rate_ = 0;
+    min_rate_ = 1;
+    eq_tick_ = 0;
+    is_in_per_ = true;
+  }
+
+
+  double AddPeriodData(const std::vector<size_t>& hr) {
+    if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < threshold_) {
+      return -1;
+    }
+    double rate = CalcRate(lst_hr_, hr);
+    if (max_rate_ + 0.005 < rate || min_rate_ - 0.005 > rate) {
+      max_rate_ = std::max(max_rate_, rate);
+      min_rate_ = std::min(min_rate_, rate);
       eq_tick_ = 0;
-      is_in_per_ = true;
+    } else {
+      eq_tick_ += 1;
     }
-
-    double AddPeriodData(const std::vector<size_t>& hr) {
-      if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < threshold_) {
-        return -1;
-      }
-      double rate = CalcRate(lst_hr_, hr);
-      if (max_rate_ + 0.005 < rate || min_rate_ - 0.005 > rate) {
-        max_rate_ = std::max(max_rate_, rate);
-        min_rate_ = std::min(min_rate_, rate);
-        eq_tick_ = 0;
-      } else {
-        eq_tick_ += 1;
-      }
-      if (eq_tick_ == 1) {
-        period_first_hr_ = hr;
-      }
-      if (eq_tick_ == 4) {
-        is_stable_ = true;
-      }
-      lst_hr_ = hr;
-      tick_ += 1;
-      return rate;
+    if (eq_tick_ == 1) {
+      period_first_hr_ = hr;
     }
-
-    bool IsStable() const {
-      return is_stable_;
+    if (eq_tick_ == 4) {
+      is_stable_ = true;
     }
+    lst_hr_ = hr;
+    tick_ += 1;
+    return rate;
+  }
 
-    double GetStableRate() const {
-      return CalcRate(period_first_hr_, lst_hr_);
-    }
+  bool IsStable() const { return is_stable_; }
 
-    bool IsInPeriod() const {
-      return is_in_per_;
-    }
+  double GetStableRate() const { return CalcRate(period_first_hr_, lst_hr_); }
 
-    void EndPeriod() {
-      is_in_per_ = false;
-    }
+  bool IsInPeriod() const { return is_in_per_; }
 
-  private:
-    double CalcRate(const std::vector<size_t>& L, const std::vector<size_t>& R) const {
-      double rate = ((double)R[0] - L[0]) / ((double)R[0] - L[0] + R[1] - L[1]);
-      return rate;
-    }
+  void EndPeriod() { is_in_per_ = false; }
 
-    std::vector<size_t> lst_hr_; 
-    std::vector<size_t> period_first_hr_;
+ private:
+  double CalcRate(const std::vector<size_t> &L,
+                  const std::vector<size_t> &R) const {
+    double rate = ((double)R[0] - L[0]) / ((double)R[0] - L[0] + R[1] - L[1]);
+    return rate;
+  }
 
-    double lst_rate_{0};
-    double max_rate_{0};
-    double min_rate_{0};
-    bool is_stable_{false};
-    bool is_in_per_{false};
-    size_t tick_{0};
-    size_t eq_tick_{0};
-    size_t threshold_{100};
+  double lst_rate_{0};
+  double max_rate_{0};
+  double min_rate_{0};
+  bool is_stable_{false};
+  bool is_in_per_{false};
+  size_t tick_{0};
+  size_t eq_tick_{0};
+  size_t threshold_{100};
+  std::vector<size_t> lst_hr_;
+  std::vector<size_t> period_first_hr_;
 };
 
 class VisCntsUpdater {
-  public:
-    VisCntsUpdater(
-                const std::filesystem::path &db_path,
-                size_t hot_set_size,
-                size_t phy_size,
-                size_t max_vc_hot_set_size,
-                size_t min_vc_hot_set_size,
-                size_t wait_op,
-                size_t wait_time_ns,
-                RouterVisCnts& router)
+ public:
+  VisCntsUpdater(const std::filesystem::path &db_path, size_t hot_set_size,
+                 size_t phy_size, size_t max_vc_hot_set_size,
+                 size_t min_vc_hot_set_size, size_t wait_op,
+                 size_t wait_time_ns, RouterVisCnts &router)
       : cur_vc_hot_set_size_(hot_set_size),
         cur_vc_phy_size_(phy_size),
         max_vc_hot_set_size_(max_vc_hot_set_size),
@@ -372,22 +359,20 @@ class VisCntsUpdater {
       });
     }
 
-    ~VisCntsUpdater() {
-      Stop();
-    }
+  ~VisCntsUpdater() { Stop(); }
 
-    void Stop() {
-      stop_signal_ = true;
-      th_.join();
-    }
+  void Stop() {
+    stop_signal_ = true;
+    th_.join();
+  }
 
-    size_t GetCurHotSetSizeLimit() const {
-      return router_.get_vc().GetHotSetSizeLimit();
-    }
+  size_t GetCurHotSetSizeLimit() const {
+    return router_.get_vc().GetHotSetSizeLimit();
+  }
 
-    size_t GetCurPhySizeLimit() const {
-      return router_.get_vc().GetPhySizeLimit();
-    }
+  size_t GetCurPhySizeLimit() const {
+    return router_.get_vc().GetPhySizeLimit();
+  }
 
   private:
     void update_thread() {
@@ -403,7 +388,6 @@ class VisCntsUpdater {
           double rate = hr_mon_.AddPeriodData(hits);
           log_ << "[VC Updater] " << timestamp_ns() << " Rate: " << rate << std::endl;
         }
-
         double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
         ssize_t new_vc_hs = cur_vc_hot_set_size_;
         ssize_t new_vc_phy = cur_vc_phy_size_;
@@ -416,40 +400,45 @@ class VisCntsUpdater {
             lst_choose_ = -1;
             cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
             phase_num_ = 0;
-          } 
+          }
           if (lst_hit_rate_ - rate > 0.1) {
             // The data distribution may be changed.
             lst_hit_rate_ = rate;
             cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
             phase_num_ = 0;
-          } 
+          }
 
           // maximum hit rate updates,
           if (lst_hit_rate_ < rate - 0.01) {
             lst_hit_rate_ = rate;
             lst_choose_ = std::max(-1., lst_choose_ * 2);
+            new_vc_hs -= lst_choose_ * hs_step;
           }
-          
+
           if (phase_num_ == 0) {
             double real_hs = router_.get_vc().GetRealHotSetSize();
             double real_ps = router_.get_vc().GetRealPhySize();
-            log_ << "[VC Updater] Real HS: " << real_hs << ", Real PS: " << real_ps << std::endl;
+            log_ << "[VC Updater] Real HS: " << real_hs
+                << ", Real PS: " << real_ps << std::endl;
             if (real_hs > cur_vc_hot_set_size_ * 0.95) {
               phase_num_ = 1;
               lst_choose_ = -1;
               router_.get_vc().SetProperPhysicalSizeLimit();
               cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
             } else if (router_.get_vc().DecayCount() > 0 && real_hs > 0) {
-              double delta = (cur_vc_hot_set_size_ - real_hs) / (double) real_hs * real_ps;
+              double delta =
+                  (cur_vc_hot_set_size_ - real_hs) / (double)real_hs * real_ps;
               delta = std::min(delta, (double)(128 << 20));
               new_vc_phy = real_ps + delta;
             }
           } else if (phase_num_ == 1) {
-            log_ << "[VC Updater] Lst Choose: " << lst_choose_ << ", Lst Ret: " << lst_ret_cur_hot_set_size_ << std::endl;
+            log_ << "[VC Updater] Lst Choose: " << lst_choose_
+                << ", Lst Ret: " << lst_ret_cur_hot_set_size_ << std::endl;
             if (router_.get_vc().DecayCount() > 0) {
               // Try to decrease hot set size.
               if (lst_hit_rate_ < rate + 0.01) {
-                if (lst_ret_cur_hot_set_size_ >= new_vc_hs + lst_choose_ * hs_step) {
+                if (lst_ret_cur_hot_set_size_ >=
+                    new_vc_hs + lst_choose_ * hs_step) {
                   lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
                 }
                 new_vc_hs += lst_choose_ * hs_step;
@@ -468,50 +457,54 @@ class VisCntsUpdater {
           hr_mon_.EndPeriod();
           hr_mon_.BeginPeriod(hits);
         }
-        
 
-        new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs), max_vc_hot_set_size_);
+        new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs),
+                            max_vc_hot_set_size_);
         if (new_vc_hs != cur_vc_hot_set_size_ || new_vc_phy != cur_vc_phy_size_) {
           cur_vc_hot_set_size_ = new_vc_hs;
           cur_vc_phy_size_ = new_vc_phy;
-          router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_, cur_vc_phy_size_);
-        }  
-        
+          router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_,
+                                          cur_vc_phy_size_);
+        }
       }
     }
 
+  ssize_t cur_vc_hot_set_size_;
+  ssize_t cur_vc_phy_size_;
+  ssize_t max_vc_hot_set_size_;
+  ssize_t min_vc_hot_set_size_;
+  ssize_t wait_op_;
+  ssize_t wait_time_ns_;
+  ssize_t lst_progress_{0};
+  ssize_t lst_time_{0};
+  size_t phase_num_{0};
+  double step_rate_{1};
+  RouterVisCnts &router_;
+  std::ofstream log_;
 
-    ssize_t cur_vc_hot_set_size_;
-    ssize_t cur_vc_phy_size_;
-    ssize_t max_vc_hot_set_size_;
-    ssize_t min_vc_hot_set_size_;
-    ssize_t wait_op_;
-    ssize_t wait_time_ns_;
-    size_t phase_num_{0};
-    double step_rate_{1};
-    RouterVisCnts& router_;
-    std::ofstream log_;
+  bool stop_signal_{false};
+  std::thread th_;
+  std::condition_variable cv_;
+  std::mutex m_;
 
-    bool stop_signal_{false};
-    std::thread th_;
-
-    std::atomic<size_t> progress_{0};
-    HitRateMonitor hr_mon_;
-    double lst_hit_rate_{-1};
-    double lst_choose_{-1};
-    ssize_t lst_ret_cur_hot_set_size_{0};
-    ssize_t resize_tick_{0};
-
+  std::atomic<size_t> progress_{0};
+  HitRateMonitor hr_mon_;
+  double lst_hit_rate_{-1};
+  double lst_choose_{-1};
+  ssize_t lst_ret_cur_hot_set_size_{0};
+  ssize_t resize_tick_{0};
 };
 
-void update_vc(VisCntsUpdater& vc_updater, WorkOptions *work_options, std::atomic<bool> *should_stop) {
+void update_vc(VisCntsUpdater &vc_updater, WorkOptions *work_options,
+               std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
   auto vc_parameter_path = db_path / "vc_param";
   std::ofstream out(vc_parameter_path);
   while (!should_stop->load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     auto timestamp = timestamp_ns();
-    out << timestamp << " " << vc_updater.GetCurHotSetSizeLimit() << " " << vc_updater.GetCurPhySizeLimit() << std::endl;
+    out << timestamp << " " << vc_updater.GetCurHotSetSizeLimit() << " "
+        << vc_updater.GetCurPhySizeLimit() << std::endl;
   }
 }
 
@@ -521,15 +514,17 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   auto router = static_cast<RouterVisCnts *>(options->compaction_router);
   const std::filesystem::path &db_path = work_options->db_path;
 
+  char buf[16];
+
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed get\n";
 
-  auto mem_path = db_path / "mem";
-  std::string mem_command =
-      "ps -q " + pid + " -o rss | tail -n 1 >> " + mem_path.c_str();
-  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+  std::ofstream mem_out(db_path / "mem");
+  std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
+  mem_out << "Timestamp(ns) RSS(KiB) max-rss(KiB)\n";
+  struct rusage rusage;
 
   auto cputimes_path = db_path / "cputimes";
   std::string cputimes_command = "echo $(ps -q " + pid +
@@ -576,8 +571,25 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                  << work_options->progress_get->load(std::memory_order_relaxed)
                  << std::endl;
 
-    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
-    std::system(mem_command.c_str());
+    FILE *pipe = popen(mem_command.c_str(), "r");
+    if (pipe == NULL) {
+      perror("popen");
+      rusty_panic();
+    }
+    rusty_assert(fgets(buf, sizeof(buf), pipe) != NULL, "buf too short");
+    size_t buflen = strlen(buf);
+    rusty_assert(buflen > 0);
+    rusty_assert(buf[--buflen] == '\n');
+    buf[buflen] = 0;
+    if (-1 == pclose(pipe)) {
+      perror("pclose");
+      rusty_panic();
+    }
+    if (-1 == getrusage(RUSAGE_SELF, &rusage)) {
+      perror("getrusage");
+      rusty_panic();
+    }
+    mem_out << timestamp << ' ' << buf << ' ' << rusage.ru_maxrss << std::endl;
 
     std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
     std::system(cputimes_command.c_str());
