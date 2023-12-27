@@ -276,7 +276,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
 class HitRateMonitor {
   public:
-    HitRateMonitor() = default;
+    HitRateMonitor(size_t threshold) : threshold_(threshold) {}
 
     void BeginPeriod(const std::vector<size_t>& hr) {
       lst_hr_ = hr;
@@ -290,7 +290,7 @@ class HitRateMonitor {
     }
 
     double AddPeriodData(const std::vector<size_t>& hr) {
-      if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < 100) {
+      if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < threshold_) {
         return -1;
       }
       double rate = CalcRate(lst_hr_, hr);
@@ -344,6 +344,7 @@ class HitRateMonitor {
     bool is_in_per_{false};
     size_t tick_{0};
     size_t eq_tick_{0};
+    size_t threshold_{100};
 };
 
 class VisCntsUpdater {
@@ -364,8 +365,8 @@ class VisCntsUpdater {
         wait_op_(wait_op),
         wait_time_ns_(wait_time_ns),
         router_(router),
-        log_(db_path / "vc_log") {
-      lst_time_ = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        log_(db_path / "vc_log"),
+        hr_mon_(wait_op) {
       th_ = std::thread([&](){
         update_thread();
       });
@@ -377,16 +378,7 @@ class VisCntsUpdater {
 
     void Stop() {
       stop_signal_ = true;
-      cv_.notify_one();
       th_.join();
-    }
-
-    void UpdateProgress(ssize_t new_progress) {
-      progress_ = new_progress;
-      if (lst_progress_ + wait_op_ < new_progress) {
-        lst_progress_ = new_progress;
-        cv_.notify_one();
-      }
     }
 
     size_t GetCurHotSetSizeLimit() const {
@@ -400,21 +392,16 @@ class VisCntsUpdater {
   private:
     void update_thread() {
       while (!stop_signal_) {
-        std::unique_lock lck(m_);
-        cv_.wait(lck);
+        std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
         if (stop_signal_) {
           break;
-        }
-        ssize_t cur_time = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-        if (cur_time - lst_time_ < wait_time_ns_) {
-          continue;
         }
         auto hits = router_.hit_tier_count();
         if (!hr_mon_.IsInPeriod()) {
           hr_mon_.BeginPeriod(hits);
         } else {
           double rate = hr_mon_.AddPeriodData(hits);
-          log_ << "[VC Updater] Rate: " << rate << std::endl;
+          log_ << "[VC Updater] " << timestamp_ns() << " Rate: " << rate << std::endl;
         }
 
         double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
@@ -440,7 +427,7 @@ class VisCntsUpdater {
           // maximum hit rate updates,
           if (lst_hit_rate_ < rate - 0.01) {
             lst_hit_rate_ = rate;
-            lst_choose_ = std::min(-1., lst_choose_ * 2);
+            lst_choose_ = std::max(-1., lst_choose_ * 2);
           }
           
           if (phase_num_ == 0) {
@@ -500,8 +487,6 @@ class VisCntsUpdater {
     ssize_t min_vc_hot_set_size_;
     ssize_t wait_op_;
     ssize_t wait_time_ns_;
-    ssize_t lst_progress_{0};
-    ssize_t lst_time_{0};
     size_t phase_num_{0};
     double step_rate_{1};
     RouterVisCnts& router_;
@@ -509,8 +494,6 @@ class VisCntsUpdater {
 
     bool stop_signal_{false};
     std::thread th_;
-    std::condition_variable cv_;
-    std::mutex m_;
 
     std::atomic<size_t> progress_{0};
     HitRateMonitor hr_mon_;
@@ -527,7 +510,6 @@ void update_vc(VisCntsUpdater& vc_updater, WorkOptions *work_options, std::atomi
   std::ofstream out(vc_parameter_path);
   while (!should_stop->load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    vc_updater.UpdateProgress(work_options->progress->load(std::memory_order_relaxed));
     auto timestamp = timestamp_ns();
     out << timestamp << " " << vc_updater.GetCurHotSetSizeLimit() << " " << vc_updater.GetCurPhySizeLimit() << std::endl;
   }
@@ -901,7 +883,7 @@ int main(int argc, char **argv) {
   }
 
   if (vm.count("enable_dynamic_vc_param") && router) {
-    updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 3e5, 1e9, *router);
+    updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 5e5, 2e9, *router);
   }
 
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
