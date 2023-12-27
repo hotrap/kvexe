@@ -1,3 +1,5 @@
+#include <sys/resource.h>
+
 #include "test.hpp"
 
 typedef uint16_t field_size_t;
@@ -108,15 +110,17 @@ void bg_stat_printer(WorkOptions *work_options,
   rocksdb::DB *db = work_options->db;
   const std::filesystem::path &db_path = work_options->db_path;
 
+  char buf[16];
+
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
   progress_out << "Timestamp(ns) operations-executed get\n";
 
-  auto mem_path = db_path / "mem";
-  std::string mem_command =
-      "ps -q " + pid + " -o rss | tail -n 1 >> " + mem_path.c_str();
-  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+  std::ofstream mem_out(db_path / "mem");
+  std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
+  mem_out << "Timestamp(ns) RSS(KiB) max-rss(KiB)\n";
+  struct rusage rusage;
 
   auto cputimes_path = db_path / "cputimes";
   std::string cputimes_command = "echo $(ps -q " + pid +
@@ -142,8 +146,25 @@ void bg_stat_printer(WorkOptions *work_options,
                  << work_options->progress_get->load(std::memory_order_relaxed)
                  << std::endl;
 
-    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
-    std::system(mem_command.c_str());
+    FILE *pipe = popen(mem_command.c_str(), "r");
+    if (pipe == NULL) {
+      perror("popen");
+      rusty_panic();
+    }
+    rusty_assert(fgets(buf, sizeof(buf), pipe) != NULL, "buf too short");
+    size_t buflen = strlen(buf);
+    rusty_assert(buflen > 0);
+    rusty_assert(buf[--buflen] == '\n');
+    buf[buflen] = 0;
+    if (-1 == pclose(pipe)) {
+      perror("pclose");
+      rusty_panic();
+    }
+    if (-1 == getrusage(RUSAGE_SELF, &rusage)) {
+      perror("getrusage");
+      rusty_panic();
+    }
+    mem_out << timestamp << ' ' << buf << ' ' << rusage.ru_maxrss << std::endl;
 
     std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
     std::system(cputimes_command.c_str());
