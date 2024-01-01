@@ -496,6 +496,67 @@ class VisCntsUpdater {
   ssize_t resize_tick_{0};
 };
 
+
+class VisCntsUpdater2 {
+ public:
+  VisCntsUpdater2(const std::filesystem::path &db_path, size_t max_vc_hot_set_size,
+                 size_t min_vc_hot_set_size, size_t wait_op,
+                 size_t wait_time_ns, RouterVisCnts &router)
+      : wait_op_(wait_op),
+        wait_time_ns_(wait_time_ns),
+        max_vc_hot_set_size_(max_vc_hot_set_size),
+        min_vc_hot_set_size_(min_vc_hot_set_size),
+        router_(router),
+        log_(db_path / "vc_log") {
+      th_ = std::thread([&](){
+        update_thread();
+      });
+    }
+
+  ~VisCntsUpdater2() { Stop(); }
+
+  void Stop() {
+    stop_signal_ = true;
+    th_.join();
+  }
+
+  size_t GetCurHotSetSizeLimit() const {
+    return router_.get_vc().GetHotSetSizeLimit();
+  }
+
+  size_t GetCurPhySizeLimit() const {
+    return router_.get_vc().GetPhySizeLimit();
+  }
+
+  private:
+    void update_thread() {
+      while (!stop_signal_) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
+        if (stop_signal_) {
+          break;
+        }
+        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 5.0;
+        if (router_.get_vc().DecayCount() > 3) {
+          router_.get_vc().SetProperPhysicalSizeLimit();
+          auto rate = router_.get_vc().GetPhySizeLimit() / (double) router_.get_vc().GetHotSetSizeLimit();
+          auto delta = std::max<size_t>(rate * hs_step, (64 << 20));
+          auto phy_size = router_.get_vc().GetPhySizeLimit() + delta;
+          router_.get_vc().SetPhysicalSizeLimit(phy_size);
+        }
+      }
+    }
+
+  ssize_t wait_op_;
+  ssize_t wait_time_ns_;
+  ssize_t max_vc_hot_set_size_;
+  ssize_t min_vc_hot_set_size_;
+  RouterVisCnts &router_;
+  std::ofstream log_;
+
+  bool stop_signal_{false};
+  std::thread th_;
+};
+
 void print_vc_param(RouterVisCnts& router, WorkOptions *work_options,
                std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
@@ -791,6 +852,8 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_dynamic_vc_param_in_lsm", "enable_dynami_vc_param_in_lsm");
 
+  desc.add_options()("enable_dynamic_only_vc_phy_size", "enable_dynamic_only_vc_phy_size");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -875,7 +938,7 @@ int main(int argc, char **argv) {
   }
 
   RouterVisCnts *router = nullptr;
-  VisCntsUpdater *updater = nullptr;
+  VisCntsUpdater2 *updater = nullptr;
   if (first_level_in_cd != 0) {
     if (vm.count("enable_dynamic_vc_param_in_lsm")) {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
@@ -905,8 +968,12 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
-  if (vm.count("enable_dynamic_vc_param") && router) {
-    updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 5e5, 2e9, *router);
+  // if (vm.count("enable_dynamic_vc_param") && router) {
+  //   updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 5e5, 2e9, *router);
+  // }
+
+  if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
+    updater = new VisCntsUpdater2(db_path,options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 5e5, 20e9, *router);
   }
 
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
