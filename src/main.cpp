@@ -154,7 +154,7 @@ bool is_empty_directory(std::string dir_path) {
 }
 
 enum class PerLevelTimerType : size_t {
-  kAccess = 0,
+  kHitLevel = 0,
   kEnd,
 };
 constexpr size_t PER_LEVEL_TIMER_NUM =
@@ -200,7 +200,10 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       return 1;
     }
   }
-  void Access(int level, rocksdb::Slice key, size_t vlen) override {
+  void HitLevel(int level, rocksdb::Slice key) override {
+    auto guard =
+        per_level_timers.timer(level, PerLevelTimerType::kHitLevel).start();
+
     size_t tier = Tier(level);
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
@@ -209,12 +212,13 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
     count_access_per_tier_[tier].fetch_add(1, std::memory_order_relaxed);
 
-    auto guard =
-        per_level_timers.timer(level, PerLevelTimerType::kAccess).start();
-    vc_.Access(key, vlen);
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
     }
+  }
+  void Access(rocksdb::Slice key, size_t vlen) override {
+    auto guard = timers.timer(TimerType::kAccess).start();
+    vc_.Access(key, vlen);
   }
 
   bool IsStablyHot(rocksdb::Slice key) override {
@@ -724,7 +728,7 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     for (size_t level = 0; level < num_level; ++level) {
       num_accesses_out
           << ' '
-          << per_level_timers.timer(level, PerLevelTimerType::kAccess).count();
+          << per_level_timers.timer(level, PerLevelTimerType::kHitLevel).count();
     }
     num_accesses_out << std::endl;
 
@@ -1134,13 +1138,13 @@ int main(int argc, char **argv) {
         << ",\n"
         << "\t\"NextHot(secs)\": "
         << timers.timer(TimerType::kNextHot).time().as_secs_double() << ",\n";
-    auto access_time = rusty::time::Duration::from_nanos(0);
+    rusty::time::Duration hit_level_time;
     size_t num_levels = per_level_timers.len();
     for (size_t level = 0; level < num_levels; ++level) {
-      access_time +=
-          per_level_timers.timer(level, PerLevelTimerType::kAccess).time();
+      hit_level_time +=
+          per_level_timers.timer(level, PerLevelTimerType::kHitLevel).time();
     }
-    *info_json_locked << "\t\"Access(secs)\": " << access_time.as_secs_double()
+    *info_json_locked << "\t\"HitLevel(secs)\": " << hit_level_time.as_secs_double()
                       << ",\n}" << std::endl;
   }
 

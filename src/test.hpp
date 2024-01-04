@@ -147,6 +147,7 @@ enum class TimerType : size_t {
   kOutput,
   kSerialize,
   kDeserialize,
+  kAccess,
   kIsStablyHot,
   kLowerBound,
   kRangeHotSize,
@@ -158,7 +159,7 @@ constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
     "Put",         "Get",         "InputOperation", "InputInsert",
     "InputRead",   "InputUpdate", "Output",         "Serialize",
-    "Deserialize", "IsStablyHot", "LowerBound",     "RangeHotSize",
+    "Deserialize", "Access", "IsStablyHot", "LowerBound",     "RangeHotSize",
     "NextHot",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
