@@ -535,7 +535,7 @@ class VisCntsUpdater2 {
         if (stop_signal_) {
           break;
         }
-        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 5.0;
+        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
         if (router_.get_vc().DecayCount() > 3) {
           router_.get_vc().SetProperPhysicalSizeLimit();
           auto rate = router_.get_vc().GetPhySizeLimit() / (double) router_.get_vc().GetHotSetSizeLimit();
