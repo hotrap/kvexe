@@ -539,11 +539,12 @@ class VisCntsUpdater2 {
         if (stop_signal_) {
           break;
         }
-        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 10.0;
+        double hs_step = max_vc_hot_set_size_ / 20.0;
         if (router_.get_vc().DecayCount() > 3) {
           auto rate = router_.get_vc().GetRealPhySize() / (double) router_.get_vc().GetRealHotSetSize();
-          auto delta = std::max<size_t>(rate * hs_step, (64 << 20));
+          auto delta = rate * hs_step; //std::max<size_t>(rate * hs_step, (64 << 20));
           auto phy_size = router_.get_vc().GetRealPhySize() + delta;
+          std::cerr<<"rate " <<rate<<"," <<phy_size<<std::endl;
           router_.get_vc().SetPhysicalSizeLimit(phy_size);
         }
       }
@@ -947,7 +948,7 @@ int main(int argc, char **argv) {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
                               first_level_in_cd - 1, max_hot_set_size,
                               max_viscnts_size, switches, options.db_paths[0].target_size * 0.7, 
-                              options.db_paths[0].target_size * 0.1);
+                              options.db_paths[0].target_size * 0.05);
     } else {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                 first_level_in_cd - 1, max_hot_set_size,
