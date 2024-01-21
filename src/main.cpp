@@ -1,7 +1,5 @@
 #include "test.hpp"
 
-using boost::fibers::buffered_channel;
-
 typedef uint16_t field_size_t;
 
 std::vector<std::filesystem::path> decode_db_paths_to_filepaths(std::string db_paths) {

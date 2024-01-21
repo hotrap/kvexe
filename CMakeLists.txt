@@ -23,7 +23,6 @@ target_link_libraries(${PROJECT_NAME}
 		tbb
 		snappy
 		pthread
-		boost_fiber
 	PRIVATE
 		counter-timer
 		boost_program_options

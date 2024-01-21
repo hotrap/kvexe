@@ -11,13 +11,13 @@
 
 #include <algorithm>
 #include <atomic>
-#include <boost/fiber/buffered_channel.hpp>
 #include <boost/program_options/errors.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <counter_timer.hpp>
 #include <cstddef>
 #include <cstdlib>
@@ -26,6 +26,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
