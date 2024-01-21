@@ -1,7 +1,5 @@
 #include "test.hpp"
 
-using boost::fibers::buffered_channel;
-
 typedef uint16_t field_size_t;
 
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
