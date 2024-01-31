@@ -1142,7 +1142,8 @@ int main(int argc, char **argv) {
         << timers.timer(TimerType::kRangeHotSize).time().as_secs_double()
         << ",\n"
         << "\t\"NextHot(secs)\": "
-        << timers.timer(TimerType::kNextHot).time().as_secs_double() << ",\n";
+        << timers.timer(TimerType::kNextHot).time().as_secs_double() << "\n}"
+        << std::endl;
   }
 
   should_stop.store(true, std::memory_order_relaxed);
