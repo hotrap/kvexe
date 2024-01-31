@@ -1,5 +1,6 @@
 #include <sys/resource.h>
 
+#include <atomic>
 #include <counter_timer_vec.hpp>
 
 #include "rocksdb/compaction_router.h"
@@ -7,6 +8,8 @@
 #include "viscnts.h"
 
 typedef uint16_t field_size_t;
+
+constexpr size_t MAX_NUM_LEVELS = 8;
 
 thread_local std::optional<std::ofstream> key_hit_level_out;
 std::optional<std::ofstream> &get_key_hit_level_out() {
@@ -154,14 +157,11 @@ bool is_empty_directory(std::string dir_path) {
 }
 
 enum class PerLevelTimerType : size_t {
-  kHitLevel = 0,
   kEnd,
 };
 constexpr size_t PER_LEVEL_TIMER_NUM =
     static_cast<size_t>(PerLevelTimerType::kEnd);
-const char *per_level_timer_names[] = {
-    "Access",
-};
+const char *per_level_timer_names[] = {};
 static_assert(PER_LEVEL_TIMER_NUM ==
               sizeof(per_level_timer_names) / sizeof(const char *));
 counter_timer_vec::TypedTimersVector<PerLevelTimerType> per_level_timers(
@@ -201,16 +201,13 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
   void HitLevel(int level, rocksdb::Slice key) override {
-    auto guard =
-        per_level_timers.timer(level, PerLevelTimerType::kHitLevel).start();
-
-    size_t tier = Tier(level);
+    rusty_assert((size_t)level < MAX_NUM_LEVELS);
+    level_hits_[level].fetch_add(1, std::memory_order_relaxed);
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+      size_t tier = Tier(level);
       if (vc_.IsHot(key)) count_access_hot_per_tier_[tier].fetch_add(1);
     }
-
-    count_access_per_tier_[tier].fetch_add(1, std::memory_order_relaxed);
 
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
@@ -261,9 +258,33 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   }
 
   std::vector<size_t> hit_tier_count() {
+    std::vector<size_t> ret(2, 0);
+    size_t tier1_first_level =
+        std::min((size_t)(tier0_last_level_ + 1), MAX_NUM_LEVELS);
+    size_t i = 0;
+    for (; i < tier1_first_level; ++i) {
+      ret[0] += level_hits_[i].load(std::memory_order_relaxed);
+    }
+    for (; i < MAX_NUM_LEVELS; ++i) {
+      ret[1] += level_hits_[i].load(std::memory_order_relaxed);
+    }
+    return ret;
+  }
+
+  std::vector<size_t> level_hits() {
+    size_t last_level = MAX_NUM_LEVELS;
+    size_t last_level_hits;
+    do {
+      last_level -= 1;
+      last_level_hits = level_hits_[last_level].load(std::memory_order_relaxed);
+      if (last_level_hits != 0) break;
+    } while (last_level > 0);
     std::vector<size_t> ret;
-    for (size_t i = 0; i < 2; ++i)
-      ret.push_back(count_access_per_tier_[i].load(std::memory_order_relaxed));
+    ret.reserve(last_level + 1);
+    for (size_t i = 0; i < last_level; ++i) {
+      ret.push_back(level_hits_[i].load(std::memory_order_relaxed));
+    }
+    ret.push_back(last_level_hits);
     return ret;
   }
 
@@ -275,7 +296,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   int tier0_last_level_;
 
   std::atomic<size_t> count_access_hot_per_tier_[2];
-  std::atomic<size_t> count_access_per_tier_[2];
+  std::atomic<size_t> level_hits_[MAX_NUM_LEVELS];
 };
 
 class HitRateMonitor {
@@ -723,12 +744,10 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
         << stats->getTickerCount(rocksdb::NOT_STABLY_HOT_BYTES) << ' '
         << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
-    size_t num_level = per_level_timers.len();
     num_accesses_out << timestamp;
-    for (size_t level = 0; level < num_level; ++level) {
-      num_accesses_out
-          << ' '
-          << per_level_timers.timer(level, PerLevelTimerType::kHitLevel).count();
+    auto level_hits = router->level_hits();
+    for (size_t hits : level_hits) {
+      num_accesses_out << ' ' << hits;
     }
     num_accesses_out << std::endl;
 
@@ -1065,20 +1084,6 @@ int main(int argc, char **argv) {
             << "\n";
       }
       log << "end===\n";
-
-      size_t num_levels = per_level_timers.len();
-      for (size_t level = 0; level < num_levels; ++level) {
-        log << "Level timers: {level: " << level << ", timers: [\n";
-        const auto &timers = per_level_timers.timers(level);
-        size_t num_types = timers.len();
-        for (size_t type = 0; type < num_types; ++type) {
-          const auto &timer = timers.timer(type);
-          log << per_level_timer_names[type] << ": count " << timer.count()
-              << ", total " << timer.time().as_secs_double() << " s,\n";
-        }
-        log << "]},\n";
-      }
-      log << "end===\n";
     }
 
     /* Timer data */
@@ -1138,14 +1143,6 @@ int main(int argc, char **argv) {
         << ",\n"
         << "\t\"NextHot(secs)\": "
         << timers.timer(TimerType::kNextHot).time().as_secs_double() << ",\n";
-    rusty::time::Duration hit_level_time;
-    size_t num_levels = per_level_timers.len();
-    for (size_t level = 0; level < num_levels; ++level) {
-      hit_level_time +=
-          per_level_timers.timer(level, PerLevelTimerType::kHitLevel).time();
-    }
-    *info_json_locked << "\t\"HitLevel(secs)\": " << hit_level_time.as_secs_double()
-                      << ",\n}" << std::endl;
   }
 
   should_stop.store(true, std::memory_order_relaxed);
