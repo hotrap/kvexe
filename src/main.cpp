@@ -216,7 +216,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   void Access(rocksdb::Slice key, size_t vlen) override {
     thread_local static std::optional<std::mt19937> rgen; 
     auto guard = timers.timer(TimerType::kAccess).start();
-    double rate = count_access_per_tier_[0].load(std::memory_order_relaxed) / (double) (count_access_per_tier_[0].load(std::memory_order_relaxed) + count_access_per_tier_[1].load(std::memory_order_relaxed));
+    double rate = count_access_hot_per_tier_[0].load(std::memory_order_relaxed) / (double) (count_access_hot_per_tier_[0].load(std::memory_order_relaxed) + count_access_hot_per_tier_[1].load(std::memory_order_relaxed));
     if (rate > 0.95 && enable_sampling_) {
       double A = (0.95 / rate);
       if (!rgen) {
