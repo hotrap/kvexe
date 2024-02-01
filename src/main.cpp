@@ -186,12 +186,12 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
                 int tier0_last_level, size_t init_hot_set_size,
                 size_t max_viscnts_size, uint64_t switches, 
-                size_t max_hot_set_size, size_t min_hot_set_size)
+                size_t max_hot_set_size, size_t min_hot_set_size, bool enable_sampling)
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size,
                          max_hot_set_size, min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
-        count_access_hot_per_tier_{0, 0} {}
+        count_access_hot_per_tier_{0, 0}, enable_sampling_(enable_sampling) {}
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
@@ -217,8 +217,22 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
   void Access(rocksdb::Slice key, size_t vlen) override {
+    thread_local static std::optional<std::mt19937> rgen; 
     auto guard = timers.timer(TimerType::kAccess).start();
-    vc_.Access(key, vlen);
+    double rate = count_access_per_tier_[1].load(std::memory_order_relaxed) / (double) (count_access_per_tier_[0].load(std::memory_order_relaxed) + count_access_per_tier_[1].load(std::memory_order_relaxed));
+    if (rate > 0.95 && enable_sampling_) {
+      double A = (0.95 / rate);
+      if (!rgen) {
+        rgen = std::mt19937(std::random_device()());
+      }
+      std::uniform_real_distribution<> dis(0, 1);
+      if (dis(rgen.value()) < A) {
+        vc_.Access(key, vlen);
+      }
+    } else {
+      vc_.Access(key, vlen);
+    }
+    
   }
 
   bool IsStablyHot(rocksdb::Slice key) override {
@@ -276,6 +290,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
   std::atomic<size_t> count_access_hot_per_tier_[2];
   std::atomic<size_t> count_access_per_tier_[2];
+  bool enable_sampling_{false};
 };
 
 class HitRateMonitor {
@@ -858,6 +873,8 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_dynamic_only_vc_phy_size", "enable_dynamic_only_vc_phy_size");
 
+  desc.add_options()("enable_sampling", "enable_sampling");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -948,11 +965,11 @@ int main(int argc, char **argv) {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
                               first_level_in_cd - 1, max_hot_set_size,
                               max_viscnts_size, switches, options.db_paths[0].target_size * 0.7, 
-                              options.db_paths[0].target_size * 0.05);
+                              options.db_paths[0].target_size * 0.05, vm.count("enable_sampling"));
     } else {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                 first_level_in_cd - 1, max_hot_set_size,
-                                max_viscnts_size, switches, max_hot_set_size, max_hot_set_size);  
+                                max_viscnts_size, switches, max_hot_set_size, max_hot_set_size, vm.count("enable_sampling"));  
     }
     
     options.compaction_router = router;
