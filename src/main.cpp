@@ -343,18 +343,18 @@ int main(int argc, char **argv) {
     }
     auto ret = predict_level_assignment(options);
     rusty_assert(ret.size() > 0);
-    size_t first_level_in_cd = ret.size() - 1;
-    for (size_t level = 0; level < first_level_in_cd; ++level) {
+    size_t first_level_in_sd = ret.size() - 1;
+    for (size_t level = 0; level < first_level_in_sd; ++level) {
       std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
                 << std::endl;
     }
-    std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second
-              << ' ' << ret[first_level_in_cd].first << std::endl;
+    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
+              << ' ' << ret[first_level_in_sd].first << std::endl;
     if (options.db_paths.size() == 1) {
-      first_level_in_cd = 100;
+      first_level_in_sd = 100;
     }
-    std::ofstream(db_path / "first-level-in-cd")
-        << first_level_in_cd << std::endl;
+    std::ofstream(db_path / "first-level-in-sd")
+        << first_level_in_sd << std::endl;
 
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
