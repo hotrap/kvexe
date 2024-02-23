@@ -76,9 +76,9 @@ size_t calculate_multiplier_addtional(rocksdb::Options &options,
   rusty_assert(last_level_in_sd_size > max_hot_set_size);
   uint64_t last_level_in_sd_effective_size =
       last_level_in_sd_size - max_hot_set_size;
-  uint64_t first_level_in_cd_size = last_level_in_sd_effective_size * 10;
+  uint64_t first_level_in_sd_size = last_level_in_sd_effective_size * 10;
   options.max_bytes_for_level_multiplier_additional.push_back(
-      (double)first_level_in_cd_size / (last_level_in_sd_size * 10));
+      (double)first_level_in_sd_size / (last_level_in_sd_size * 10));
   return level;
 }
 
@@ -960,34 +960,34 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  size_t first_level_in_cd =
+  size_t first_level_in_sd =
       calculate_multiplier_addtional(options, max_hot_set_size);
   std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
   print_vector(options.max_bytes_for_level_multiplier_additional);
   std::cerr << std::endl;
   auto ret = predict_level_assignment(options);
-  rusty_assert_eq(ret.size() - 1, first_level_in_cd);
-  for (size_t level = 0; level < first_level_in_cd; ++level) {
+  rusty_assert_eq(ret.size() - 1, first_level_in_sd);
+  for (size_t level = 0; level < first_level_in_sd; ++level) {
     std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
               << std::endl;
   }
-  std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second << ' '
-            << ret[first_level_in_cd].first << std::endl;
+  std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second << ' '
+            << ret[first_level_in_sd].first << std::endl;
   if (options.db_paths.size() == 1) {
-    first_level_in_cd = 100;
+    first_level_in_sd = 100;
   }
 
   RouterVisCnts *router = nullptr;
   VisCntsUpdater2 *updater = nullptr;
-  if (first_level_in_cd != 0) {
+  if (first_level_in_sd != 0) {
     if (vm.count("enable_dynamic_vc_param_in_lsm")) {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                              first_level_in_cd - 1, max_hot_set_size,
+                              first_level_in_sd - 1, max_hot_set_size,
                               max_viscnts_size, switches, options.db_paths[0].target_size * 0.7, 
                               options.db_paths[0].target_size * 0.05, vm.count("enable_sampling"));
     } else {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                                first_level_in_cd - 1, max_hot_set_size,
+                                first_level_in_sd - 1, max_hot_set_size,
                                 max_viscnts_size, switches, max_hot_set_size, max_hot_set_size, vm.count("enable_sampling"));  
     }
     
@@ -1001,8 +1001,8 @@ int main(int argc, char **argv) {
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-    std::ofstream(db_path / "first-level-in-cd")
-        << first_level_in_cd << std::endl;
+    std::ofstream(db_path / "first-level-in-sd")
+        << first_level_in_sd << std::endl;
 
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
