@@ -372,25 +372,25 @@ int main(int argc, char **argv) {
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-    size_t first_level_in_cd = calculate_multiplier_addtional(options);
+    size_t first_level_in_sd = calculate_multiplier_addtional(options);
     std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
     for (double x : options.max_bytes_for_level_multiplier_additional) {
       std::cerr << x << ',';
     }
     std::cerr << "]\n";
     auto ret = predict_level_assignment(options);
-    rusty_assert_eq(ret.size() - 1, first_level_in_cd);
-    for (size_t level = 0; level < first_level_in_cd; ++level) {
+    rusty_assert_eq(ret.size() - 1, first_level_in_sd);
+    for (size_t level = 0; level < first_level_in_sd; ++level) {
       std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
                 << std::endl;
     }
-    std::cerr << first_level_in_cd << "+ " << ret[first_level_in_cd].second
-              << ' ' << ret[first_level_in_cd].first << std::endl;
+    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
+              << ' ' << ret[first_level_in_sd].first << std::endl;
     if (options.db_paths.size() == 1) {
-      first_level_in_cd = 100;
+      first_level_in_sd = 100;
     }
-    std::ofstream(db_path / "first-level-in-cd")
-        << first_level_in_cd << std::endl;
+    std::ofstream(db_path / "first-level-in-sd")
+        << first_level_in_sd << std::endl;
 
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
