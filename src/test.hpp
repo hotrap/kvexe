@@ -264,6 +264,7 @@ class BlockChannelClient {
 struct WorkOptions {
   bool load{false};
   bool run{false};
+  std::optional<std::filesystem::path> trace;
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
@@ -428,7 +429,7 @@ class Tester {
       }
     } else {
       for (size_t i = 0; i < options_.num_threads; i++) {
-        threads.emplace_back([&]() {
+        threads.emplace_back([this, &workers, i]() {
           workers[i].work(options_.enable_fast_process
                               ? channel_
                               : channel_for_workers_[i]);
@@ -714,6 +715,13 @@ class Tester {
   };
 
   void parse() {
+    std::optional<std::ifstream> trace_file;
+    if (options_.trace.has_value()) {
+      trace_file = std::ifstream(options_.trace.value());
+    }
+    std::istream& trace =
+        trace_file.has_value() ? trace_file.value() : std::cin;
+
     std::vector<BlockChannelClient<Operation>> opblocks;
     if (options_.enable_fast_process) {
       opblocks.emplace_back(&channel_, options_.opblock_size);
@@ -727,41 +735,41 @@ class Tester {
 
     while (1) {
       std::string op;
-      std::cin >> op;
-      if (!std::cin) {
+      trace >> op;
+      if (!trace) {
         break;
       }
       if (op == "INSERT") {
         if (options_.format_type == FormatType::YCSB) {
-          handle_table_name(std::cin);
+          handle_table_name(trace);
         }
         std::string key;
-        std::cin >> key;
+        trace >> key;
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
         if (options_.format_type == FormatType::Plain) {
-          rusty_assert(std::cin.get() == ' ');
+          rusty_assert(trace.get() == ' ');
           char c;
           std::vector<char> value;
-          while ((c = std::cin.get()) != '\n' && c != EOF) {
+          while ((c = trace.get()) != '\n' && c != EOF) {
             value.push_back(c);
           }
           opblocks[i].Push(
               Operation(OpType::INSERT, std::move(key), std::move(value)));
         } else {
           opblocks[i].Push(
-              Operation(OpType::INSERT, std::move(key), read_value(std::cin)));
+              Operation(OpType::INSERT, std::move(key), read_value(trace)));
         }
         parse_counts_++;
       } else if (op == "READ") {
         std::string key;
         if (options_.format_type == FormatType::YCSB) {
-          handle_table_name(std::cin);
-          std::cin >> key;
-          read_fields_read(std::cin);
+          handle_table_name(trace);
+          trace >> key;
+          read_fields_read(trace);
         } else {
-          std::cin >> key;
+          trace >> key;
         }
         int i = options_.enable_fast_process
                     ? 0
@@ -773,19 +781,19 @@ class Tester {
         if (options_.format_type == FormatType::Plain) {
           rusty_panic("UPDATE in plain format is not supported yet\n");
         }
-        handle_table_name(std::cin);
+        handle_table_name(trace);
         std::string key;
-        std::cin >> key;
+        trace >> key;
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
         opblocks[i].Push(
-            Operation(OpType::UPDATE, std::move(key), read_value(std::cin)));
+            Operation(OpType::UPDATE, std::move(key), read_value(trace)));
         parse_counts_++;
 
       } else {
         std::cerr << "Ignore line: " << op;
-        std::getline(std::cin, op);  // Skip the rest of the line
+        std::getline(trace, op);  // Skip the rest of the line
         std::cerr << op << std::endl;
       }
     }

@@ -217,6 +217,8 @@ int main(int argc, char **argv) {
 
   // Options of executor
   desc.add_options()("help", "Print help message");
+  desc.add_options()("trace", po::value<std::string>(),
+      "The trace file to replay");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/ycsb");
@@ -382,6 +384,11 @@ int main(int argc, char **argv) {
   work_option.progress_get = &progress_get;
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
+  if (vm.count("trace") == 0) {
+    work_option.trace = std::nullopt;
+  } else {
+    work_option.trace = vm["trace"].as<std::string>();
+  }
   work_option.format_type =
       format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
   work_option.enable_fast_generator = vm.count("enable_fast_generator");
