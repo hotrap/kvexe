@@ -433,10 +433,10 @@ class Tester {
                               ? channel_
                               : channel_for_workers_[i]);
         });
-        parse();
-        for (auto& t : threads) t.join();
-        wait_for_background_work(options_.db);
       }
+      parse();
+      for (auto& t : threads) t.join();
+      wait_for_background_work(options_.db);
     }
   }
 
