@@ -299,10 +299,10 @@ int main(int argc, char **argv) {
       empty_directory(path.path);
     }
   }
-  int first_level_in_cd = predict_level_assignment(options);
+  int first_level_in_sd = predict_level_assignment(options);
   {
-    std::ofstream out(db_path / "first-level-in-cd");
-    out << first_level_in_cd << std::endl;
+    std::ofstream out(db_path / "first-level-in-sd");
+    out << first_level_in_sd << std::endl;
   }
 
   if (vm.count("cleanup")) {
