@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
       "The trace file to replay");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
-                     "Trace format: plain/ycsb");
+                     "Trace format: plain/plain-length-only/ycsb");
   desc.add_options()(
       "load", "Execute the load phase. Will empty the directories first.");
   desc.add_options()(
@@ -389,8 +389,15 @@ int main(int argc, char **argv) {
   } else {
     work_option.trace = vm["trace"].as<std::string>();
   }
-  work_option.format_type =
-      format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
+  if (format == "plain") {
+    work_option.format_type = FormatType::Plain;
+  } else if (format == "plain-length-only") {
+    work_option.format_type = FormatType::PlainLengthOnly;
+  } else if (format == "ycsb") {
+    work_option.format_type = FormatType::YCSB;
+  } else {
+    rusty_panic("Unrecognized format %s", format.c_str());
+  }
   work_option.enable_fast_generator = vm.count("enable_fast_generator");
   if (work_option.enable_fast_generator) {
     std::string workload_file = vm["workload_file"].as<std::string>();
