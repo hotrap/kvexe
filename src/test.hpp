@@ -103,6 +103,7 @@ static void wait_for_background_work(rocksdb::DB* db) {
 
 enum class FormatType {
   Plain,
+  PlainLengthOnly,
   YCSB,
 };
 
@@ -593,6 +594,7 @@ class Tester {
     std::optional<std::ifstream> trace_file;
     if (options_.trace.has_value()) {
       trace_file = std::ifstream(options_.trace.value());
+      rusty_assert(trace_file.value());
     }
     std::istream& trace =
         trace_file.has_value() ? trace_file.value() : std::cin;
@@ -623,18 +625,27 @@ class Tester {
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
-        if (options_.format_type == FormatType::Plain) {
-          rusty_assert(trace.get() == ' ');
+        if (options_.format_type == FormatType::YCSB) {
+          opblocks[i].Push(
+              Operation(OpType::INSERT, std::move(key), read_value(trace)));
+        } else {
+          rusty_assert_eq(trace.get(), ' ');
           char c;
           std::vector<char> value;
-          while ((c = trace.get()) != '\n' && c != EOF) {
-            value.push_back(c);
+          if (options_.format_type == FormatType::Plain) {
+            while ((c = trace.get()) != '\n' && c != EOF) {
+              value.push_back(c);
+            }
+          } else {
+            size_t value_length;
+            trace >> value_length;
+            value.resize(value_length);
+            size_t copied = std::min(key.size(), value_length);
+            memcpy(value.data(), key.data(), copied);
+            memset(value.data() + copied, '0', value_length - copied);
           }
           opblocks[i].Push(
               Operation(OpType::INSERT, std::move(key), std::move(value)));
-        } else {
-          opblocks[i].Push(
-              Operation(OpType::INSERT, std::move(key), read_value(trace)));
         }
         parse_counts_++;
       } else if (op == "READ") {
