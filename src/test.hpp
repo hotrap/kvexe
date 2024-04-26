@@ -400,6 +400,10 @@ class Tester {
         tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
       }
 
+      *info_json_out_.lock()
+          << "\t\"num-load-op\": " << options_.ycsb_gen_options.record_count
+          << ',' << std::endl;
+
       Operation op;
       size_t run_op_70p = options_.ycsb_gen_options.record_count +
                           options_.ycsb_gen_options.operation_count * 0.7;
