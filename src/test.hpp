@@ -376,10 +376,6 @@ class Tester {
         tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
       }
 
-      *info_json_out_.lock()
-          << "\t\"num-load-op\": " << options_.ycsb_gen_options.record_count
-          << ',' << std::endl;
-
       Operation op;
       size_t run_op_70p = options_.ycsb_gen_options.record_count +
                           options_.ycsb_gen_options.operation_count * 0.7;
@@ -805,6 +801,10 @@ class Tester {
         options_.load ? 0 : options_.ycsb_gen_options.record_count;
     YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options, now_key_num);
     if (options_.load) {
+      *info_json_out.lock()
+          << "\t\"num-load-op\": " << options_.ycsb_gen_options.record_count
+          << ',' << std::endl;
+
       auto load_start = rusty::time::Instant::now();
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
