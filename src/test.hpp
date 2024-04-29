@@ -58,6 +58,15 @@ static inline time_t cpu_timestamp_ns(
   return t.tv_sec * 1000000000 + t.tv_nsec;
 }
 
+template <typename T>
+void print_vector(const std::vector<T>& v) {
+  std::cerr << '[';
+  for (double x : v) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]";
+}
+
 static bool has_background_work(rocksdb::DB* db) {
   uint64_t flush_pending;
   uint64_t compaction_pending;
@@ -277,6 +286,7 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
+  double db_paths_soft_size_limit_multiplier;
   bool export_key_only_trace{false};
 };
 
@@ -766,6 +776,13 @@ class Tester {
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    options_.db->SetOptions(
+        {{"db_paths_soft_size_limit_multiplier",
+          std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
+    std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
+    print_vector(options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
+    std::cerr << std::endl;
+
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
   }
