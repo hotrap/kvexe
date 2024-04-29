@@ -869,6 +869,10 @@ int main(int argc, char **argv) {
   desc.add_options()("max_bytes_for_level_base", po::value<uint64_t>(), "");
   desc.add_options()("optimize_filters_for_hits",
                      "Do not build filters for the last level");
+  desc.add_options()(
+      "db_paths_soft_size_limit_multiplier",
+      po::value<double>(&work_option.db_paths_soft_size_limit_multiplier)
+          ->default_value(1.1));
 
   // Options for hotrap
   desc.add_options()("max_hot_set_size",
