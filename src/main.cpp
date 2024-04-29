@@ -887,10 +887,6 @@ int main(int argc, char **argv) {
   desc.add_options()("compaction_pri,p",
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
-  desc.add_options()(
-      "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_option.db_paths_soft_size_limit_multiplier)
-          ->default_value(1.1));
 
   desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
 
