@@ -13,7 +13,7 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   rusty_assert_eq(c, '{', "Invalid db_paths");
   while (1) {
     std::string path;
-    size_t size;
+    uint64_t size;
     if (in.peek() == '"') {
       in >> std::quoted(path);
       rusty_assert_eq(in.get(), ',', "Invalid db_paths");
@@ -39,18 +39,18 @@ double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-std::vector<std::pair<size_t, std::string>> predict_level_assignment(
+std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     const rocksdb::Options &options) {
-  std::vector<std::pair<size_t, std::string>> ret;
+  std::vector<std::pair<uint64_t, std::string>> ret;
   uint32_t p = 0;
-  int level = 0;
+  size_t level = 0;
   assert(!options.db_paths.empty());
 
   // size remaining in the most recent path
   uint64_t current_path_size = options.db_paths[0].target_size;
 
   uint64_t level_size;
-  int cur_level = 0;
+  size_t cur_level = 0;
 
   // max_bytes_for_level_base denotes L1 size.
   // We estimate L0 size to be the same as L1.
@@ -65,7 +65,7 @@ std::vector<std::pair<size_t, std::string>> predict_level_assignment(
     }
     if (cur_level == level) {
       // Does desired level fit in this path?
-      rusty_assert_eq(ret.size(), (size_t)level);
+      rusty_assert_eq(ret.size(), level);
       ret.emplace_back(level_size, options.db_paths[p].path);
       ++level;
     }
@@ -89,7 +89,7 @@ std::vector<std::pair<size_t, std::string>> predict_level_assignment(
     }
     cur_level++;
   }
-  rusty_assert_eq(ret.size(), (size_t)level);
+  rusty_assert_eq(ret.size(), level);
   ret.emplace_back(level_size, options.db_paths[p].path);
   return ret;
 }
@@ -378,8 +378,8 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  std::atomic<size_t> progress(0);
-  std::atomic<size_t> progress_get(0);
+  std::atomic<uint64_t> progress(0);
+  std::atomic<uint64_t> progress_get(0);
 
   work_option.db = db;
   work_option.switches = switches;
