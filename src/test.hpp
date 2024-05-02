@@ -279,8 +279,8 @@ struct WorkOptions {
   rocksdb::DB* db;
   uint64_t switches;
   std::filesystem::path db_path;
-  std::atomic<size_t>* progress;
-  std::atomic<size_t>* progress_get;
+  std::atomic<uint64_t>* progress;
+  std::atomic<uint64_t>* progress_get;
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
@@ -301,8 +301,8 @@ class Tester {
   BlockChannel<Operation> channel_;
   std::vector<BlockChannel<Operation>> channel_for_workers_;
 
-  size_t parse_counts_{0};
-  std::atomic<size_t> notfound_counts_{0};
+  uint64_t parse_counts_{0};
+  std::atomic<uint64_t> notfound_counts_{0};
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
@@ -327,9 +327,9 @@ class Tester {
     }
   }
 
-  size_t GetOpParseCounts() const { return parse_counts_; }
+  uint64_t GetOpParseCounts() const { return parse_counts_; }
 
-  size_t GetNotFoundCounts() const {
+  uint64_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
   }
 
@@ -351,7 +351,7 @@ class Tester {
   class Worker {
    public:
     Worker(Tester& tester, size_t id, const WorkOptions& options,
-           std::atomic<size_t>& notfound_counts,
+           std::atomic<uint64_t>& notfound_counts,
            const rusty::sync::Mutex<std::ofstream>& info_json_out)
         : tester_(tester),
           id_(id),
@@ -387,9 +387,9 @@ class Tester {
       }
 
       Operation op;
-      size_t run_op_70p = options_.ycsb_gen_options.record_count +
+      uint64_t run_op_70p = options_.ycsb_gen_options.record_count +
                           options_.ycsb_gen_options.operation_count * 0.7;
-      size_t last_op_in_current_stage = run_op_70p;
+      uint64_t last_op_in_current_stage = run_op_70p;
       if (options_.switches & MASK_LATENCY) {
         latency_out_ = std::make_optional<std::ofstream>(
             options_.db_path / ("latency-" + std::to_string(id_)));
@@ -422,7 +422,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op);
-        size_t progress =
+        uint64_t progress =
             options_.progress->fetch_add(1, std::memory_order_relaxed);
         if (progress == run_op_70p) {
           *info_json_out_.lock()
@@ -435,7 +435,7 @@ class Tester {
               << rocksdb_stats;
         }
         if (progress >= last_op_in_current_stage) {
-          last_op_in_current_stage = std::numeric_limits<size_t>::max();
+          last_op_in_current_stage = std::numeric_limits<uint64_t>::max();
           if (options_.export_key_only_trace) {
             key_only_trace_out = std::make_optional<std::ofstream>(
                 options_.db_path /
@@ -591,10 +591,10 @@ class Tester {
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
     bool ignore_notfound{false};
-    std::atomic<size_t>& notfound_counts_;
+    std::atomic<uint64_t>& notfound_counts_;
 
-    size_t local_notfound_counts{0};
-    size_t local_read_progress{0};
+    uint64_t local_notfound_counts{0};
+    uint64_t local_read_progress{0};
     const rusty::sync::Mutex<std::ofstream>& info_json_out_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
