@@ -44,41 +44,39 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-// Return the first level in the slow disk
-size_t calculate_multiplier_addtional(
+void calculate_multiplier_addtional(
+    size_t first_level_in_sd,
     std::vector<double> &max_bytes_for_level_multiplier_additional,
     const rocksdb::Options &options, uint64_t fd_size,
     uint64_t max_hot_set_size) {
   rusty_assert_eq(options.db_paths.size(), (size_t)2);
   rusty_assert(max_bytes_for_level_multiplier_additional.empty());
-  size_t level = 0;
-  uint64_t level_size = options.max_bytes_for_level_base;
-  while (level_size <= fd_size) {
-    fd_size -= level_size;
-    if (level > 0) {
-      level_size *= options.max_bytes_for_level_multiplier;
-    }
-    level += 1;
-  }
-  level_size /= options.max_bytes_for_level_multiplier;
   // It seems that L0 and L1 are not affected by
   // options.max_bytes_for_level_multiplier_additional
-  if (level <= 2) return level;
-  size_t last_level_in_sd = level - 1;
-  for (size_t i = 1; i < last_level_in_sd; ++i) {
+  if (first_level_in_sd <= 2) return;
+  size_t last_level_in_fd = first_level_in_sd - 1;
+  uint64_t level_size = options.max_bytes_for_level_base;
+  rusty_assert(fd_size >= level_size, "Physical size of RALT is too large!");
+  uint64_t last_level_in_fd_size = fd_size - level_size;
+  for (size_t i = 1; i < last_level_in_fd; ++i) {
+    rusty_assert(last_level_in_fd_size >= level_size,
+                 "Physical size of RALT is too large!");
+    last_level_in_fd_size -= level_size;
     max_bytes_for_level_multiplier_additional.push_back(1.0);
+    level_size *= options.max_bytes_for_level_multiplier;
   }
   // Multiply 0.99 to make room for floating point error
   max_bytes_for_level_multiplier_additional.push_back(
-      1 + (double)fd_size / level_size * 0.99);
-  uint64_t last_level_in_sd_size = fd_size + level_size;
-  rusty_assert(last_level_in_sd_size > max_hot_set_size);
-  uint64_t last_level_in_sd_effective_size =
-      last_level_in_sd_size - max_hot_set_size;
-  uint64_t first_level_in_sd_size = last_level_in_sd_effective_size * 10;
+      (double)last_level_in_fd_size / level_size * 0.99);
+  rusty_assert(last_level_in_fd_size > max_hot_set_size,
+               "Physical size of RALT is too large!");
+  uint64_t last_level_in_fd_effective_size =
+      last_level_in_fd_size - max_hot_set_size;
+  uint64_t first_level_in_sd_size =
+      last_level_in_fd_effective_size * options.max_bytes_for_level_multiplier;
   max_bytes_for_level_multiplier_additional.push_back(
-      (double)first_level_in_sd_size / (last_level_in_sd_size * 10));
-  return level;
+      (double)first_level_in_sd_size /
+      (last_level_in_fd_size * options.max_bytes_for_level_multiplier));
 }
 
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
@@ -580,7 +578,11 @@ class VisCntsUpdater2 {
       }
       double hs_step = max_vc_hot_set_size_ / 20.0;
       if (router_.get_vc().DecayCount() > 0) {
-        auto rate = router_.get_vc().GetRealPhySize() / (double) router_.get_vc().GetRealHotSetSize();
+        uint64_t real_phy_size = router_.get_vc().GetRealPhySize();
+        uint64_t real_hot_set_size = router_.get_vc().GetRealHotSetSize();
+        std::cerr << "real_phy_size " << real_phy_size << '\n'
+                  << "real_hot_set_size " << real_hot_set_size << '\n';
+        auto rate = real_phy_size / (double)real_hot_set_size;
         auto delta = rate * hs_step; //std::max<size_t>(rate * hs_step, (64 << 20));
         auto phy_size = router_.get_vc().GetRealPhySize() + delta;
         std::cerr<<"rate " <<rate<<"," <<phy_size<<std::endl;
@@ -591,10 +593,9 @@ class VisCntsUpdater2 {
         std::cerr << "fd_size " << fd_size << std::endl;
         std::cerr << "max_hot_set_size " << max_hot_set_size << std::endl;
         max_bytes_for_level_multiplier_additional.clear();
-        size_t first_level_in_sd = calculate_multiplier_addtional(
-            max_bytes_for_level_multiplier_additional, options_,
-            fd_size, max_hot_set_size);
-        rusty_assert_eq(first_level_in_sd, first_level_in_sd_);
+        calculate_multiplier_addtional(
+            first_level_in_sd_, max_bytes_for_level_multiplier_additional,
+            options_, fd_size, max_hot_set_size);
         std::ostringstream out;
         for (size_t i = 0; i < max_bytes_for_level_multiplier_additional.size();
              ++i) {
@@ -993,11 +994,20 @@ int main(int argc, char **argv) {
   }
 
   uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
+  uint64_t level_size = options.max_bytes_for_level_base;
+  rusty_assert(fd_size >= level_size, "max_bytes_for_level_base too small!");
+  uint64_t fd_remain = fd_size - level_size;
+  size_t first_level_in_sd = 1;
+  while (level_size <= fd_remain) {
+    fd_remain -= level_size;
+    level_size *= options.max_bytes_for_level_multiplier;
+    first_level_in_sd += 1;
+  }
+
   options.max_bytes_for_level_multiplier_additional.clear();
-  size_t first_level_in_sd =
-      calculate_multiplier_addtional(
-          options.max_bytes_for_level_multiplier_additional,
-          options, fd_size, max_hot_set_size);
+  calculate_multiplier_addtional(
+      first_level_in_sd, options.max_bytes_for_level_multiplier_additional,
+      options, fd_size, max_hot_set_size);
   std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
   print_vector(options.max_bytes_for_level_multiplier_additional);
   std::cerr << std::endl;
