@@ -25,7 +25,9 @@ target_link_libraries(${PROJECT_NAME}
 		counter-timer
 		boost_program_options
 )
-target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
+# target_compile_features can omit -std flag in compile_commands.json
+# https://gitlab.kitware.com/cmake/cmake/-/issues/23397
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 17)
 
 install(TARGETS ${RPOJECT_NAME} DESTINATION "."
 	RUNTIME DESTINATION bin
