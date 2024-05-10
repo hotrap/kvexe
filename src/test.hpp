@@ -121,6 +121,7 @@ enum class OpType {
   READ,
   UPDATE,
   RMW,
+  DELETE,
 };
 static inline const char* to_string(OpType type) {
   switch (type) {
@@ -132,6 +133,8 @@ static inline const char* to_string(OpType type) {
       return "UPDATE";
     case OpType::RMW:
       return "RMW";
+    case OpType::DELETE:
+      return "DELETE";
   }
   rusty_panic();
 }
@@ -139,6 +142,7 @@ static inline const char* to_string(OpType type) {
 enum class TimerType : size_t {
   kPut,
   kGet,
+  kDelete,
   kInputOperation,
   kInputInsert,
   kInputRead,
@@ -151,14 +155,15 @@ enum class TimerType : size_t {
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Put",         "Get",    "InputOperation", "InputInsert", "InputRead",
-    "InputUpdate", "Output", "Serialize",      "Deserialize",
+    "Put",       "Get",         "Delete", "InputOperation", "InputInsert",
+    "InputRead", "InputUpdate", "Output", "Serialize",      "Deserialize",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
 static std::atomic<time_t> put_cpu_nanos(0);
 static std::atomic<time_t> get_cpu_nanos(0);
+static std::atomic<time_t> delete_cpu_nanos(0);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
@@ -372,7 +377,7 @@ class Tester {
         op.value = std::move(ycsb_op.value);
         rusty_assert(ycsb_op.type == YCSBGen::OpType::INSERT);
         op.type = OpType::INSERT;
-        do_insert(op);
+        do_put(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
@@ -388,7 +393,7 @@ class Tester {
 
       Operation op;
       uint64_t run_op_70p = options_.ycsb_gen_options.record_count +
-                          options_.ycsb_gen_options.operation_count * 0.7;
+                            options_.ycsb_gen_options.operation_count * 0.7;
       uint64_t last_op_in_current_stage = run_op_70p;
       if (options_.switches & MASK_LATENCY) {
         latency_out_ = std::make_optional<std::ofstream>(
@@ -463,23 +468,22 @@ class Tester {
     }
 
    private:
-    void do_insert(const Operation& insert) {
+    void do_put(const Operation& put) {
       time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
-      auto s = options_.db->Put(
-          write_options_, insert.key,
-          rocksdb::Slice(insert.value.data(), insert.value.size()));
+      auto s =
+          options_.db->Put(write_options_, put.key,
+                           rocksdb::Slice(put.value.data(), put.value.size()));
       auto put_time = put_start.elapsed();
       time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
-        rusty_panic("INSERT failed with error: %s\n", err.c_str());
+        rusty_panic("Put failed with error: %s\n", err.c_str());
       }
       timers.timer(TimerType::kPut).add(put_time);
       put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
-        print_latency(latency_out_.value(), OpType::INSERT,
-                      put_time.as_nanos());
+        print_latency(latency_out_.value(), put.type, put_time.as_nanos());
       }
     }
 
@@ -505,25 +509,6 @@ class Tester {
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       return value;
-    }
-
-    void do_update(const Operation& update) {
-      time_t put_cpu_start = cpu_timestamp_ns();
-      auto put_start = rusty::time::Instant::now();
-      auto s = options_.db->Put(
-          write_options_, update.key,
-          rocksdb::Slice(update.value.data(), update.value.size()));
-      auto put_time = put_start.elapsed();
-      time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
-      if (!s.ok()) {
-        std::string err = s.ToString();
-        rusty_panic("Update failed with error: %s\n", err.c_str());
-      }
-      put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
-      if (latency_out_) {
-        print_latency(latency_out_.value(), OpType::UPDATE,
-                      put_time.as_nanos());
-      }
     }
 
     void do_read_modify_write(const Operation& op) {
@@ -557,10 +542,28 @@ class Tester {
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
     }
 
+    void do_delete(const Operation& op) {
+      time_t cpu_start = cpu_timestamp_ns();
+      auto start = rusty::time::Instant::now();
+      auto s = options_.db->Delete(write_options_, op.key);
+      auto time = start.elapsed();
+      time_t cpu_ns = cpu_timestamp_ns() - cpu_start;
+      if (!s.ok()) {
+        std::string err = s.ToString();
+        rusty_panic("Delete failed with error: %s\n", err.c_str());
+      }
+      timers.timer(TimerType::kDelete).add(time);
+      delete_cpu_nanos.fetch_add(cpu_ns, std::memory_order_relaxed);
+      if (latency_out_) {
+        print_latency(latency_out_.value(), OpType::DELETE, time.as_nanos());
+      }
+    }
+
     void process_op(const Operation& op) {
       switch (op.type) {
         case OpType::INSERT:
-          do_insert(op);
+        case OpType::UPDATE:
+          do_put(op);
           break;
         case OpType::READ: {
           auto value = do_read(op);
@@ -576,11 +579,11 @@ class Tester {
           }
           local_read_progress++;
         } break;
-        case OpType::UPDATE:
-          do_update(op);
-          break;
         case OpType::RMW:
           do_read_modify_write(op);
+          break;
+        case OpType::DELETE:
+          do_delete(op);
           break;
       }
     }
@@ -672,7 +675,6 @@ class Tester {
                     : hasher(key) % options_.num_threads;
         opblocks[i].Push(Operation(OpType::READ, std::move(key), {}));
         parse_counts_++;
-
       } else if (op == "UPDATE") {
         if (options_.format_type == FormatType::Plain) {
           rusty_panic("UPDATE in plain format is not supported yet\n");
@@ -686,7 +688,16 @@ class Tester {
         opblocks[i].Push(
             Operation(OpType::UPDATE, std::move(key), read_value(trace)));
         parse_counts_++;
-
+      } else if (op == "DELETE") {
+        std::string key;
+        rusty_assert(options_.format_type == FormatType::Plain ||
+                     options_.format_type == FormatType::PlainLengthOnly);
+        trace >> key;
+        int i = options_.enable_fast_process
+                    ? 0
+                    : hasher(key) % options_.num_threads;
+        opblocks[i].Push(Operation(OpType::DELETE, std::move(key), {}));
+        parse_counts_++;
       } else {
         std::cerr << "Ignore line: " << op;
         std::getline(trace, op);  // Skip the rest of the line
