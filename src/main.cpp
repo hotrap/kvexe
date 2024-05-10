@@ -182,13 +182,15 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
  public:
   RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
                 int tier0_last_level, size_t init_hot_set_size,
-                size_t max_viscnts_size, uint64_t switches, 
-                size_t max_hot_set_size, size_t min_hot_set_size, bool enable_sampling)
+                size_t max_viscnts_size, uint64_t switches,
+                size_t max_hot_set_size, size_t min_hot_set_size,
+                bool enable_sampling)
       : switches_(switches),
-        vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size,
-                         max_hot_set_size, min_hot_set_size, max_viscnts_size)),
+        vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
+                         min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
-        count_access_hot_per_tier_{0, 0}, enable_sampling_(enable_sampling) {}
+        count_access_hot_per_tier_{0, 0},
+        enable_sampling_(enable_sampling) {}
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
@@ -211,9 +213,12 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
   void Access(rocksdb::Slice key, size_t vlen) override {
-    thread_local static std::optional<std::mt19937> rgen; 
+    thread_local static std::optional<std::mt19937> rgen;
     auto guard = timers.timer(TimerType::kAccess).start();
-    double rate = count_access_hot_per_tier_[0].load(std::memory_order_relaxed) / (double) (count_access_hot_per_tier_[0].load(std::memory_order_relaxed) + count_access_hot_per_tier_[1].load(std::memory_order_relaxed));
+    double rate =
+        count_access_hot_per_tier_[0].load(std::memory_order_relaxed) /
+        (double)(count_access_hot_per_tier_[0].load(std::memory_order_relaxed) +
+                 count_access_hot_per_tier_[1].load(std::memory_order_relaxed));
     if (rate > 0.95 && enable_sampling_) {
       double A = (0.95 / rate);
       if (!rgen) {
@@ -226,7 +231,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     } else {
       vc_.Access(key, vlen);
     }
-    
   }
 
   bool IsStablyHot(rocksdb::Slice key) override {
@@ -326,8 +330,7 @@ class HitRateMonitor {
     is_in_per_ = true;
   }
 
-
-  double AddPeriodData(const std::vector<size_t>& hr) {
+  double AddPeriodData(const std::vector<size_t> &hr) {
     if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < threshold_) {
       return -1;
     }
@@ -392,10 +395,8 @@ class VisCntsUpdater {
         router_(router),
         log_(db_path / "vc_log"),
         hr_mon_(wait_op) {
-      th_ = std::thread([&](){
-        update_thread();
-      });
-    }
+    th_ = std::thread([&]() { update_thread(); });
+  }
 
   ~VisCntsUpdater() { Stop(); }
 
@@ -412,100 +413,101 @@ class VisCntsUpdater {
     return router_.get_vc().GetPhySizeLimit();
   }
 
-  private:
-    void update_thread() {
-      while (!stop_signal_) {
-        std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
-        if (stop_signal_) {
-          break;
+ private:
+  void update_thread() {
+    while (!stop_signal_) {
+      std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
+      if (stop_signal_) {
+        break;
+      }
+      auto hits = router_.hit_tier_count();
+      if (!hr_mon_.IsInPeriod()) {
+        hr_mon_.BeginPeriod(hits);
+      } else {
+        double rate = hr_mon_.AddPeriodData(hits);
+        log_ << "[VC Updater] " << timestamp_ns() << " Rate: " << rate
+             << std::endl;
+      }
+      double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
+      ssize_t new_vc_hs = cur_vc_hot_set_size_;
+      ssize_t new_vc_phy = cur_vc_phy_size_;
+      if (hr_mon_.IsStable()) {
+        double rate = hr_mon_.GetStableRate();
+        log_ << "[VC Updater] Stable Rate: " << rate << std::endl;
+        if (lst_hit_rate_ == -1) {
+          // Get the stable hit rate
+          lst_hit_rate_ = rate;
+          lst_choose_ = -1;
+          cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
+          phase_num_ = 0;
         }
-        auto hits = router_.hit_tier_count();
-        if (!hr_mon_.IsInPeriod()) {
-          hr_mon_.BeginPeriod(hits);
-        } else {
-          double rate = hr_mon_.AddPeriodData(hits);
-          log_ << "[VC Updater] " << timestamp_ns() << " Rate: " << rate << std::endl;
+        if (lst_hit_rate_ - rate > 0.1) {
+          // The data distribution may be changed.
+          lst_hit_rate_ = rate;
+          cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
+          phase_num_ = 0;
         }
-        double hs_step = (max_vc_hot_set_size_ - min_vc_hot_set_size_) / 20.0;
-        ssize_t new_vc_hs = cur_vc_hot_set_size_;
-        ssize_t new_vc_phy = cur_vc_phy_size_;
-        if (hr_mon_.IsStable()) {
-          double rate = hr_mon_.GetStableRate();
-          log_ << "[VC Updater] Stable Rate: " << rate << std::endl;
-          if (lst_hit_rate_ == -1) {
-            // Get the stable hit rate
-            lst_hit_rate_ = rate;
+
+        // maximum hit rate updates,
+        if (lst_hit_rate_ < rate - 0.01) {
+          lst_hit_rate_ = rate;
+          lst_choose_ = std::max(-1., lst_choose_ * 2);
+          new_vc_hs -= lst_choose_ * hs_step;
+        }
+
+        if (phase_num_ == 0) {
+          double real_hs = router_.get_vc().GetRealHotSetSize();
+          double real_ps = router_.get_vc().GetRealPhySize();
+          log_ << "[VC Updater] Real HS: " << real_hs
+               << ", Real PS: " << real_ps << std::endl;
+          if (real_hs > cur_vc_hot_set_size_ * 0.95) {
+            phase_num_ = 1;
             lst_choose_ = -1;
-            cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
-            phase_num_ = 0;
+            router_.get_vc().SetProperPhysicalSizeLimit();
+            cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+          } else if (router_.get_vc().DecayCount() > 0 && real_hs > 0) {
+            double delta =
+                (cur_vc_hot_set_size_ - real_hs) / (double)real_hs * real_ps;
+            delta = std::min(delta, (double)(128 << 20));
+            new_vc_phy = real_ps + delta;
           }
-          if (lst_hit_rate_ - rate > 0.1) {
-            // The data distribution may be changed.
-            lst_hit_rate_ = rate;
-            cur_vc_hot_set_size_ = new_vc_hs = max_vc_hot_set_size_;
-            phase_num_ = 0;
-          }
-
-          // maximum hit rate updates,
-          if (lst_hit_rate_ < rate - 0.01) {
-            lst_hit_rate_ = rate;
-            lst_choose_ = std::max(-1., lst_choose_ * 2);
-            new_vc_hs -= lst_choose_ * hs_step;
-          }
-
-          if (phase_num_ == 0) {
-            double real_hs = router_.get_vc().GetRealHotSetSize();
-            double real_ps = router_.get_vc().GetRealPhySize();
-            log_ << "[VC Updater] Real HS: " << real_hs
-                << ", Real PS: " << real_ps << std::endl;
-            if (real_hs > cur_vc_hot_set_size_ * 0.95) {
-              phase_num_ = 1;
-              lst_choose_ = -1;
-              router_.get_vc().SetProperPhysicalSizeLimit();
-              cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
-            } else if (router_.get_vc().DecayCount() > 0 && real_hs > 0) {
-              double delta =
-                  (cur_vc_hot_set_size_ - real_hs) / (double)real_hs * real_ps;
-              delta = std::min(delta, (double)(128 << 20));
-              new_vc_phy = real_ps + delta;
-            }
-          } else if (phase_num_ == 1) {
-            log_ << "[VC Updater] Lst Choose: " << lst_choose_
-                << ", Lst Ret: " << lst_ret_cur_hot_set_size_ << std::endl;
-            if (router_.get_vc().DecayCount() > 0) {
-              // Try to decrease hot set size.
-              if (lst_hit_rate_ < rate + 0.01) {
-                if (lst_ret_cur_hot_set_size_ >=
-                    new_vc_hs + lst_choose_ * hs_step) {
-                  lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
-                }
-                new_vc_hs += lst_choose_ * hs_step;
-              } else {
-                lst_ret_cur_hot_set_size_ = new_vc_hs;
-                new_vc_hs -= lst_choose_ * hs_step;
+        } else if (phase_num_ == 1) {
+          log_ << "[VC Updater] Lst Choose: " << lst_choose_
+               << ", Lst Ret: " << lst_ret_cur_hot_set_size_ << std::endl;
+          if (router_.get_vc().DecayCount() > 0) {
+            // Try to decrease hot set size.
+            if (lst_hit_rate_ < rate + 0.01) {
+              if (lst_ret_cur_hot_set_size_ >=
+                  new_vc_hs + lst_choose_ * hs_step) {
+                lst_choose_ = std::min(-0.02, lst_choose_ * 0.5);
               }
-            }
-            if (lst_choose_ == -0.02) {
-              phase_num_ = 2;
-              router_.get_vc().SetProperPhysicalSizeLimit();
-              cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+              new_vc_hs += lst_choose_ * hs_step;
+            } else {
+              lst_ret_cur_hot_set_size_ = new_vc_hs;
+              new_vc_hs -= lst_choose_ * hs_step;
             }
           }
-
-          hr_mon_.EndPeriod();
-          hr_mon_.BeginPeriod(hits);
+          if (lst_choose_ == -0.02) {
+            phase_num_ = 2;
+            router_.get_vc().SetProperPhysicalSizeLimit();
+            cur_vc_phy_size_ = router_.get_vc().GetPhySizeLimit();
+          }
         }
 
-        new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs),
-                            max_vc_hot_set_size_);
-        if (new_vc_hs != cur_vc_hot_set_size_ || new_vc_phy != cur_vc_phy_size_) {
-          cur_vc_hot_set_size_ = new_vc_hs;
-          cur_vc_phy_size_ = new_vc_phy;
-          router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_,
-                                          cur_vc_phy_size_);
-        }
+        hr_mon_.EndPeriod();
+        hr_mon_.BeginPeriod(hits);
+      }
+
+      new_vc_hs = std::min(std::max(min_vc_hot_set_size_, new_vc_hs),
+                           max_vc_hot_set_size_);
+      if (new_vc_hs != cur_vc_hot_set_size_ || new_vc_phy != cur_vc_phy_size_) {
+        cur_vc_hot_set_size_ = new_vc_hs;
+        cur_vc_phy_size_ = new_vc_phy;
+        router_.get_vc().SetAllSizeLimit(cur_vc_hot_set_size_,
+                                         cur_vc_phy_size_);
       }
     }
+  }
 
   ssize_t cur_vc_hot_set_size_;
   ssize_t cur_vc_phy_size_;
@@ -533,12 +535,10 @@ class VisCntsUpdater {
   ssize_t resize_tick_{0};
 };
 
-
 class VisCntsUpdater2 {
  public:
   VisCntsUpdater2(const WorkOptions &work_options,
-                  const rocksdb::Options &options,
-                  size_t first_level_in_sd,
+                  const rocksdb::Options &options, size_t first_level_in_sd,
                   size_t max_vc_hot_set_size, size_t min_vc_hot_set_size,
                   size_t wait_op, size_t wait_time_ns, RouterVisCnts &router)
       : work_options_(work_options),
@@ -583,9 +583,10 @@ class VisCntsUpdater2 {
         std::cerr << "real_phy_size " << real_phy_size << '\n'
                   << "real_hot_set_size " << real_hot_set_size << '\n';
         auto rate = real_phy_size / (double)real_hot_set_size;
-        auto delta = rate * hs_step; //std::max<size_t>(rate * hs_step, (64 << 20));
+        auto delta =
+            rate * hs_step;  // std::max<size_t>(rate * hs_step, (64 << 20));
         auto phy_size = router_.get_vc().GetRealPhySize() + delta;
-        std::cerr<<"rate " <<rate<<"," <<phy_size<<std::endl;
+        std::cerr << "rate " << rate << "," << phy_size << std::endl;
         router_.get_vc().SetPhysicalSizeLimit(phy_size);
 
         uint64_t fd_size = options_.db_paths[0].target_size - phy_size;
@@ -628,8 +629,8 @@ class VisCntsUpdater2 {
   std::thread th_;
 };
 
-void print_vc_param(RouterVisCnts& router, WorkOptions *work_options,
-               std::atomic<bool> *should_stop) {
+void print_vc_param(RouterVisCnts &router, WorkOptions *work_options,
+                    std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
   auto vc_parameter_path = db_path / "vc_param";
   std::ofstream out(vc_parameter_path);
@@ -669,7 +670,7 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   std::ofstream timers_out(db_path / "timers");
   timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
-                "get-cpu-nanos "
+                "get-cpu-nanos delete-cpu-nanos"
              << VisCnts::Properties::kCompactionThreadCPUNanos << ' '
              << VisCnts::Properties::kFlushThreadCPUNanos << ' '
              << VisCnts::Properties::kDecayThreadCPUNanos << ' '
@@ -766,6 +767,7 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
                << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << delete_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << viscnts_compaction_thread_cpu_nanos << ' '
                << viscnts_flush_thread_cpu_nanos << ' '
                << viscnts_decay_thread_cpu_nanos << ' '
@@ -842,7 +844,7 @@ int main(int argc, char **argv) {
   // Options of executor
   desc.add_options()("help", "Print help message");
   desc.add_options()("trace", po::value<std::string>(),
-      "The trace file to replay");
+                     "The trace file to replay");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/plain-length-only/ycsb");
@@ -921,9 +923,11 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
 
-  desc.add_options()("enable_dynamic_vc_param_in_lsm", "enable_dynami_vc_param_in_lsm");
+  desc.add_options()("enable_dynamic_vc_param_in_lsm",
+                     "enable_dynami_vc_param_in_lsm");
 
-  desc.add_options()("enable_dynamic_only_vc_phy_size", "enable_dynamic_only_vc_phy_size");
+  desc.add_options()("enable_dynamic_only_vc_phy_size",
+                     "enable_dynamic_only_vc_phy_size");
 
   desc.add_options()("enable_sampling", "enable_sampling");
 
@@ -1027,16 +1031,18 @@ int main(int argc, char **argv) {
   VisCntsUpdater2 *updater = nullptr;
   if (first_level_in_sd != 0) {
     if (vm.count("enable_dynamic_vc_param_in_lsm")) {
-      router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                              first_level_in_sd - 1, max_hot_set_size,
-                              max_viscnts_size, switches, options.db_paths[0].target_size * 0.7, 
-                              options.db_paths[0].target_size * 0.05, vm.count("enable_sampling"));
+      router = new RouterVisCnts(
+          options.comparator, viscnts_path_str, first_level_in_sd - 1,
+          max_hot_set_size, max_viscnts_size, switches,
+          options.db_paths[0].target_size * 0.7,
+          options.db_paths[0].target_size * 0.05, vm.count("enable_sampling"));
     } else {
       router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                                first_level_in_sd - 1, max_hot_set_size,
-                                max_viscnts_size, switches, max_hot_set_size, max_hot_set_size, vm.count("enable_sampling"));  
+                                 first_level_in_sd - 1, max_hot_set_size,
+                                 max_viscnts_size, switches, max_hot_set_size,
+                                 max_hot_set_size, vm.count("enable_sampling"));
     }
-    
+
     options.compaction_router = router;
   }
 
@@ -1055,14 +1061,16 @@ int main(int argc, char **argv) {
   }
 
   // if (vm.count("enable_dynamic_vc_param") && router) {
-  //   updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size, options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size * 0.1, 5e5, 2e9, *router);
+  //   updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size,
+  //   options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size *
+  //   0.1, 5e5, 2e9, *router);
   // }
 
   if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
-    updater = new VisCntsUpdater2(
-        work_option, options, first_level_in_sd,
-        options.db_paths[0].target_size * 0.7,
-        options.db_paths[0].target_size * 0.1, 5e5, 20e9, *router);
+    updater = new VisCntsUpdater2(work_option, options, first_level_in_sd,
+                                  options.db_paths[0].target_size * 0.7,
+                                  options.db_paths[0].target_size * 0.1, 5e5,
+                                  20e9, *router);
   }
 
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
