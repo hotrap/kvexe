@@ -164,7 +164,7 @@ void bg_stat_printer(WorkOptions *work_options,
 
   std::ofstream timers_out(db_path / "timers");
   timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
-                "get-cpu-nanos\n";
+                "get-cpu-nanos delete-cpu-nanos\n";
 
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
@@ -212,7 +212,8 @@ void bg_stat_printer(WorkOptions *work_options,
         rocksdb::DB::Properties::kCompactionCPUMicros, &compaction_cpu_micros));
     timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
                << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << get_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
+               << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
+               << delete_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
 
     std::string rand_read_bytes;
     rusty_assert(db->GetProperty(rocksdb::DB::Properties::kRandReadBytes,
