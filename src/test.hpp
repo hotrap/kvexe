@@ -279,7 +279,8 @@ class BlockChannelClient {
 struct WorkOptions {
   bool load{false};
   bool run{false};
-  std::optional<std::filesystem::path> trace;
+  std::optional<std::filesystem::path> load_trace;
+  std::optional<std::filesystem::path> run_trace;
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
@@ -302,33 +303,21 @@ void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
 }
 
 class Tester {
-  WorkOptions options_;
-  BlockChannel<Operation> channel_;
-  std::vector<BlockChannel<Operation>> channel_for_workers_;
-
-  uint64_t parse_counts_{0};
-  std::atomic<uint64_t> notfound_counts_{0};
-  std::vector<rocksdb::PerfContext*> perf_contexts_;
-  std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
-  std::mutex thread_local_m_;
-
  public:
-  Tester(const WorkOptions& option)
-      : options_(option), channel_for_workers_(option.num_threads) {}
+  Tester(const WorkOptions& option) : options_(option) {}
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     perf_contexts_.resize(options_.num_threads);
     iostats_contexts_.resize(options_.num_threads);
 
-    std::vector<std::thread> threads;
-    std::vector<Worker> workers;
     for (size_t i = 0; i < options_.num_threads; ++i) {
-      workers.emplace_back(*this, i, options_, notfound_counts_, info_json_out);
+      workers_.emplace_back(*this, i, options_, notfound_counts_,
+                            info_json_out);
     }
     if (options_.enable_fast_generator) {
-      GenerateAndExecute(info_json_out, workers);
+      GenerateAndExecute(info_json_out);
     } else {
-      ReadAndExecute(info_json_out, workers);
+      ReadAndExecute(info_json_out);
     }
   }
 
@@ -381,6 +370,12 @@ class Tester {
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
+    void prepare_run_phase() {
+      if (options_.switches & MASK_LATENCY) {
+        latency_out_ = std::make_optional<std::ofstream>(
+            options_.db_path / ("latency-" + std::to_string(id_)));
+      }
+    }
     void run(YCSBGen::YCSBRunGenerator& runner) {
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
@@ -395,10 +390,6 @@ class Tester {
       uint64_t run_op_70p = options_.ycsb_gen_options.record_count +
                             options_.ycsb_gen_options.operation_count * 0.7;
       uint64_t last_op_in_current_stage = run_op_70p;
-      if (options_.switches & MASK_LATENCY) {
-        latency_out_ = std::make_optional<std::ofstream>(
-            options_.db_path / ("latency-" + std::to_string(id_)));
-      }
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -603,22 +594,22 @@ class Tester {
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse() {
-    std::optional<std::ifstream> trace_file;
-    if (options_.trace.has_value()) {
-      trace_file = std::ifstream(options_.trace.value());
-      rusty_assert(trace_file.value());
-    }
-    std::istream& trace =
-        trace_file.has_value() ? trace_file.value() : std::cin;
+  void parse(std::istream& trace) {
+    size_t num_channels =
+        options_.enable_fast_process ? 1 : options_.num_threads;
+    std::vector<BlockChannel<Operation>> channel_for_workers(num_channels);
 
     std::vector<BlockChannelClient<Operation>> opblocks;
-    if (options_.enable_fast_process) {
-      opblocks.emplace_back(&channel_, options_.opblock_size);
-    } else {
-      for (size_t i = 0; i < options_.num_threads; i++) {
-        opblocks.emplace_back(&channel_for_workers_[i], options_.opblock_size);
-      }
+    for (auto& channel : channel_for_workers) {
+      opblocks.emplace_back(&channel, options_.opblock_size);
+    }
+
+    std::vector<std::thread> threads;
+    for (size_t i = 0; i < options_.num_threads; i++) {
+      threads.emplace_back([this, &channel_for_workers, i]() {
+        size_t index = options_.enable_fast_process ? 0 : i;
+        workers_[i].work(channel_for_workers[index]);
+      });
     }
 
     std::hash<std::string> hasher{};
@@ -709,6 +700,8 @@ class Tester {
       o.Flush();
       o.Finish();
     }
+
+    for (auto& t : threads) t.join();
   }
 
   void handle_table_name(std::istream& in) {
@@ -787,6 +780,10 @@ class Tester {
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    for (auto& worker : workers_) {
+      worker.prepare_run_phase();
+    }
+
     options_.db->SetOptions(
         {{"db_paths_soft_size_limit_multiplier",
           std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
@@ -819,8 +816,7 @@ class Tester {
   }
 
   void GenerateAndExecute(
-      const rusty::sync::Mutex<std::ofstream>& info_json_out,
-      std::vector<Worker>& workers) {
+      const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     std::vector<std::thread> threads;
 
     std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
@@ -836,7 +832,7 @@ class Tester {
       auto load_start = rusty::time::Instant::now();
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
-            [&loader, &workers, i]() { workers[i].load(loader); });
+            [this, &loader, i]() { workers_[i].load(loader); });
       }
       for (auto& t : threads) t.join();
       threads.clear();
@@ -854,8 +850,8 @@ class Tester {
       std::mutex mu;
       for (size_t i = 0; i < options_.num_threads; ++i) {
         threads.emplace_back(
-            [&workers, &runner, i, &finished, &permit_join, &cv, &mu]() {
-              workers[i].run(runner);
+            [this, &runner, i, &finished, &permit_join, &cv, &mu]() {
+              workers_[i].run(runner);
               finished.fetch_add(1, std::memory_order_relaxed);
               std::unique_lock lock(mu);
               cv.wait(lock, [&permit_join]() { return permit_join; });
@@ -915,28 +911,42 @@ class Tester {
     }
   }
 
-  void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out,
-                      std::vector<Worker>& workers) {
-    std::vector<std::thread> threads;
+  void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    if (options_.load) {
+      std::optional<std::ifstream> trace_file;
+      if (options_.load_trace.has_value()) {
+        trace_file = std::ifstream(options_.load_trace.value());
+        rusty_assert(trace_file.value());
+      }
+      std::istream& trace =
+          trace_file.has_value() ? trace_file.value() : std::cin;
 
-    for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, &workers, i]() {
-        workers[i].work(options_.enable_fast_process ? channel_
-                                                     : channel_for_workers_[i]);
-      });
+      auto start = rusty::time::Instant::now();
+      parse(trace);
+      finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
+      std::optional<std::ifstream> trace_file;
+      if (options_.run_trace.has_value()) {
+        trace_file = std::ifstream(options_.run_trace.value());
+        rusty_assert(trace_file.value());
+      }
+      std::istream& trace =
+          trace_file.has_value() ? trace_file.value() : std::cin;
+
       prepare_run_phase(info_json_out);
-    }
-    auto start = rusty::time::Instant::now();
-    parse();
-    for (auto& t : threads) t.join();
-    if (options_.load) {
-      rusty_assert(!options_.run);
-      finish_load_phase(info_json_out, start);
-    } else {
-      rusty_assert(!options_.load);
+      auto start = rusty::time::Instant::now();
+      parse(trace);
       finish_run_phase(info_json_out, start);
     }
   }
+
+  WorkOptions options_;
+  std::vector<Worker> workers_;
+
+  uint64_t parse_counts_{0};
+  std::atomic<uint64_t> notfound_counts_{0};
+  std::vector<rocksdb::PerfContext*> perf_contexts_;
+  std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
+  std::mutex thread_local_m_;
 };

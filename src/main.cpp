@@ -251,17 +251,18 @@ int main(int argc, char **argv) {
 
   // Options of executor
   desc.add_options()("help", "Print help message");
-  desc.add_options()("trace", po::value<std::string>(),
-      "The trace file to replay");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/plain-length-only/ycsb");
   desc.add_options()(
-      "load", "Execute the load phase. Will empty the directories first.");
+      "load", po::value<std::string>(),
+      "Execute the load phase. If a trace is provided with this option, "
+      "execute the trace in the load phase. Will empty the directories first.");
   desc.add_options()(
-      "run",
-      "Execute the run phase. "
-      "If --load is not provided, the run phase will be directly executed "
+      "run", po::value<std::string>(),
+      "Execute the run phase. If a trace is provided with this option, execute "
+      "the trace in the run phase. "
+      "If --load is not provided, the run phase will be executed directly "
       "without executing the load phase, and the directories won't be cleaned "
       "up. "
       "If none of --load and --run is provided, the both phases will be "
@@ -327,9 +328,15 @@ int main(int argc, char **argv) {
 
   if (vm.count("load")) {
     work_option.load = true;
+    if (!vm["load"].empty()) {
+      work_option.load_trace = vm["load"].as<std::string>();
+    }
   }
   if (vm.count("run")) {
     work_option.run = true;
+    if (!vm["run"].empty()) {
+      work_option.run_trace = vm["run"].as<std::string>();
+    }
   }
   if (work_option.load == false && work_option.run == false) {
     work_option.load = true;
@@ -449,11 +456,6 @@ int main(int argc, char **argv) {
   work_option.progress_get = &progress_get;
   work_option.num_threads = num_threads;
   work_option.enable_fast_process = vm.count("enable_fast_process");
-  if (vm.count("trace") == 0) {
-    work_option.trace = std::nullopt;
-  } else {
-    work_option.trace = vm["trace"].as<std::string>();
-  }
   if (format == "plain") {
     work_option.format_type = FormatType::Plain;
   } else if (format == "plain-length-only") {
