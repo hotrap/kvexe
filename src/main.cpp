@@ -182,11 +182,6 @@ int main(int argc, char **argv) {
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
   desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
-  desc.add_options()(
-      "switches", po::value<std::string>(&arg_switches)->default_value("none"),
-      "Switches for statistics: none/all/<hex value>\n"
-      "0x1: Log the latency of each operation\n"
-      "0x2: Output the result of READ");
   desc.add_options()("num_keys", po::value<size_t>(&num_keys)->required(),
                      "The number of keys.\n");
   desc.add_options()("migrations_logging",
