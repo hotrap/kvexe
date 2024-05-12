@@ -128,13 +128,12 @@ int main(int argc, char **argv) {
   po::options_description desc("Available options");
   std::string format;
   std::string arg_switches;
-  size_t num_threads;
-  size_t num_keys;
-  double optane_threshold;
 
   std::string arg_db_path;
   std::string arg_db_paths;
   size_t cache_size;
+
+  size_t num_keys;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -159,9 +158,10 @@ int main(int argc, char **argv) {
       "Switches for statistics: none/all/<hex value>\n"
       "0x1: Log the latency of each operation\n"
       "0x2: Output the result of READ");
-  desc.add_options()("num_threads",
-                     po::value<size_t>(&num_threads)->default_value(1),
-                     "The number of threads to execute the trace\n");
+  desc.add_options()(
+      "num_threads",
+      po::value<size_t>(&work_options.num_threads)->default_value(1),
+      "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
                      "pushing operations in one channel.");
@@ -182,6 +182,8 @@ int main(int argc, char **argv) {
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
   desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
+
+  // Options of PrismDB
   desc.add_options()("num_keys", po::value<size_t>(&num_keys)->required(),
                      "The number of keys.\n");
   desc.add_options()("migrations_logging",
@@ -207,9 +209,10 @@ int main(int argc, char **argv) {
   desc.add_options()("num_load_ops",
                      po::value<size_t>(&work_options.num_load_ops)->required(),
                      "Number of operations in loading phase.");
-  desc.add_options()("optane_threshold",
-                     po::value<double>(&optane_threshold)->default_value(0.15),
-                     "Optane threshold.");
+  desc.add_options()(
+      "optane_threshold",
+      po::value<float>(&options.optaneThreshold)->default_value(0.15),
+      "Optane threshold.");
   desc.add_options()("slab_dir",
                      po::value<std::string>(&options.slab_dir)->required(),
                      "Directory of slabs.");
@@ -226,6 +229,7 @@ int main(int argc, char **argv) {
       "stop_upsert_trigger");
   desc.add_options()("max_kvsize_bytes", po::value(&options.maxKVSizeBytes),
                      "maxKVSizeBytes");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -271,7 +275,6 @@ int main(int argc, char **argv) {
   options.block_cache = leveldb::NewLRUCache(cache_size);
   options.filter_policy = leveldb::NewBloomFilterPolicy(10);
   options.numKeys = num_keys;
-  options.optaneThreshold = optane_threshold;
   options.numWriteKeys = num_keys;
 
   std::filesystem::path db_path(arg_db_path);
@@ -315,7 +318,6 @@ int main(int argc, char **argv) {
   work_options.db_path = db_path;
   work_options.progress = &progress;
   work_options.progress_get = &progress_get;
-  work_options.num_threads = num_threads;
   work_options.enable_fast_process = vm.count("enable_fast_process");
   work_options.num_keys = num_keys;
   if (format == "plain") {
