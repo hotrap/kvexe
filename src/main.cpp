@@ -221,6 +221,8 @@ int main(int argc, char **argv) {
       "stop_upsert_trigger",
       po::value(&options.stop_upsert_trigger)->default_value(250 * 1e6),
       "stop_upsert_trigger");
+  desc.add_options()("max_kvsize_bytes", po::value(&options.maxKVSizeBytes),
+                     "maxKVSizeBytes");
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
