@@ -242,10 +242,12 @@ struct WorkOptions {
   bool enable_fast_process{false};
   size_t num_threads{1};
   size_t opblock_size{1024};
-  size_t num_keys;  // The number of keys after load phase and run phase.
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   bool export_key_only_trace{false};
+
+  size_t num_keys;  // The number of keys after load phase and run phase.
+  size_t num_load_ops;
 };
 
 void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
@@ -348,7 +350,12 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        uint64_t progress =
+            options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (progress == options_.num_load_ops) {
+          options_.db->SetDbMode(false);
+          options_.db->ResetMigrationStats();
+        }
       }
     }
     void work(BlockChannel<Operation>& chan) {
@@ -690,9 +697,6 @@ class Tester {
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
-
-    options_.db->SetDbMode(false);
-    options_.db->ResetMigrationStats();
   }
 
   void finish_run_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
