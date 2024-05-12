@@ -411,6 +411,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op);
+        options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
