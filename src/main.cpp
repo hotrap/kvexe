@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
   std::cout.tie(0);
 
   rocksdb::Options options;
-  WorkOptions work_option;
+  WorkOptions work_options;
 
   namespace po = boost::program_options;
   po::options_description desc("Available options");
@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
                      "Do not build filters for the last level");
   desc.add_options()(
       "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_option.db_paths_soft_size_limit_multiplier)
+      po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
           ->default_value(1.1));
 
   po::variables_map vm;
@@ -290,20 +290,20 @@ int main(int argc, char **argv) {
   po::notify(vm);
 
   if (vm.count("load")) {
-    work_option.load = true;
+    work_options.load = true;
     if (!vm["load"].empty()) {
-      work_option.load_trace = vm["load"].as<std::string>();
+      work_options.load_trace = vm["load"].as<std::string>();
     }
   }
   if (vm.count("run")) {
-    work_option.run = true;
+    work_options.run = true;
     if (!vm["run"].empty()) {
-      work_option.run_trace = vm["run"].as<std::string>();
+      work_options.run_trace = vm["run"].as<std::string>();
     }
   }
-  if (work_option.load == false && work_option.run == false) {
-    work_option.load = true;
-    work_option.run = true;
+  if (work_options.load == false && work_options.run == false) {
+    work_options.load = true;
+    work_options.run = true;
   }
 
   uint64_t switches;
@@ -349,7 +349,7 @@ int main(int argc, char **argv) {
   }
 
   rocksdb::DB *db;
-  if (work_option.load) {
+  if (work_options.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
@@ -389,40 +389,40 @@ int main(int argc, char **argv) {
   std::atomic<uint64_t> progress(0);
   std::atomic<uint64_t> progress_get(0);
 
-  work_option.db = db;
-  work_option.switches = switches;
-  work_option.db_path = db_path;
-  work_option.progress = &progress;
-  work_option.progress_get = &progress_get;
-  work_option.num_threads = num_threads;
-  work_option.enable_fast_process = vm.count("enable_fast_process");
+  work_options.db = db;
+  work_options.switches = switches;
+  work_options.db_path = db_path;
+  work_options.progress = &progress;
+  work_options.progress_get = &progress_get;
+  work_options.num_threads = num_threads;
+  work_options.enable_fast_process = vm.count("enable_fast_process");
   if (format == "plain") {
-    work_option.format_type = FormatType::Plain;
+    work_options.format_type = FormatType::Plain;
   } else if (format == "plain-length-only") {
-    work_option.format_type = FormatType::PlainLengthOnly;
+    work_options.format_type = FormatType::PlainLengthOnly;
   } else if (format == "ycsb") {
-    work_option.format_type = FormatType::YCSB;
+    work_options.format_type = FormatType::YCSB;
   } else {
     rusty_panic("Unrecognized format %s", format.c_str());
   }
-  work_option.enable_fast_generator = vm.count("enable_fast_generator");
-  if (work_option.enable_fast_generator) {
+  work_options.enable_fast_generator = vm.count("enable_fast_generator");
+  if (work_options.enable_fast_generator) {
     std::string workload_file = vm["workload_file"].as<std::string>();
-    work_option.ycsb_gen_options =
+    work_options.ycsb_gen_options =
         YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
-    work_option.export_key_only_trace = vm.count("export_key_only_trace");
+    work_options.export_key_only_trace = vm.count("export_key_only_trace");
   } else {
     rusty_assert(vm.count("workload_file") == 0,
                  "workload_file only works with built-in generator!");
     rusty_assert(vm.count("export_key_only_trace") == 0,
                  "export_key_only_trace only works with built-in generator!");
-    work_option.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
+    work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
 
   std::atomic<bool> should_stop(false);
-  std::thread stat_printer(bg_stat_printer, &work_option, &should_stop);
+  std::thread stat_printer(bg_stat_printer, &work_options, &should_stop);
 
-  Tester tester(work_option);
+  Tester tester(work_options);
 
   auto stats_print_func = [&](std::ostream &log) {
     log << "Timestamp: " << timestamp_ns() << "\n";
@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
 
   std::filesystem::path info_json_path = db_path / "info.json";
   std::ofstream info_json_out;
-  if (work_option.load) {
+  if (work_options.load) {
     info_json_out = std::ofstream(info_json_path);
     info_json_out << "{" << std::endl;
   } else {
@@ -494,7 +494,7 @@ int main(int argc, char **argv) {
   }
   rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
   tester.Test(info_json);
-  if (work_option.run) {
+  if (work_options.run) {
     *info_json.lock() << "}" << std::endl;
   }
 
