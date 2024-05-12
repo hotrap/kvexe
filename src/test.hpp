@@ -311,8 +311,7 @@ class Tester {
     iostats_contexts_.resize(options_.num_threads);
 
     for (size_t i = 0; i < options_.num_threads; ++i) {
-      workers_.emplace_back(*this, i, options_, notfound_counts_,
-                            info_json_out);
+      workers_.emplace_back(*this, i);
     }
     if (options_.enable_fast_generator) {
       GenerateAndExecute(info_json_out);
@@ -344,15 +343,12 @@ class Tester {
  private:
   class Worker {
    public:
-    Worker(Tester& tester, size_t id, const WorkOptions& options,
-           std::atomic<uint64_t>& notfound_counts,
-           const rusty::sync::Mutex<std::ofstream>& info_json_out)
+    Worker(Tester& tester, size_t id)
         : tester_(tester),
           id_(id),
-          options_(options),
+          options_(tester.options_),
           ignore_notfound(options_.enable_fast_process),
-          notfound_counts_(notfound_counts),
-          info_json_out_(info_json_out),
+          notfound_counts_(tester.notfound_counts_),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -387,14 +383,11 @@ class Tester {
       }
 
       Operation op;
-      uint64_t run_op_70p = options_.ycsb_gen_options.record_count +
-                            options_.ycsb_gen_options.operation_count * 0.7;
-      uint64_t last_op_in_current_stage = run_op_70p;
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
                     options_.db_path /
-                    (std::to_string(id_) + "_key_only_trace_0_70"))
+                    (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
@@ -418,26 +411,6 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op);
-        uint64_t progress =
-            options_.progress->fetch_add(1, std::memory_order_relaxed);
-        if (progress == run_op_70p) {
-          *info_json_out_.lock()
-              << "\t\"run-70\%-timestamp(ns)\": " << timestamp_ns() << ','
-              << std::endl;
-          std::string rocksdb_stats;
-          rusty_assert(
-              options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
-          std::ofstream(options_.db_path / "rocksdb-stats-run-70p.txt")
-              << rocksdb_stats;
-        }
-        if (progress >= last_op_in_current_stage) {
-          last_op_in_current_stage = std::numeric_limits<uint64_t>::max();
-          if (options_.export_key_only_trace) {
-            key_only_trace_out = std::make_optional<std::ofstream>(
-                options_.db_path /
-                (std::to_string(id_) + "_key_only_trace_70_100"));
-          }
-        }
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
@@ -589,7 +562,6 @@ class Tester {
 
     uint64_t local_notfound_counts{0};
     uint64_t local_read_progress{0};
-    const rusty::sync::Mutex<std::ofstream>& info_json_out_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
@@ -949,4 +921,6 @@ class Tester {
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
+
+  friend class Worker;
 };
