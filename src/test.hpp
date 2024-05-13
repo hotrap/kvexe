@@ -462,7 +462,7 @@ class Tester {
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
+        if (s.IsNotFound() && ignore_notfound) {
           return false;
         } else {
           std::string err = s.ToString();
