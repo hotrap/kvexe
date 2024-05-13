@@ -153,15 +153,14 @@ int main(int argc, char **argv) {
       "up. "
       "If none of --load and --run is provided, the both phases will be "
       "executed.");
-  desc.add_options()(
-      "switches", po::value<std::string>(&arg_switches)->default_value("none"),
-      "Switches for statistics: none/all/<hex value>\n"
-      "0x1: Log the latency of each operation\n"
-      "0x2: Output the result of READ");
-  desc.add_options()(
-      "num_threads",
-      po::value<size_t>(&work_options.num_threads)->default_value(1),
-      "The number of threads to execute the trace\n");
+  desc.add_options()("switches",
+                     po::value(&arg_switches)->default_value("none"),
+                     "Switches for statistics: none/all/<hex value>\n"
+                     "0x1: Log the latency of each operation\n"
+                     "0x2: Output the result of READ");
+  desc.add_options()("num_threads",
+                     po::value(&work_options.num_threads)->default_value(1),
+                     "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
                      "pushing operations in one channel.");
@@ -181,7 +180,6 @@ int main(int argc, char **argv) {
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
-  desc.add_options()("block_size", po::value<size_t>(), "Default: 4096");
 
   // Options of PrismDB
   desc.add_options()("num_keys", po::value<size_t>(&num_keys)->required(),
