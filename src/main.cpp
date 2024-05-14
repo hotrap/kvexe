@@ -204,9 +204,6 @@ int main(int argc, char **argv) {
       "migration_rand_range_size",
       po::value<int>(&options.migration_rand_range_size)->required(),
       "Option migration_rand_range_size");
-  desc.add_options()("num_load_ops",
-                     po::value<size_t>(&work_options.num_load_ops)->required(),
-                     "Number of operations in loading phase.");
   desc.add_options()(
       "optane_threshold",
       po::value<float>(&options.optaneThreshold)->default_value(0.15),

@@ -247,7 +247,6 @@ struct WorkOptions {
   bool export_key_only_trace{false};
 
   size_t num_keys;  // The number of keys after load phase and run phase.
-  size_t num_load_ops;
 };
 
 void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
@@ -351,12 +350,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        uint64_t progress =
-            options_.progress->fetch_add(1, std::memory_order_relaxed);
-        if (progress == options_.num_load_ops) {
-          options_.db->SetDbMode(false);
-          options_.db->ResetMigrationStats();
-        }
+        options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
     void work(BlockChannel<Operation>& chan) {
@@ -697,6 +691,9 @@ class Tester {
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    options_.db->SetDbMode(false);
+    options_.db->ResetMigrationStats();
+
     for (auto& worker : workers_) {
       worker.prepare_run_phase();
     }
