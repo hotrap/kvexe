@@ -279,8 +279,8 @@ class BlockChannelClient {
 struct WorkOptions {
   bool load{false};
   bool run{false};
-  std::optional<std::filesystem::path> load_trace;
-  std::optional<std::filesystem::path> run_trace;
+  std::string load_trace;
+  std::string run_trace;
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
@@ -893,8 +893,8 @@ class Tester {
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
-      if (options_.load_trace.has_value()) {
-        trace_file = std::ifstream(options_.load_trace.value());
+      if (!options_.load_trace.empty()) {
+        trace_file = std::ifstream(options_.load_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
@@ -906,8 +906,8 @@ class Tester {
     }
     if (options_.run) {
       std::optional<std::ifstream> trace_file;
-      if (options_.run_trace.has_value()) {
-        trace_file = std::ifstream(options_.run_trace.value());
+      if (!options_.run_trace.empty()) {
+        trace_file = std::ifstream(options_.run_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
