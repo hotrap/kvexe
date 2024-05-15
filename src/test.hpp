@@ -279,8 +279,8 @@ class BlockChannelClient {
 struct WorkOptions {
   bool load{false};
   bool run{false};
-  std::optional<std::filesystem::path> load_trace;
-  std::optional<std::filesystem::path> run_trace;
+  std::string load_trace;
+  std::string run_trace;
   FormatType format_type;
   rocksdb::DB* db;
   uint64_t switches;
@@ -389,6 +389,7 @@ class Tester {
                     options_.db_path /
                     (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
+      std::string value;
       while (!runner.IsEOF()) {
         auto ycsb_op = runner.GetNextOp(rndgen);
         op.key = std::move(ycsb_op.key);
@@ -410,7 +411,7 @@ class Tester {
         if (key_only_trace_out.has_value())
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
-        process_op(op);
+        process_op(op, &value);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
       {
@@ -420,13 +421,14 @@ class Tester {
       }
     }
     void work(BlockChannel<Operation>& chan) {
+      std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
         }
         for (const Operation& op : block) {
-          process_op(op);
+          process_op(op, &value);
           options_.progress->fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -452,16 +454,16 @@ class Tester {
       }
     }
 
-    std::string do_read(const Operation& read) {
-      std::string value;
+    // Return found or not
+    bool do_read(const Operation& read, std::string* value) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
-      auto s = options_.db->Get(read_options_, read.key, &value);
+      auto s = options_.db->Get(read_options_, read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
-          value = "";
+        if (s.IsNotFound() && ignore_notfound) {
+          return false;
         } else {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
@@ -473,7 +475,7 @@ class Tester {
         print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
-      return value;
+      return true;
     }
 
     void do_read_modify_write(const Operation& op) {
@@ -524,18 +526,22 @@ class Tester {
       }
     }
 
-    void process_op(const Operation& op) {
+    void process_op(const Operation& op, std::string* value) {
       switch (op.type) {
         case OpType::INSERT:
         case OpType::UPDATE:
           do_put(op);
           break;
         case OpType::READ: {
-          auto value = do_read(op);
+          bool found = do_read(op, value);
           if (ans_out_) {
-            print_ans(ans_out_.value(), value);
+            if (found) {
+              print_ans(ans_out_.value(), *value);
+            } else {
+              print_ans(ans_out_.value(), "");
+            }
           }
-          if (value == "") {
+          if (!found) {
             local_notfound_counts++;
             if ((local_read_progress & 15) == 15) {
               notfound_counts_ += local_notfound_counts;
@@ -887,8 +893,8 @@ class Tester {
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
-      if (options_.load_trace.has_value()) {
-        trace_file = std::ifstream(options_.load_trace.value());
+      if (!options_.load_trace.empty()) {
+        trace_file = std::ifstream(options_.load_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
@@ -900,8 +906,8 @@ class Tester {
     }
     if (options_.run) {
       std::optional<std::ifstream> trace_file;
-      if (options_.run_trace.has_value()) {
-        trace_file = std::ifstream(options_.run_trace.value());
+      if (!options_.run_trace.empty()) {
+        trace_file = std::ifstream(options_.run_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
