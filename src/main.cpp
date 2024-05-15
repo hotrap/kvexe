@@ -848,11 +848,11 @@ int main(int argc, char **argv) {
                      po::value<std::string>(&format)->default_value("ycsb"),
                      "Trace format: plain/plain-length-only/ycsb");
   desc.add_options()(
-      "load", po::value<std::string>(),
+      "load", po::value<std::string>()->implicit_value(""),
       "Execute the load phase. If a trace is provided with this option, "
       "execute the trace in the load phase. Will empty the directories first.");
   desc.add_options()(
-      "run", po::value<std::string>(),
+      "run", po::value<std::string>()->implicit_value(""),
       "Execute the run phase. If a trace is provided with this option, execute "
       "the trace in the run phase. "
       "If --load is not provided, the run phase will be executed directly "
@@ -948,15 +948,11 @@ int main(int argc, char **argv) {
 
   if (vm.count("load")) {
     work_options.load = true;
-    if (!vm["load"].empty()) {
-      work_options.load_trace = vm["load"].as<std::string>();
-    }
+    work_options.load_trace = vm["load"].as<std::string>();
   }
   if (vm.count("run")) {
     work_options.run = true;
-    if (!vm["run"].empty()) {
-      work_options.run_trace = vm["run"].as<std::string>();
-    }
+    work_options.run_trace = vm["run"].as<std::string>();
   }
   if (work_options.load == false && work_options.run == false) {
     work_options.load = true;
