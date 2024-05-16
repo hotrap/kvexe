@@ -539,7 +539,7 @@ class VisCntsUpdater2 {
  public:
   VisCntsUpdater2(const WorkOptions &work_options,
                   const rocksdb::Options &options, size_t first_level_in_sd,
-                  size_t max_vc_hot_set_size, size_t min_vc_hot_set_size,
+                  uint64_t max_vc_hot_set_size, uint64_t min_vc_hot_set_size,
                   size_t wait_op, size_t wait_time_ns, RouterVisCnts &router)
       : work_options_(work_options),
         options_(options),
@@ -576,8 +576,15 @@ class VisCntsUpdater2 {
       if (stop_signal_) {
         break;
       }
-      double hs_step = max_vc_hot_set_size_ / 20.0;
-      if (router_.get_vc().DecayCount() > 0) {
+      if (router_.get_vc().DecayCount() > 10) {
+        VisCnts &vc = router_.get_vc();
+        if (vc.GetMinHotSetSizeLimit() != min_vc_hot_set_size_) {
+          vc.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
+        }
+        if (vc.GetMaxHotSetSizeLimit() != max_vc_hot_set_size_) {
+          vc.SetMaxHotSetSizeLimit(max_vc_hot_set_size_);
+        }
+        double hs_step = max_vc_hot_set_size_ / 20.0;
         uint64_t real_phy_size = router_.get_vc().GetRealPhySize();
         uint64_t real_hot_set_size = router_.get_vc().GetRealHotSetSize();
         std::cerr << "real_phy_size " << real_phy_size << '\n'
@@ -620,8 +627,8 @@ class VisCntsUpdater2 {
 
   ssize_t wait_op_;
   ssize_t wait_time_ns_;
-  ssize_t max_vc_hot_set_size_;
-  ssize_t min_vc_hot_set_size_;
+  uint64_t max_vc_hot_set_size_;
+  uint64_t min_vc_hot_set_size_;
   RouterVisCnts &router_;
   std::ofstream log_;
 
@@ -677,6 +684,10 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
              << "viscnts.compaction.cpu.nanos viscnts.flush.cpu.nanos "
                 "viscnts.decay.scan.cpu.nanos viscnts.decay.write.cpu.nanos\n";
 
+  std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
+
+  // Stats of hotrap
+
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
   promoted_or_retained_out
@@ -690,9 +701,10 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   std::ofstream viscnts_io_out(db_path / "viscnts-io");
   viscnts_io_out << "Timestamp(ns) read write\n";
 
-  auto stats = options->statistics;
+  std::ofstream viscnts_sizes(db_path / "viscnts-sizes");
+  viscnts_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
 
-  std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
+  auto stats = options->statistics;
 
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
@@ -807,6 +819,10 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
         VisCnts::Properties::kWriteBytes, &viscnts_write));
     viscnts_io_out << timestamp << ' ' << viscnts_read << ' ' << viscnts_write
                    << std::endl;
+
+    VisCnts &vc = router->get_vc();
+    viscnts_sizes << timestamp << ' ' << vc.GetRealPhySize() << ' '
+                  << vc.GetRealHotSetSize() << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -1020,18 +1036,10 @@ int main(int argc, char **argv) {
   RouterVisCnts *router = nullptr;
   VisCntsUpdater2 *updater = nullptr;
   if (first_level_in_sd != 0) {
-    if (vm.count("enable_dynamic_vc_param_in_lsm")) {
-      router = new RouterVisCnts(
-          options.comparator, viscnts_path_str, first_level_in_sd - 1,
-          max_hot_set_size, max_viscnts_size, switches,
-          options.db_paths[0].target_size * 0.7,
-          options.db_paths[0].target_size * 0.05, vm.count("enable_sampling"));
-    } else {
-      router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                                 first_level_in_sd - 1, max_hot_set_size,
-                                 max_viscnts_size, switches, max_hot_set_size,
-                                 max_hot_set_size, vm.count("enable_sampling"));
-    }
+    router = new RouterVisCnts(options.comparator, viscnts_path_str,
+                               first_level_in_sd - 1, max_hot_set_size,
+                               max_viscnts_size, switches, max_hot_set_size,
+                               max_hot_set_size, vm.count("enable_sampling"));
 
     options.compaction_router = router;
   }
