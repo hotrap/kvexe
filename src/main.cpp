@@ -853,6 +853,7 @@ int main(int argc, char **argv) {
   std::string arg_db_paths;
   std::string viscnts_path_str;
   size_t cache_size;
+  int64_t load_phase_rate_limit;
 
   double arg_max_hot_set_size;
   double arg_max_viscnts_size;
@@ -922,6 +923,9 @@ int main(int argc, char **argv) {
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
                      "Do not build filters for the last level");
+  desc.add_options()("load_phase_rate_limit",
+                     po::value(&load_phase_rate_limit)->default_value(0),
+                     "0 means not limited.");
   desc.add_options()(
       "db_paths_soft_size_limit_multiplier",
       po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
@@ -1001,6 +1005,14 @@ int main(int argc, char **argv) {
 
   if (vm.count("optimize_filters_for_hits")) {
     options.optimize_filters_for_hits = true;
+  }
+
+  if (load_phase_rate_limit) {
+    rocksdb::RateLimiter *rate_limiter =
+        rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10,
+                                       rocksdb::RateLimiter::Mode::kAllIo);
+    options.rate_limiter.reset(rate_limiter);
+    work_options.rate_limiter = options.rate_limiter;
   }
 
   uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
