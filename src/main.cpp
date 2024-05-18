@@ -585,14 +585,14 @@ class VisCntsUpdater2 {
           vc.SetMaxHotSetSizeLimit(max_vc_hot_set_size_);
         }
         double hs_step = max_vc_hot_set_size_ / 20.0;
-        uint64_t real_phy_size = router_.get_vc().GetRealPhySize();
-        uint64_t real_hot_set_size = router_.get_vc().GetRealHotSetSize();
+        uint64_t real_phy_size = vc.GetRealPhySize();
+        uint64_t real_hot_set_size = vc.GetRealHotSetSize();
         std::cerr << "real_phy_size " << real_phy_size << '\n'
                   << "real_hot_set_size " << real_hot_set_size << '\n';
         auto rate = real_phy_size / (double)real_hot_set_size;
         auto delta =
             rate * hs_step;  // std::max<size_t>(rate * hs_step, (64 << 20));
-        auto phy_size = router_.get_vc().GetRealPhySize() + delta;
+        auto phy_size = real_phy_size + delta;
         std::cerr << "rate " << rate << "," << phy_size << std::endl;
         router_.get_vc().SetPhysicalSizeLimit(phy_size);
 
