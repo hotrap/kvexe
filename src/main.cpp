@@ -1079,7 +1079,7 @@ int main(int argc, char **argv) {
   if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
     updater = new VisCntsUpdater2(work_options, options, first_level_in_sd,
                                   options.db_paths[0].target_size * 0.7,
-                                  options.db_paths[0].target_size * 0.1, 5e5,
+                                  options.db_paths[0].target_size * 0.05, 5e5,
                                   20e9, *router);
   }
 
