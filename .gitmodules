@@ -6,4 +6,4 @@
 	url = https://github.com/seekstar/counter-timer-cpp.git
 [submodule "3rdparty/ycsbgen"]
 	path = 3rdparty/ycsbgen
-	url = git@github.com:hotrap/YCSBGenerator.git
+	url = https://github.com/hotrap/YCSBGenerator.git
