@@ -48,7 +48,7 @@ void calculate_multiplier_addtional(
     size_t first_level_in_sd,
     std::vector<double> &max_bytes_for_level_multiplier_additional,
     const rocksdb::Options &options, uint64_t fd_size,
-    uint64_t max_hot_set_size) {
+    uint64_t &hot_set_size_limit) {
   rusty_assert_eq(options.db_paths.size(), (size_t)2);
   rusty_assert(max_bytes_for_level_multiplier_additional.empty());
   // It seems that L0 and L1 are not affected by
@@ -68,12 +68,21 @@ void calculate_multiplier_addtional(
   // Multiply 0.99 to make room for floating point error
   max_bytes_for_level_multiplier_additional.push_back(
       (double)last_level_in_fd_size / level_size * 0.99);
-  rusty_assert(last_level_in_fd_size > max_hot_set_size,
-               "Physical size of RALT is too large!");
+  uint64_t min_effective_size_of_last_level_in_fd =
+      last_level_in_fd / options.max_bytes_for_level_multiplier;
+  uint64_t max_hot_set_size =
+      last_level_in_fd_size - min_effective_size_of_last_level_in_fd;
+  if (hot_set_size_limit > max_hot_set_size) {
+    // to avoid making the size of the first level in the slow disk too small
+    hot_set_size_limit = max_hot_set_size;
+    std::cerr << "Reduce hot_set_size_limit to " << hot_set_size_limit
+              << std::endl;
+  }
   uint64_t last_level_in_fd_effective_size =
-      last_level_in_fd_size - max_hot_set_size;
-  uint64_t first_level_in_sd_size =
-      last_level_in_fd_effective_size * options.max_bytes_for_level_multiplier;
+      last_level_in_fd_size - hot_set_size_limit;
+  uint64_t first_level_in_sd_size = std::max(
+      last_level_in_fd_effective_size * options.max_bytes_for_level_multiplier,
+      last_level_in_fd_size * 1.01);
   max_bytes_for_level_multiplier_additional.push_back(
       (double)first_level_in_sd_size /
       (last_level_in_fd_size * options.max_bytes_for_level_multiplier));
@@ -597,13 +606,13 @@ class VisCntsUpdater2 {
         router_.get_vc().SetPhysicalSizeLimit(phy_size);
 
         uint64_t fd_size = options_.db_paths[0].target_size - phy_size;
-        uint64_t max_hot_set_size = router_.get_vc().GetHotSetSizeLimit();
+        uint64_t hot_set_size_limit = router_.get_vc().GetHotSetSizeLimit();
         std::cerr << "fd_size " << fd_size << std::endl;
-        std::cerr << "max_hot_set_size " << max_hot_set_size << std::endl;
+        std::cerr << "max_hot_set_size " << hot_set_size_limit << std::endl;
         max_bytes_for_level_multiplier_additional.clear();
         calculate_multiplier_addtional(
             first_level_in_sd_, max_bytes_for_level_multiplier_additional,
-            options_, fd_size, max_hot_set_size);
+            options_, fd_size, hot_set_size_limit);
         std::ostringstream out;
         for (size_t i = 0; i < max_bytes_for_level_multiplier_additional.size();
              ++i) {
@@ -963,7 +972,7 @@ int main(int argc, char **argv) {
   }
   po::notify(vm);
 
-  uint64_t max_hot_set_size = arg_max_hot_set_size;
+  uint64_t hot_set_size_limit = arg_max_hot_set_size;
   uint64_t max_viscnts_size = arg_max_viscnts_size;
 
   if (vm.count("load")) {
@@ -1029,7 +1038,7 @@ int main(int argc, char **argv) {
   options.max_bytes_for_level_multiplier_additional.clear();
   calculate_multiplier_addtional(
       first_level_in_sd, options.max_bytes_for_level_multiplier_additional,
-      options, fd_size, max_hot_set_size);
+      options, fd_size, hot_set_size_limit);
   std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
   print_vector(options.max_bytes_for_level_multiplier_additional);
   std::cerr << std::endl;
@@ -1049,9 +1058,9 @@ int main(int argc, char **argv) {
   VisCntsUpdater2 *updater = nullptr;
   if (first_level_in_sd != 0) {
     router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                               first_level_in_sd - 1, max_hot_set_size,
-                               max_viscnts_size, switches, max_hot_set_size,
-                               max_hot_set_size, vm.count("enable_sampling"));
+                               first_level_in_sd - 1, hot_set_size_limit,
+                               max_viscnts_size, switches, hot_set_size_limit,
+                               hot_set_size_limit, vm.count("enable_sampling"));
 
     options.compaction_router = router;
   }
