@@ -72,12 +72,8 @@ void calculate_multiplier_addtional(
       last_level_in_fd / options.max_bytes_for_level_multiplier;
   uint64_t max_hot_set_size =
       last_level_in_fd_size - min_effective_size_of_last_level_in_fd;
-  if (hot_set_size_limit > max_hot_set_size) {
-    // to avoid making the size of the first level in the slow disk too small
-    hot_set_size_limit = max_hot_set_size;
-    std::cerr << "Reduce hot_set_size_limit to " << hot_set_size_limit
-              << std::endl;
-  }
+  // to avoid making the size of the first level in the slow disk too small
+  hot_set_size_limit = std::min(hot_set_size_limit, max_hot_set_size);
   uint64_t last_level_in_fd_effective_size =
       last_level_in_fd_size - hot_set_size_limit;
   uint64_t first_level_in_sd_size = std::max(
@@ -580,6 +576,7 @@ class VisCntsUpdater2 {
  private:
   void update_thread() {
     std::vector<double> max_bytes_for_level_multiplier_additional;
+    bool first = true;
     while (!stop_signal_) {
       std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
       if (stop_signal_) {
@@ -587,11 +584,9 @@ class VisCntsUpdater2 {
       }
       if (router_.get_vc().DecayCount() > 10) {
         VisCnts &vc = router_.get_vc();
-        if (vc.GetMinHotSetSizeLimit() != min_vc_hot_set_size_) {
+        if (first) {
+          first = false;
           vc.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
-        }
-        if (vc.GetMaxHotSetSizeLimit() != max_vc_hot_set_size_) {
-          vc.SetMaxHotSetSizeLimit(max_vc_hot_set_size_);
         }
         double hs_step = max_vc_hot_set_size_ / 20.0;
         uint64_t real_phy_size = vc.GetRealPhySize();
@@ -610,9 +605,18 @@ class VisCntsUpdater2 {
         std::cerr << "fd_size " << fd_size << std::endl;
         std::cerr << "max_hot_set_size " << hot_set_size_limit << std::endl;
         max_bytes_for_level_multiplier_additional.clear();
+        uint64_t hot_set_size_limit_ori = hot_set_size_limit;
         calculate_multiplier_addtional(
             first_level_in_sd_, max_bytes_for_level_multiplier_additional,
             options_, fd_size, hot_set_size_limit);
+        if (hot_set_size_limit < hot_set_size_limit_ori) {
+          std::cerr << "SetMaxHotSetSizeLimit " << hot_set_size_limit
+                    << std::endl;
+          vc.SetMaxHotSetSizeLimit(hot_set_size_limit);
+        } else {
+          rusty_assert_eq(hot_set_size_limit, hot_set_size_limit_ori);
+          vc.SetMaxHotSetSizeLimit(max_vc_hot_set_size_);
+        }
         std::ostringstream out;
         for (size_t i = 0; i < max_bytes_for_level_multiplier_additional.size();
              ++i) {
