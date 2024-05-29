@@ -238,9 +238,9 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
 
-  bool IsStablyHot(rocksdb::Slice key) override {
-    auto guard = timers.timer(TimerType::kIsStablyHot).start();
-    return vc_.IsStablyHot(key);
+  bool IsHot(rocksdb::Slice key) override {
+    auto guard = timers.timer(TimerType::kIsHot).start();
+    return vc_.IsHot(key);
   }
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
@@ -585,7 +585,7 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
       << "Timestamp(ns) by-flush 2fdlast 2sdfront retained\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
-  not_promoted_bytes_out << "Timestamp(ns) not-stably-hot has-newer-version\n";
+  not_promoted_bytes_out << "Timestamp(ns) not-hot has-newer-version\n";
 
   std::ofstream num_accesses_out(db_path / "num-accesses");
 
@@ -695,7 +695,7 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
     not_promoted_bytes_out
         << timestamp << ' '
-        << stats->getTickerCount(rocksdb::NOT_STABLY_HOT_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::ACCESSED_COLD_BYTES) << ' '
         << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
     num_accesses_out << timestamp;
@@ -1121,9 +1121,8 @@ int main(int argc, char **argv) {
   if (work_options.run) {
     auto info_json_locked = info_json.lock();
     *info_json_locked
-        << "\t\"IsStablyHot(secs)\": "
-        << timers.timer(TimerType::kIsStablyHot).time().as_secs_double()
-        << ",\n"
+        << "\t\"IsHot(secs)\": "
+        << timers.timer(TimerType::kIsHot).time().as_secs_double() << ",\n"
         << "\t\"LowerBound(secs)\": "
         << timers.timer(TimerType::kLowerBound).time().as_secs_double() << ",\n"
         << "\t\"RangeHotSize(secs)\": "
