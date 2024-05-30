@@ -625,7 +625,13 @@ class Tester {
       if (!trace) {
         break;
       }
-      if (op == "INSERT") {
+      if (op == "INSERT" || op == "UPDATE") {
+        YCSBGen::OpType type;
+        if (op == "INSERT") {
+          type = YCSBGen::OpType::INSERT;
+        } else {
+          type = YCSBGen::OpType::UPDATE;
+        }
         if (options_.format_type == FormatType::YCSB) {
           handle_table_name(trace);
         }
@@ -634,13 +640,12 @@ class Tester {
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
+        std::vector<char> value;
         if (options_.format_type == FormatType::YCSB) {
-          opblocks[i].Push(YCSBGen::Operation(
-              YCSBGen::OpType::INSERT, std::move(key), read_value(trace)));
+          value = read_value(trace);
         } else {
           rusty_assert_eq(trace.get(), ' ');
           char c;
-          std::vector<char> value;
           if (options_.format_type == FormatType::Plain) {
             while ((c = trace.get()) != '\n' && c != EOF) {
               value.push_back(c);
@@ -653,9 +658,9 @@ class Tester {
             memcpy(value.data(), key.data(), copied);
             memset(value.data() + copied, '0', value_length - copied);
           }
-          opblocks[i].Push(YCSBGen::Operation(
-              YCSBGen::OpType::INSERT, std::move(key), std::move(value)));
         }
+        opblocks[i].Push(YCSBGen::Operation(type,
+                                            std::move(key), std::move(value)));
         parse_counts_++;
       } else if (op == "READ") {
         std::string key;
@@ -671,19 +676,6 @@ class Tester {
                     : hasher(key) % options_.num_threads;
         opblocks[i].Push(
             YCSBGen::Operation(YCSBGen::OpType::READ, std::move(key), {}));
-        parse_counts_++;
-      } else if (op == "UPDATE") {
-        if (options_.format_type == FormatType::Plain) {
-          rusty_panic("UPDATE in plain format is not supported yet\n");
-        }
-        handle_table_name(trace);
-        std::string key;
-        trace >> key;
-        int i = options_.enable_fast_process
-                    ? 0
-                    : hasher(key) % options_.num_threads;
-        opblocks[i].Push(YCSBGen::Operation(YCSBGen::OpType::UPDATE,
-                                            std::move(key), read_value(trace)));
         parse_counts_++;
       } else if (op == "DELETE") {
         std::string key;
