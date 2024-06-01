@@ -21,6 +21,7 @@
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
+#include <cinttypes>
 #include <condition_variable>
 #include <counter_timer.hpp>
 #include <cstddef>
@@ -629,9 +630,10 @@ class Tester {
             size_t value_length;
             trace >> value_length;
             value.resize(value_length);
-            size_t copied = std::min(key.size(), value_length);
-            memcpy(value.data(), key.data(), copied);
-            memset(value.data() + copied, '0', value_length - copied);
+            size_t written =
+                snprintf(value.data(), value.size(), "%" PRIu64, parse_counts_);
+            value_length -= written;
+            memset(value.data() + written, '-', value_length);
           }
         }
         opblocks[i].Push(YCSBGen::Operation(type,
