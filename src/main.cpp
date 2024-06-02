@@ -452,7 +452,6 @@ int main(int argc, char **argv) {
     }
 
     /* Operation counts*/
-    log << "operation counts: " << tester.GetOpParseCounts() << "\n";
     log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
     log << "stat end===" << std::endl;
   };
