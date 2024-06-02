@@ -369,10 +369,11 @@ class Tester {
         latency_out_ = std::make_optional<std::ofstream>(
             options_.db_path / ("latency-" + std::to_string(id_)));
       }
-
-      if (options_.rate_limiter) {
-        options_.rate_limiter->SetBytesPerSecond(
-            std::numeric_limits<int64_t>::max());
+    }
+    void maybe_enable_key_hit_level() {
+      if (options_.switches & MASK_KEY_HIT_LEVEL) {
+        get_key_hit_level_out() = std::make_optional<std::ofstream>(
+            options_.db_path / ("key-hit-level-" + std::to_string(id_)));
       }
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
@@ -385,16 +386,13 @@ class Tester {
         tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
       }
 
+      maybe_enable_key_hit_level();
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
                     options_.db_path /
                     (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
-      if (options_.switches & MASK_KEY_HIT_LEVEL) {
-        get_key_hit_level_out() = std::make_optional<std::ofstream>(
-            options_.db_path / (std::to_string(id_) + "_key_hit_level"));
-      }
       std::string value;
       while (!runner.IsEOF()) {
         auto op = runner.GetNextOp(rndgen);
@@ -411,6 +409,8 @@ class Tester {
       }
     }
     void work(BlockChannel<YCSBGen::Operation>& chan) {
+      maybe_enable_key_hit_level();
+
       std::string value;
       for (;;) {
         auto block = chan.GetBlock();
@@ -777,6 +777,11 @@ class Tester {
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     for (auto& worker : workers_) {
       worker.prepare_run_phase();
+    }
+
+    if (options_.rate_limiter) {
+      options_.rate_limiter->SetBytesPerSecond(
+          std::numeric_limits<int64_t>::max());
     }
 
     options_.db->SetOptions(
