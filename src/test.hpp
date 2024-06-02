@@ -311,8 +311,6 @@ class Tester {
                           << std::endl;
   }
 
-  uint64_t GetOpParseCounts() const { return parse_counts_; }
-
   uint64_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
   }
@@ -574,7 +572,7 @@ class Tester {
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(std::istream& trace) {
+  void parse(const char* value_prefix, std::istream& trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
@@ -595,6 +593,7 @@ class Tester {
 
     std::hash<std::string> hasher{};
 
+    uint64_t parse_counts = 0;
     while (1) {
       std::string op;
       trace >> op;
@@ -630,15 +629,14 @@ class Tester {
             size_t value_length;
             trace >> value_length;
             value.resize(value_length);
-            size_t written =
-                snprintf(value.data(), value.size(), "%" PRIu64, parse_counts_);
+            size_t written = snprintf(value.data(), value.size(), "%s%" PRIu64,
+                                      value_prefix, parse_counts);
             value_length -= written;
             memset(value.data() + written, '-', value_length);
           }
         }
-        opblocks[i].Push(YCSBGen::Operation(type,
-                                            std::move(key), std::move(value)));
-        parse_counts_++;
+        opblocks[i].Push(
+            YCSBGen::Operation(type, std::move(key), std::move(value)));
       } else if (op == "READ") {
         std::string key;
         if (options_.format_type == FormatType::YCSB) {
@@ -653,7 +651,6 @@ class Tester {
                     : hasher(key) % options_.num_threads;
         opblocks[i].Push(
             YCSBGen::Operation(YCSBGen::OpType::READ, std::move(key), {}));
-        parse_counts_++;
       } else if (op == "DELETE") {
         std::string key;
         rusty_assert(options_.format_type == FormatType::Plain ||
@@ -664,12 +661,13 @@ class Tester {
                     : hasher(key) % options_.num_threads;
         opblocks[i].Push(
             YCSBGen::Operation(YCSBGen::OpType::DELETE, std::move(key), {}));
-        parse_counts_++;
       } else {
         std::cerr << "Ignore line: " << op;
         std::getline(trace, op);  // Skip the rest of the line
         std::cerr << op << std::endl;
+        continue;
       }
+      parse_counts += 1;
     }
 
     for (auto& o : opblocks) {
@@ -898,7 +896,7 @@ class Tester {
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
-      parse(trace);
+      parse("load-", trace);
       finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
@@ -912,7 +910,7 @@ class Tester {
 
       prepare_run_phase(info_json_out);
       auto start = rusty::time::Instant::now();
-      parse(trace);
+      parse("run-", trace);
       finish_run_phase(info_json_out, start);
     }
   }
@@ -920,7 +918,6 @@ class Tester {
   WorkOptions options_;
   std::vector<Worker> workers_;
 
-  uint64_t parse_counts_{0};
   std::atomic<uint64_t> notfound_counts_{0};
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
