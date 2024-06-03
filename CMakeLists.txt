@@ -18,6 +18,8 @@ add_executable(${PROJECT_NAME} ${SRCS})
 
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
 target_link_libraries(${PROJECT_NAME}
+	PUBLIC
+		xxhash
 	PRIVATE
 		RocksCachelibWrapper
 		counter-timer
