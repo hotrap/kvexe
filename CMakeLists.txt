@@ -25,6 +25,7 @@ target_link_libraries(${PROJECT_NAME}
 		dl
 		rocksdb
 		pthread
+		xxhash
 	PRIVATE
 		counter-timer-vec
 		boost_program_options
