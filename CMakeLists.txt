@@ -21,6 +21,7 @@ target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		rocksdb
 		pthread
+		xxhash
 	PRIVATE
 		counter-timer
 		boost_program_options

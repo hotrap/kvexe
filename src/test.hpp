@@ -12,6 +12,7 @@
 #include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
+#include <xxhash.h>
 
 #include <algorithm>
 #include <atomic>
@@ -278,9 +279,8 @@ struct WorkOptions {
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   double db_paths_soft_size_limit_multiplier;
   bool export_key_only_trace{false};
+  bool export_ans_xxh64{false};
 };
-
-void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
@@ -356,6 +356,21 @@ class Tester {
       if (options_.switches & MASK_LATENCY) {
         latency_out_ = std::make_optional<std::ofstream>(
             options_.db_path / ("latency-" + std::to_string(id_)));
+      }
+      if (options_.export_ans_xxh64) {
+        ans_xxhash_state_ = XXH64_createState();
+        rusty_assert(ans_xxhash_state_);
+        XXH64_reset(ans_xxhash_state_, 0);
+      }
+    }
+    void finish_run_phase() {
+      if (ans_xxhash_state_) {
+        std::ofstream(options_.db_path /
+                      ("ans-" + std::to_string(id_) + ".xxh64"))
+            << std::hex << std::setw(16) << std::setfill('0')
+            << XXH64_digest(ans_xxhash_state_) << std::endl;
+        XXH64_freeState(ans_xxhash_state_);
+        ans_xxhash_state_ = nullptr;
       }
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
@@ -529,12 +544,23 @@ class Tester {
           break;
         case YCSBGen::OpType::READ: {
           bool found = do_read(op, value);
+          std::string_view ans;
+          if (found) {
+            ans = std::string_view(value->data(), value->size());
+          } else {
+            ans = std::string_view(nullptr, 0);
+          };
+          if (ans_xxhash_state_) {
+            rusty_assert_eq(
+                XXH64_update(ans_xxhash_state_, ans.data(), ans.size()),
+                XXH_OK);
+            static const char delimiter = '\n';
+            rusty_assert_eq(
+                XXH64_update(ans_xxhash_state_, &delimiter, sizeof(delimiter)),
+                XXH_OK);
+          }
           if (ans_out_) {
-            if (found) {
-              print_ans(ans_out_.value(), *value);
-            } else {
-              print_ans(ans_out_.value(), "");
-            }
+            ans_out_.value() << ans << '\n';
           }
           if (!found) {
             local_notfound_counts++;
@@ -568,6 +594,7 @@ class Tester {
     uint64_t local_notfound_counts{0};
     uint64_t local_read_progress{0};
     uint64_t scanned_{0};
+    XXH64_state_t* ans_xxhash_state_{nullptr};
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
@@ -787,6 +814,10 @@ class Tester {
                           << std::endl;
     rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
     std::ofstream(options_.db_path / "rocksdb-stats.txt") << rocksdb_stats;
+
+    for (auto& worker : workers_) {
+      worker.finish_run_phase();
+    }
   }
 
   void GenerateAndExecute(
