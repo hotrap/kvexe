@@ -348,7 +348,6 @@ class Tester {
         : tester_(tester),
           id_(id),
           options_(tester.options_),
-          ignore_notfound(options_.enable_fast_process),
           notfound_counts_(tester.notfound_counts_),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
@@ -469,7 +468,7 @@ class Tester {
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
-        if (s.IsNotFound() && ignore_notfound) {
+        if (s.IsNotFound()) {
           return false;
         } else {
           std::string err = s.ToString();
@@ -492,9 +491,7 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound && ignore_notfound) {
-          value = "";
-        } else {
+        if (s.code() == rocksdb::Status::kNotFound) {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
@@ -609,7 +606,6 @@ class Tester {
     const WorkOptions& options_;
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
-    bool ignore_notfound{false};
     std::atomic<uint64_t>& notfound_counts_;
 
     uint64_t local_notfound_counts{0};
