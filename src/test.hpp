@@ -672,11 +672,14 @@ class Tester {
           } else {
             size_t value_length;
             trace >> value_length;
+            rusty_assert(value_length > 0);
             value.resize(value_length);
-            size_t written = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                                      value_prefix, parse_counts);
-            value_length -= written;
-            memset(value.data() + written, '-', value_length);
+            int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
+                               value_prefix, parse_counts);
+            rusty_assert(ret > 0);
+            if ((size_t)ret < value_length) {
+              memset(value.data() + ret, '-', value_length - ret);
+            }
           }
         }
         opblocks[i].Push(
