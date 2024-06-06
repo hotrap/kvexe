@@ -651,7 +651,6 @@ class Tester {
           } else {
             size_t value_length;
             trace >> value_length;
-            rusty_assert(value_length > 0);
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
                                value_prefix, parse_counts);
