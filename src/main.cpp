@@ -269,8 +269,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return vc_.GetIntProperty(property, value);
   }
 
-  std::vector<size_t> hit_hot_count() {
-    std::vector<size_t> ret;
+  std::vector<uint64_t> hit_hot_count() {
+    std::vector<uint64_t> ret;
     for (size_t i = 0; i < 2; ++i)
       ret.push_back(
           count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
@@ -315,8 +315,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   VisCnts vc_;
   int tier0_last_level_;
 
-  std::atomic<size_t> count_access_hot_per_tier_[2];
-  std::atomic<size_t> level_hits_[MAX_NUM_LEVELS];
+  std::atomic<uint64_t> count_access_hot_per_tier_[2];
+  std::atomic<uint64_t> level_hits_[MAX_NUM_LEVELS];
   bool enable_sampling_{false};
 };
 
