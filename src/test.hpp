@@ -9,6 +9,7 @@
 #include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
+#include <xxhash.h>
 
 #include <algorithm>
 #include <atomic>
@@ -18,6 +19,7 @@
 #include <boost/program_options/variables_map.hpp>
 #include <cctype>
 #include <chrono>
+#include <cinttypes>
 #include <condition_variable>
 #include <counter_timer.hpp>
 #include <cstddef>
@@ -68,25 +70,20 @@ enum class FormatType {
   YCSB,
 };
 
-enum class OpType {
-  INSERT,
-  READ,
-  UPDATE,
-  RMW,
-  DELETE,
-};
-static inline const char* to_string(OpType type) {
+static inline const char* to_string(YCSBGen::OpType type) {
   switch (type) {
-    case OpType::INSERT:
+    case YCSBGen::OpType::INSERT:
       return "INSERT";
-    case OpType::READ:
+    case YCSBGen::OpType::READ:
       return "READ";
-    case OpType::UPDATE:
+    case YCSBGen::OpType::UPDATE:
       return "UPDATE";
-    case OpType::RMW:
+    case YCSBGen::OpType::RMW:
       return "RMW";
-    case OpType::DELETE:
+    case YCSBGen::OpType::DELETE:
       return "DELETE";
+    case YCSBGen::OpType::SCAN:
+      return "SCAN";
   }
   rusty_panic();
 }
@@ -95,6 +92,7 @@ enum class TimerType : size_t {
   kPut,
   kGet,
   kDelete,
+  kScan,
   kInputOperation,
   kInputInsert,
   kInputRead,
@@ -107,8 +105,9 @@ enum class TimerType : size_t {
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Put",       "Get",         "Delete", "InputOperation", "InputInsert",
-    "InputRead", "InputUpdate", "Output", "Serialize",      "Deserialize",
+    "Put",         "Get",       "Delete",      "Scan",   "InputOperation",
+    "InputInsert", "InputRead", "InputUpdate", "Output", "Serialize",
+    "Deserialize",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
@@ -116,24 +115,10 @@ static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 static std::atomic<time_t> put_cpu_nanos(0);
 static std::atomic<time_t> get_cpu_nanos(0);
 static std::atomic<time_t> delete_cpu_nanos(0);
+static std::atomic<time_t> scan_cpu_nanos(0);
 
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
-
-struct Operation {
-  OpType type;
-  std::string key;
-  std::vector<char> value;
-
-  Operation() {}
-
-  Operation(OpType _type, const std::string& _key,
-            const std::vector<char>& _value)
-      : type(_type), key(_key), value(_value) {}
-
-  Operation(OpType _type, std::string&& _key, std::vector<char>&& _value)
-      : type(_type), key(std::move(_key)), value(std::move(_value)) {}
-};
 
 template <typename T>
 class BlockChannel {
@@ -231,8 +216,8 @@ class BlockChannelClient {
 struct WorkOptions {
   bool load{false};
   bool run{false};
-  std::optional<std::filesystem::path> load_trace;
-  std::optional<std::filesystem::path> run_trace;
+  std::string load_trace;
+  std::string run_trace;
   FormatType format_type;
   leveldb::DB* db;
   uint64_t switches;
@@ -245,13 +230,12 @@ struct WorkOptions {
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   bool export_key_only_trace{false};
+  bool export_ans_xxh64{false};
 
   size_t num_keys;  // The number of keys after load phase and run phase.
 };
 
-void print_ans(std::ofstream& out, std::string value) { out << value << '\n'; }
-
-void print_latency(std::ofstream& out, OpType op, uint64_t nanos) {
+void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
 
@@ -277,9 +261,14 @@ class Tester {
     } else {
       ReadAndExecute(info_json_out);
     }
-  }
 
-  uint64_t GetOpParseCounts() const { return parse_counts_; }
+    uint64_t scanned = 0;
+    for (const auto& worker : workers_) {
+      scanned += worker.scanned();
+    }
+    *info_json_out.lock() << "\t\"scanned-records\": " << scanned << ","
+                          << std::endl;
+  }
 
   uint64_t GetNotFoundCounts() const {
     return notfound_counts_.load(std::memory_order_relaxed);
@@ -292,7 +281,6 @@ class Tester {
         : tester_(tester),
           id_(id),
           options_(tester.options_),
-          ignore_notfound(options_.enable_fast_process),
           notfound_counts_(tester.notfound_counts_),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
@@ -300,13 +288,11 @@ class Tester {
                        : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      Operation op;
+      YCSBGen::Operation op;
       while (!loader.IsEOF()) {
-        auto ycsb_op = loader.GetNextOp();
-        op.key = gen_prism_key(ycsb_op.key, 0, options_.num_keys);
-        op.value = std::move(ycsb_op.value);
-        rusty_assert(ycsb_op.type == YCSBGen::OpType::INSERT);
-        op.type = OpType::INSERT;
+        auto op = loader.GetNextOp();
+        op.key = gen_prism_key(op.key, 0, options_.num_keys);
+        rusty_assert(op.type == YCSBGen::OpType::INSERT);
         do_put(op);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
@@ -316,11 +302,25 @@ class Tester {
         latency_out_ = std::make_optional<std::ofstream>(
             options_.db_path / ("latency-" + std::to_string(id_)));
       }
+      if (options_.export_ans_xxh64) {
+        ans_xxhash_state_ = XXH64_createState();
+        rusty_assert(ans_xxhash_state_);
+        XXH64_reset(ans_xxhash_state_, 0);
+      }
+    }
+    void finish_run_phase() {
+      if (ans_xxhash_state_) {
+        std::ofstream(options_.db_path /
+                      ("ans-" + std::to_string(id_) + ".xxh64"))
+            << std::hex << std::setw(16) << std::setfill('0')
+            << XXH64_digest(ans_xxhash_state_) << std::endl;
+        XXH64_freeState(ans_xxhash_state_);
+        ans_xxhash_state_ = nullptr;
+      }
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
-      Operation op;
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -329,23 +329,8 @@ class Tester {
               : std::nullopt;
       std::string value(4096, 0);
       while (!runner.IsEOF()) {
-        auto ycsb_op = runner.GetNextOp(rndgen);
-        op.key = gen_prism_key(ycsb_op.key, 0, options_.num_keys);
-        op.value = std::move(ycsb_op.value);
-        switch (ycsb_op.type) {
-          case YCSBGen::OpType::INSERT:
-            op.type = OpType::INSERT;
-            break;
-          case YCSBGen::OpType::READ:
-            op.type = OpType::READ;
-            break;
-          case YCSBGen::OpType::UPDATE:
-            op.type = OpType::UPDATE;
-            break;
-          case YCSBGen::OpType::RMW:
-            op.type = OpType::RMW;
-            break;
-        }
+        auto op = runner.GetNextOp(rndgen);
+        op.key = gen_prism_key(op.key, 0, options_.num_keys);
         if (key_only_trace_out.has_value())
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
@@ -353,22 +338,24 @@ class Tester {
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
-    void work(BlockChannel<Operation>& chan) {
+    void work(BlockChannel<YCSBGen::Operation>& chan) {
       std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
         }
-        for (const Operation& op : block) {
+        for (const YCSBGen::Operation& op : block) {
           process_op(op, &value);
           options_.progress->fetch_add(1, std::memory_order_relaxed);
         }
       }
     }
 
+    uint64_t scanned() const { return scanned_; }
+
    private:
-    void do_put(const Operation& put) {
+    void do_put(const YCSBGen::Operation& put) {
       time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
@@ -389,14 +376,14 @@ class Tester {
     }
 
     // Return found or not
-    bool do_read(const Operation& read, std::string* value) {
+    bool do_read(const YCSBGen::Operation& read, std::string* value) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       if (!s.ok()) {
-        if (s.IsNotFound() && ignore_notfound) {
+        if (s.IsNotFound()) {
           return false;
         } else {
           std::string err = s.ToString();
@@ -406,21 +393,20 @@ class Tester {
       timers.timer(TimerType::kGet).add(get_time);
       get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
-        print_latency(latency_out_.value(), OpType::READ, get_time.as_nanos());
+        print_latency(latency_out_.value(), YCSBGen::OpType::READ,
+                      get_time.as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       return true;
     }
 
-    void do_read_modify_write(const Operation& op) {
+    void do_read_modify_write(const YCSBGen::Operation& op) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.IsNotFound() && ignore_notfound) {
-          value = "";
-        } else {
+        if (s.IsNotFound()) {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
@@ -439,13 +425,13 @@ class Tester {
       get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
       put_cpu_nanos.fetch_add(put_cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
-        print_latency(latency_out_.value(), OpType::RMW,
+        print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
       options_.progress_get->fetch_add(1, std::memory_order_relaxed);
     }
 
-    void do_delete(const Operation& op) {
+    void do_delete(const YCSBGen::Operation& op) {
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       auto s = options_.db->Delete(write_options_, op.key);
@@ -458,24 +444,58 @@ class Tester {
       timers.timer(TimerType::kDelete).add(time);
       delete_cpu_nanos.fetch_add(cpu_ns, std::memory_order_relaxed);
       if (latency_out_) {
-        print_latency(latency_out_.value(), OpType::DELETE, time.as_nanos());
+        print_latency(latency_out_.value(), YCSBGen::OpType::DELETE,
+                      time.as_nanos());
       }
     }
 
-    void process_op(const Operation& op, std::string* value) {
+    void do_scan(const YCSBGen::Operation& op) {
+      time_t cpu_start = cpu_timestamp_ns();
+      auto start = rusty::time::Instant::now();
+      {
+        std::unique_ptr<leveldb::Iterator> it(
+            options_.db->NewIterator(read_options_));
+        it->Seek(op.key);
+        for (size_t i = 0; i < op.scan_len && it->Valid(); ++i) {
+          ++scanned_;
+          it->Next();
+        }
+      }
+      auto time = start.elapsed();
+      time_t cpu_ns = cpu_timestamp_ns() - cpu_start;
+      timers.timer(TimerType::kScan).add(time);
+      scan_cpu_nanos.fetch_add(cpu_ns, std::memory_order_relaxed);
+      if (latency_out_) {
+        print_latency(latency_out_.value(), YCSBGen::OpType::SCAN,
+                      time.as_nanos());
+      }
+    }
+
+    void process_op(const YCSBGen::Operation& op, std::string* value) {
       switch (op.type) {
-        case OpType::INSERT:
-        case OpType::UPDATE:
+        case YCSBGen::OpType::INSERT:
+        case YCSBGen::OpType::UPDATE:
           do_put(op);
           break;
-        case OpType::READ: {
+        case YCSBGen::OpType::READ: {
           bool found = do_read(op, value);
+          std::string_view ans;
+          if (found) {
+            ans = std::string_view(value->data(), value->size());
+          } else {
+            ans = std::string_view(nullptr, 0);
+          };
+          if (ans_xxhash_state_) {
+            rusty_assert_eq(
+                XXH64_update(ans_xxhash_state_, ans.data(), ans.size()),
+                XXH_OK);
+            static const char delimiter = '\n';
+            rusty_assert_eq(
+                XXH64_update(ans_xxhash_state_, &delimiter, sizeof(delimiter)),
+                XXH_OK);
+          }
           if (ans_out_) {
-            if (found) {
-              print_ans(ans_out_.value(), *value);
-            } else {
-              print_ans(ans_out_.value(), "");
-            }
+            ans_out_.value() << ans << '\n';
           }
           if (!found) {
             local_notfound_counts++;
@@ -486,11 +506,14 @@ class Tester {
           }
           local_read_progress++;
         } break;
-        case OpType::RMW:
+        case YCSBGen::OpType::RMW:
           do_read_modify_write(op);
           break;
-        case OpType::DELETE:
+        case YCSBGen::OpType::DELETE:
           do_delete(op);
+          break;
+        case YCSBGen::OpType::SCAN:
+          do_scan(op);
           break;
       }
     }
@@ -500,21 +523,23 @@ class Tester {
     const WorkOptions& options_;
     leveldb::ReadOptions read_options_;
     leveldb::WriteOptions write_options_;
-    bool ignore_notfound{false};
     std::atomic<uint64_t>& notfound_counts_;
 
     uint64_t local_notfound_counts{0};
     uint64_t local_read_progress{0};
+    uint64_t scanned_{0};
+    XXH64_state_t* ans_xxhash_state_{nullptr};
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(std::istream& trace) {
+  void parse(const char* value_prefix, std::istream& trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
-    std::vector<BlockChannel<Operation>> channel_for_workers(num_channels);
+    std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
+        num_channels);
 
-    std::vector<BlockChannelClient<Operation>> opblocks;
+    std::vector<BlockChannelClient<YCSBGen::Operation>> opblocks;
     for (auto& channel : channel_for_workers) {
       opblocks.emplace_back(&channel, options_.opblock_size);
     }
@@ -532,13 +557,20 @@ class Tester {
     size_t key_num = options_.num_keys;
     size_t key_id_pre = 0;
 
+    uint64_t parse_counts = 0;
     while (1) {
       std::string op;
       trace >> op;
       if (!trace) {
         break;
       }
-      if (op == "INSERT") {
+      if (op == "INSERT" || op == "UPDATE") {
+        YCSBGen::OpType type;
+        if (op == "INSERT") {
+          type = YCSBGen::OpType::INSERT;
+        } else {
+          type = YCSBGen::OpType::UPDATE;
+        }
         if (options_.format_type == FormatType::YCSB) {
           handle_table_name(trace);
         }
@@ -547,14 +579,12 @@ class Tester {
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
+        std::vector<char> value;
         if (options_.format_type == FormatType::YCSB) {
-          opblocks[i].Push(Operation(OpType::INSERT,
-                                     gen_prism_key(key, key_id_pre, key_num),
-                                     read_value(trace)));
+          value = read_value(trace);
         } else {
           rusty_assert_eq(trace.get(), ' ');
           char c;
-          std::vector<char> value;
           if (options_.format_type == FormatType::Plain) {
             while ((c = trace.get()) != '\n' && c != EOF) {
               value.push_back(c);
@@ -563,15 +593,16 @@ class Tester {
             size_t value_length;
             trace >> value_length;
             value.resize(value_length);
-            size_t copied = std::min(key.size(), value_length);
-            memcpy(value.data(), key.data(), copied);
-            memset(value.data() + copied, '0', value_length - copied);
+            int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
+                               value_prefix, parse_counts);
+            rusty_assert(ret > 0);
+            if ((size_t)ret < value_length) {
+              memset(value.data() + ret, '-', value_length - ret);
+            }
           }
-          opblocks[i].Push(Operation(OpType::INSERT,
-                                     gen_prism_key(key, key_id_pre, key_num),
-                                     std::move(value)));
         }
-        parse_counts_++;
+        opblocks[i].Push(YCSBGen::Operation(
+            type, gen_prism_key(key, key_id_pre, key_num), std::move(value)));
       } else if (op == "READ") {
         std::string key;
         if (options_.format_type == FormatType::YCSB) {
@@ -584,23 +615,9 @@ class Tester {
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(
-            OpType::READ, gen_prism_key(key, key_id_pre, key_num), {}));
-        parse_counts_++;
-      } else if (op == "UPDATE") {
-        if (options_.format_type == FormatType::Plain) {
-          rusty_panic("UPDATE in plain format is not supported yet\n");
-        }
-        handle_table_name(trace);
-        std::string key;
-        trace >> key;
-        int i = options_.enable_fast_process
-                    ? 0
-                    : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(OpType::UPDATE,
-                                   gen_prism_key(key, key_id_pre, key_num),
-                                   read_value(trace)));
-        parse_counts_++;
+        key = gen_prism_key(key, key_id_pre, key_num);
+        opblocks[i].Push(
+            YCSBGen::Operation(YCSBGen::OpType::READ, std::move(key), {}));
       } else if (op == "DELETE") {
         std::string key;
         rusty_assert(options_.format_type == FormatType::Plain ||
@@ -609,14 +626,16 @@ class Tester {
         int i = options_.enable_fast_process
                     ? 0
                     : hasher(key) % options_.num_threads;
-        opblocks[i].Push(Operation(
-            OpType::DELETE, gen_prism_key(key, key_id_pre, key_num), {}));
-        parse_counts_++;
+        opblocks[i].Push(
+            YCSBGen::Operation(YCSBGen::OpType::DELETE,
+                               gen_prism_key(key, key_id_pre, key_num), {}));
       } else {
         std::cerr << "Ignore line: " << op;
         std::getline(trace, op);  // Skip the rest of the line
         std::cerr << op << std::endl;
+        continue;
       }
+      parse_counts += 1;
     }
 
     for (auto& o : opblocks) {
@@ -709,6 +728,9 @@ class Tester {
                           << "\t\"run-time(secs)\": "
                           << run_start.elapsed().as_secs_double() << ','
                           << std::endl;
+    for (auto& worker : workers_) {
+      worker.finish_run_phase();
+    }
   }
 
   void GenerateAndExecute(
@@ -810,21 +832,21 @@ class Tester {
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
-      if (options_.load_trace.has_value()) {
-        trace_file = std::ifstream(options_.load_trace.value());
+      if (!options_.load_trace.empty()) {
+        trace_file = std::ifstream(options_.load_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
-      parse(trace);
+      parse("load-", trace);
       finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
       std::optional<std::ifstream> trace_file;
-      if (options_.run_trace.has_value()) {
-        trace_file = std::ifstream(options_.run_trace.value());
+      if (!options_.run_trace.empty()) {
+        trace_file = std::ifstream(options_.run_trace);
         rusty_assert(trace_file.value());
       }
       std::istream& trace =
@@ -832,7 +854,7 @@ class Tester {
 
       prepare_run_phase(info_json_out);
       auto start = rusty::time::Instant::now();
-      parse(trace);
+      parse("run-", trace);
       finish_run_phase(info_json_out, start);
     }
   }
@@ -840,7 +862,6 @@ class Tester {
   WorkOptions options_;
   std::vector<Worker> workers_;
 
-  uint64_t parse_counts_{0};
   std::atomic<uint64_t> notfound_counts_{0};
 
   friend class Worker;
