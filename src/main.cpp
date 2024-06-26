@@ -195,7 +195,11 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                          min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
-        enable_sampling_(enable_sampling) {}
+        enable_sampling_(enable_sampling) {
+    for (size_t i = 0; i < MAX_NUM_LEVELS; ++i) {
+      level_hits_[i].store(0, std::memory_order_relaxed);
+    }
+  }
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
