@@ -156,15 +156,29 @@ enum class TimerType : size_t {
   kLowerBound,
   kRangeHotSize,
   kNextHot,
+  kLastPromoted,
   kEnd,
 };
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Put",         "Get",       "Delete",      "Scan",       "InputOperation",
-    "InputInsert", "InputRead", "InputUpdate", "Output",     "Serialize",
-    "Deserialize", "Access",    "IsHot",       "LowerBound", "RangeHotSize",
+    "Put",
+    "Get",
+    "Delete",
+    "Scan",
+    "InputOperation",
+    "InputInsert",
+    "InputRead",
+    "InputUpdate",
+    "Output",
+    "Serialize",
+    "Deserialize",
+    "Access",
+    "IsHot",
+    "LowerBound",
+    "RangeHotSize",
     "NextHot",
+    "LastPromoted",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);

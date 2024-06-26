@@ -195,7 +195,11 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                          min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
-        enable_sampling_(enable_sampling) {}
+        enable_sampling_(enable_sampling) {
+    for (size_t i = 0; i < MAX_NUM_LEVELS; ++i) {
+      level_hits_[i].store(0, std::memory_order_relaxed);
+    }
+  }
   const char *Name() const override { return "RouterVisCnts"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
@@ -215,6 +219,12 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
+    }
+  }
+  void ScanResult(bool only_fd) override {
+    num_scans_.fetch_add(1, std::memory_order_relaxed);
+    if (only_fd) {
+      num_scan_only_fd_.fetch_add(1, std::memory_order_relaxed);
     }
   }
   void Access(rocksdb::Slice key, size_t vlen) override {
@@ -237,11 +247,22 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       vc_.Access(key, vlen);
     }
   }
+  void AccessRange(rocksdb::Slice first, rocksdb::Slice last,
+                   uint64_t num_bytes,
+                   rocksdb::SequenceNumber sequence) override {
+    auto guard = timers.timer(TimerType::kAccess).start();
+    vc_.AccessRange(first, last, num_bytes, sequence);
+  }
 
   bool IsHot(rocksdb::Slice key) override {
     auto guard = timers.timer(TimerType::kIsHot).start();
     return vc_.IsHot(key);
   }
+  bool IsHot(rocksdb::Slice first, rocksdb::Slice last) override {
+    auto guard = timers.timer(TimerType::kIsHot).start();
+    return vc_.IsHot(first, last);
+  }
+
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
   rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
@@ -263,6 +284,12 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     rocksdb::RangeBounds range{.start = start, .end = end};
     size_t ret = vc_.RangeHotSize(range);
     return ret;
+  }
+
+  std::string LastPromoted(rocksdb::Slice key,
+                           rocksdb::SequenceNumber seq) override {
+    auto guard = timers.timer(TimerType::kLastPromoted).start();
+    return vc_.LastPromoted(key, seq);
   }
 
   bool get_viscnts_int_property(std::string_view property, uint64_t *value) {
@@ -308,6 +335,13 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return ret;
   }
 
+  uint64_t num_scans() const {
+    return num_scans_.load(std::memory_order_relaxed);
+  }
+  uint64_t num_scan_only_fd() const {
+    return num_scan_only_fd_.load(std::memory_order_relaxed);
+  }
+
   VisCnts &get_vc() { return vc_; }
 
  private:
@@ -317,6 +351,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
   std::atomic<uint64_t> count_access_hot_per_tier_[2];
   std::atomic<uint64_t> level_hits_[MAX_NUM_LEVELS];
+  std::atomic<uint64_t> num_scans_;
+  std::atomic<uint64_t> num_scan_only_fd_;
   bool enable_sampling_{false};
 };
 
@@ -589,6 +625,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
   std::ofstream num_accesses_out(db_path / "num-accesses");
 
+  std::ofstream num_scans_out(db_path / "num-scans");
+  num_scans_out << "Timestamp(ns) Total FD\n";
+
   std::ofstream viscnts_io_out(db_path / "viscnts-io");
   viscnts_io_out << "Timestamp(ns) read write\n";
 
@@ -704,6 +743,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
       num_accesses_out << ' ' << hits;
     }
     num_accesses_out << std::endl;
+
+    num_scans_out << timestamp << ' ' << router->num_scans() << ' '
+                  << router->num_scan_only_fd() << std::endl;
 
     uint64_t viscnts_read;
     rusty_assert(router->get_viscnts_int_property(
