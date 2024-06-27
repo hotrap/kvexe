@@ -195,6 +195,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                          min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
+        count_access_fd_hot_(0),
+        count_access_fd_cold_(0),
         enable_sampling_(enable_sampling) {
     for (size_t i = 0; i < MAX_NUM_LEVELS; ++i) {
       level_hits_[i].store(0, std::memory_order_relaxed);
@@ -214,7 +216,17 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
       size_t tier = Tier(level);
-      if (vc_.IsHot(key)) count_access_hot_per_tier_[tier].fetch_add(1);
+      bool is_hot = vc_.IsHot(key);
+      if (is_hot)
+        count_access_hot_per_tier_[tier].fetch_add(1,
+                                                   std::memory_order_relaxed);
+      if (tier == 0) {
+        if (is_hot) {
+          count_access_fd_hot_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          count_access_fd_cold_.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
     }
 
     if (get_key_hit_level_out().has_value()) {
@@ -273,14 +285,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return vc_.GetIntProperty(property, value);
   }
 
-  std::vector<uint64_t> hit_hot_count() {
-    std::vector<uint64_t> ret;
-    for (size_t i = 0; i < 2; ++i)
-      ret.push_back(
-          count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
-    return ret;
-  }
-
   std::vector<size_t> hit_tier_count() {
     std::vector<size_t> ret(2, 0);
     size_t tier1_first_level =
@@ -312,6 +316,20 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return ret;
   }
 
+  std::vector<uint64_t> hit_hot_count() {
+    std::vector<uint64_t> ret;
+    for (size_t i = 0; i < 2; ++i)
+      ret.push_back(
+          count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
+    return ret;
+  }
+  uint64_t count_access_fd_hot() const {
+    return count_access_fd_hot_.load(std::memory_order_relaxed);
+  }
+  uint64_t count_access_fd_cold() const {
+    return count_access_fd_cold_.load(std::memory_order_relaxed);
+  }
+
   VisCnts &get_vc() { return vc_; }
 
  private:
@@ -319,8 +337,10 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   VisCnts vc_;
   int tier0_last_level_;
 
-  std::atomic<uint64_t> count_access_hot_per_tier_[2];
   std::atomic<uint64_t> level_hits_[MAX_NUM_LEVELS];
+  std::atomic<uint64_t> count_access_hot_per_tier_[2];
+  std::atomic<uint64_t> count_access_fd_hot_;
+  std::atomic<uint64_t> count_access_fd_cold_;
   bool enable_sampling_{false};
 };
 
@@ -1075,7 +1095,8 @@ int main(int argc, char **argv) {
         auto counters = router->hit_hot_count();
         assert(counters.size() == 2);
         log << "Access hot per tier: " << counters[0] << ' ' << counters[1]
-            << "\n";
+            << "\nAccess FD hot: " << router->count_access_fd_hot()
+            << "\nAccess FD cold: " << router->count_access_fd_cold() << '\n';
       }
       log << "end===\n";
     }
