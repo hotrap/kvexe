@@ -343,7 +343,6 @@ class Tester {
                        : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      YCSBGen::Operation op;
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
@@ -470,7 +469,7 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound) {
+        if (s.IsNotFound()) {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
