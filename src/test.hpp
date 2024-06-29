@@ -288,7 +288,6 @@ class Tester {
                        : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      YCSBGen::Operation op;
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         op.key = gen_prism_key(op.key, 0, options_.num_keys);
@@ -594,7 +593,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               value_prefix, parse_counts);
+                               value_prefix, parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
