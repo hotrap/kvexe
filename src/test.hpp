@@ -343,7 +343,6 @@ class Tester {
                        : std::nullopt) {}
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      YCSBGen::Operation op;
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
@@ -470,7 +469,7 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound) {
+        if (s.IsNotFound()) {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
@@ -653,7 +652,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               value_prefix, parse_counts);
+                               value_prefix, parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
