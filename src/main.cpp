@@ -211,6 +211,11 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
   void HitLevel(int level, rocksdb::Slice key) override {
+    if (get_key_hit_level_out().has_value()) {
+      get_key_hit_level_out().value()
+          << timestamp_ns() << ' ' << key.ToString() << ' ' << level << '\n';
+    }
+    if (level < 0) level = 0;
     rusty_assert((size_t)level < MAX_NUM_LEVELS);
     level_hits_[level].fetch_add(1, std::memory_order_relaxed);
 
@@ -227,10 +232,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
           count_access_fd_cold_.fetch_add(1, std::memory_order_relaxed);
         }
       }
-    }
-
-    if (get_key_hit_level_out().has_value()) {
-      get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
     }
   }
   void Access(rocksdb::Slice key, size_t vlen) override {
