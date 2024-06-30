@@ -292,6 +292,7 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  std::string std_ans_prefix;
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -349,6 +350,10 @@ class Tester {
           id_(id),
           options_(tester.options_),
           notfound_counts_(tester.notfound_counts_),
+          std_ans_(options_.std_ans_prefix.empty()
+                       ? std::nullopt
+                       : std::optional<std::ifstream>(options_.std_ans_prefix +
+                                                      std::to_string(id_))),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -576,6 +581,16 @@ class Tester {
                 XXH64_update(ans_xxhash_state_, &delimiter, sizeof(delimiter)),
                 XXH_OK);
           }
+          if (std_ans_.has_value()) {
+            std::string std_ans;
+            std_ans_.value() >> std_ans;
+            if (ans != std_ans) {
+              std::cerr << "Result:\n"
+                        << ans << "\nStandard result:\n"
+                        << std_ans << std::endl;
+              rusty_panic();
+            }
+          }
           if (ans_out_) {
             ans_out_.value() << ans << '\n';
           }
@@ -611,6 +626,7 @@ class Tester {
     uint64_t local_read_progress{0};
     uint64_t scanned_{0};
     XXH64_state_t* ans_xxhash_state_{nullptr};
+    std::optional<std::ifstream> std_ans_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
