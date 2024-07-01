@@ -121,6 +121,11 @@ enum class FormatType {
   YCSB,
 };
 
+enum class WorkloadType {
+  ConfigFile,
+  u155243,
+};
+
 static inline const char* to_string(YCSBGen::OpType type) {
   switch (type) {
     case YCSBGen::OpType::INSERT:
@@ -287,6 +292,7 @@ struct WorkOptions {
   size_t num_threads{1};
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
+  WorkloadType workload_type;
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   double db_paths_soft_size_limit_multiplier;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
@@ -311,7 +317,14 @@ class Tester {
       workers_.emplace_back(*this, i);
     }
     if (options_.enable_fast_generator) {
-      GenerateAndExecute(info_json_out);
+      switch (options_.workload_type) {
+        case WorkloadType::ConfigFile:
+          GenerateAndExecute(info_json_out);
+          break;
+        case WorkloadType::u155243:
+          u155243(info_json_out);
+          break;
+      }
     } else {
       ReadAndExecute(info_json_out);
     }
@@ -859,34 +872,35 @@ class Tester {
     }
   }
 
+  void LoadPhase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
+                 const YCSBGen::YCSBGeneratorOptions& options) {
+    std::vector<std::thread> threads;
+    YCSBGen::YCSBLoadGenerator loader(options);
+    std::cerr << "Load phase YCSB Options: " << options.ToString() << std::endl;
+
+    *info_json_out.lock() << "\t\"num-load-op\": " << options.record_count
+                          << ',' << std::endl;
+
+    auto load_start = rusty::time::Instant::now();
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      threads.emplace_back([this, &loader, i]() { workers_[i].load(loader); });
+    }
+    for (auto& t : threads) t.join();
+    finish_load_phase(info_json_out, load_start);
+  }
+
   void GenerateAndExecute(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    std::vector<std::thread> threads;
-
-    std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
-              << std::endl;
-    uint64_t now_key_num =
-        options_.load ? 0 : options_.ycsb_gen_options.record_count;
-    YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options, now_key_num);
     if (options_.load) {
-      *info_json_out.lock()
-          << "\t\"num-load-op\": " << options_.ycsb_gen_options.record_count
-          << ',' << std::endl;
-
-      auto load_start = rusty::time::Instant::now();
-      for (size_t i = 0; i < options_.num_threads; ++i) {
-        threads.emplace_back(
-            [this, &loader, i]() { workers_[i].load(loader); });
-      }
-      for (auto& t : threads) t.join();
-      threads.clear();
-      finish_load_phase(info_json_out, load_start);
+      LoadPhase(info_json_out, options_.ycsb_gen_options);
     }
 
     if (options_.run) {
+      std::vector<std::thread> threads;
       prepare_run_phase(info_json_out);
       auto run_start = rusty::time::Instant::now();
-      YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+      YCSBGen::YCSBRunGenerator runner(options_.ycsb_gen_options,
+                                       options_.ycsb_gen_options.record_count);
       std::vector<clockid_t> clockids;
       std::atomic<size_t> finished(0);
       bool permit_join = false;
@@ -951,6 +965,87 @@ class Tester {
       }
       cv.notify_all();
       for (auto& t : threads) t.join();
+      finish_run_phase(info_json_out, run_start);
+    }
+  }
+
+  void RunPhase(const YCSBGen::YCSBGeneratorOptions& options,
+                std::unique_ptr<YCSBGen::KeyGenerator> key_generator) {
+    std::vector<std::thread> threads;
+    YCSBGen::YCSBRunGenerator runner(options, options.record_count,
+                                     std::move(key_generator));
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      threads.emplace_back([this, &runner, i]() { workers_[i].run(runner); });
+    }
+    for (auto& t : threads) t.join();
+  }
+
+  void u155243(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    const uint64_t num_load_keys = 110000000;
+    const uint64_t num_run_op = 220000000;
+    const uint64_t offset = 0.05 * num_load_keys;
+
+    if (options_.load) {
+      LoadPhase(info_json_out, YCSBGen::YCSBGeneratorOptions{
+                                   .record_count = num_load_keys,
+                                   .operation_count = num_run_op,
+                                   .read_proportion = 0,
+                                   .insert_proportion = 1,
+                               });
+    }
+
+    if (options_.run) {
+      prepare_run_phase(info_json_out);
+      auto run_start = rusty::time::Instant::now();
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+              .request_distribution = "uniform",
+          },
+          std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.01, 0.99));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.05, 0.95));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.05,
+                                                      0.95));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.02,
+                                                      0.98));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.04,
+                                                      0.96));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.03,
+                                                      0.97));
       finish_run_phase(info_json_out, run_start);
     }
   }

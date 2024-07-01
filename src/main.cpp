@@ -809,6 +809,9 @@ int main(int argc, char **argv) {
                      "Enable fast process including ignoring kNotFound and "
                      "pushing operations in one channel.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
+  desc.add_options()("workload",
+                     po::value<std::string>()->default_value("file"),
+                     "file/u155243");
   desc.add_options()("workload_file", po::value<std::string>(),
                      "Workload file used in built-in generator");
   desc.add_options()("export_key_only_trace",
@@ -1039,10 +1042,18 @@ int main(int argc, char **argv) {
     rusty_panic("Unrecognized format %s", format.c_str());
   }
   work_options.enable_fast_generator = vm.count("enable_fast_generator");
+  std::string workload = vm["workload"].as<std::string>();
+  if (workload == "file") {
+    work_options.workload_type = WorkloadType::ConfigFile;
+  } else if (workload == "u155243") {
+    work_options.workload_type = WorkloadType::u155243;
+  }
   if (work_options.enable_fast_generator) {
-    std::string workload_file = vm["workload_file"].as<std::string>();
-    work_options.ycsb_gen_options =
-        YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    if (work_options.workload_type == WorkloadType::ConfigFile) {
+      std::string workload_file = vm["workload_file"].as<std::string>();
+      work_options.ycsb_gen_options =
+          YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    }
     work_options.export_key_only_trace = vm.count("export_key_only_trace");
   } else {
     rusty_assert(vm.count("workload_file") == 0,
