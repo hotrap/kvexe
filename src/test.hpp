@@ -370,7 +370,12 @@ class Tester {
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
-                       : std::nullopt) {}
+                       : std::nullopt) {
+      if (std_ans_.has_value()) {
+        rusty_assert(std_ans_.value(), "Fail to open %s",
+                     (options_.std_ans_prefix + std::to_string(id_)).c_str());
+      }
+    }
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
       while (!loader.IsEOF()) {
