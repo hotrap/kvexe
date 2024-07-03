@@ -220,7 +220,6 @@ int main(int argc, char **argv) {
   std::string arg_db_path;
   std::string arg_db_paths;
   size_t cache_size;
-  size_t secondary_cache_size;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -285,10 +284,6 @@ int main(int argc, char **argv) {
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
                      "Do not build filters for the last level");
-
-  desc.add_options()("secondary_cache_size",
-                     po::value<size_t>(&secondary_cache_size)->required());
-  desc.add_options()("secondary_cache_volatile_size", po::value<size_t>());
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
