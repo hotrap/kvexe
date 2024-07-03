@@ -277,7 +277,6 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
-  double db_paths_soft_size_limit_multiplier;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
@@ -781,13 +780,6 @@ class Tester {
     for (auto& worker : workers_) {
       worker.prepare_run_phase();
     }
-
-    options_.db->SetOptions(
-        {{"db_paths_soft_size_limit_multiplier",
-          std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
-    std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
-    print_vector(options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
-    std::cerr << std::endl;
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;

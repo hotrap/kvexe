@@ -1,4 +1,4 @@
-#include <RocksCachelibWrapper.h>
+#include <rocksdb/secondary_cache.h>
 #include <sys/resource.h>
 
 #include "test.hpp"
@@ -139,7 +139,6 @@ bool is_empty_directory(std::string dir_path) {
 
 void bg_stat_printer(WorkOptions *work_options,
                      std::atomic<bool> *should_stop) {
-  rocksdb::DB *db = work_options->db;
   const std::filesystem::path &db_path = work_options->db_path;
 
   char buf[16];
@@ -159,14 +158,6 @@ void bg_stat_printer(WorkOptions *work_options,
                                  " -o cputimes | tail -n 1) >> " +
                                  cputimes_path.c_str();
   std::ofstream(cputimes_path) << "Timestamp(ns) cputime(s)\n";
-
-  std::ofstream compaction_stats_out(db_path / "compaction-stats");
-
-  std::ofstream timers_out(db_path / "timers");
-  timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
-                "get-cpu-nanos delete-cpu-nanos\n";
-
-  std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
@@ -200,25 +191,6 @@ void bg_stat_printer(WorkOptions *work_options,
 
     std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
     std::system(cputimes_command.c_str());
-
-    std::string compaction_stats;
-    rusty_assert(db->GetProperty(rocksdb::DB::Properties::kCompactionStats,
-                                 &compaction_stats));
-    compaction_stats_out << "Timestamp(ns) " << timestamp << '\n'
-                         << compaction_stats << std::endl;
-
-    uint64_t compaction_cpu_micros;
-    rusty_assert(db->GetIntProperty(
-        rocksdb::DB::Properties::kCompactionCPUMicros, &compaction_cpu_micros));
-    timers_out << timestamp << ' ' << compaction_cpu_micros << ' '
-               << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
-               << delete_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
-
-    std::string rand_read_bytes;
-    rusty_assert(db->GetProperty(rocksdb::DB::Properties::kRandReadBytes,
-                                 &rand_read_bytes));
-    rand_read_bytes_out << timestamp << ' ' << rand_read_bytes << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -313,10 +285,6 @@ int main(int argc, char **argv) {
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
                      "Do not build filters for the last level");
-  desc.add_options()(
-      "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
-          ->default_value(1.1));
 
   desc.add_options()("secondary_cache_size",
                      po::value<size_t>(&secondary_cache_size)->required());
@@ -368,17 +336,9 @@ int main(int argc, char **argv) {
     }
   }
 
-  facebook::rocks_secondary_cache::RocksCachelibOptions cachelib_options;
-  cachelib_options.cacheName = "secondary-cache";
-  cachelib_options.fileName = (db_path / "secondary-cache").string();
-  cachelib_options.size = secondary_cache_size;
-  if (vm.count("secondary_cache_volatile_size")) {
-    cachelib_options.volatileSize =
-        vm["secondary_cache_volatile_size"].as<size_t>();
-  }
   auto secondary_cache =
       facebook::rocks_secondary_cache::NewRocksCachelibWrapper(
-          cachelib_options);
+          db_path.string(), 5120, true, true, true);
 
   rocksdb::LRUCacheOptions lru_cache_opts;
   lru_cache_opts.capacity = cache_size;
