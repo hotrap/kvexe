@@ -331,9 +331,13 @@ int main(int argc, char **argv) {
     }
   }
 
+  options.enable_flash_evict_blocks = true;
+  options.enable_flash_prefetch_files = true;
+
+  // It seems that the argument enable_replacement is not used.
   auto secondary_cache =
       facebook::rocks_secondary_cache::NewRocksCachelibWrapper(
-          db_path.string(), 5120, true, true, true);
+          db_path.string(), 5120, true, true, false);
 
   rocksdb::LRUCacheOptions lru_cache_opts;
   lru_cache_opts.capacity = cache_size;
