@@ -210,6 +210,7 @@ int main(int argc, char **argv) {
   std::string format;
   std::string arg_switches;
   size_t num_threads;
+  int max_background_jobs;
 
   std::string arg_db_path;
   std::string arg_db_paths;
@@ -253,6 +254,8 @@ int main(int argc, char **argv) {
   desc.add_options()("export_ans_xxh64", "Export xxhash of ans");
 
   // Options of rocksdb
+  desc.add_options()("max_background_jobs",
+                     po::value(&max_background_jobs));
   desc.add_options()("level0_file_num_compaction_trigger",
                      po::value(&options.level0_file_num_compaction_trigger),
                      "Number of files in level-0 when compactions start");
@@ -309,8 +312,7 @@ int main(int argc, char **argv) {
     in >> std::hex >> switches;
   }
 
-  // Set 3 threads for compaction, 1 thread for flush.
-  options.IncreaseParallelism(4);
+  options.IncreaseParallelism(max_background_jobs);
 
   options.compaction_readahead_size = 2 * 1024 * 1024;
 
@@ -327,7 +329,6 @@ int main(int argc, char **argv) {
   options.mutant_options.monitor_temp = true;
   options.mutant_options.fast_dev_size = options.db_paths[0].target_size;
   options.compression = rocksdb::kNoCompression;
-  options.max_bytes_for_level_base = 128 << 20;
 
   options.min_write_buffer_number_to_merge = 1;
   options.max_write_buffer_number = 2;
