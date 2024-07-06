@@ -1,3 +1,5 @@
+#include <sys/resource.h>
+
 #include "test.hpp"
 
 typedef uint16_t field_size_t;
@@ -5,27 +7,27 @@ typedef uint16_t field_size_t;
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
   std::vector<rocksdb::DbPath> ret;
-  rusty_assert(in.get() == '{', "Invalid db_paths");
+  rusty_assert_eq(in.get(), '{', "Invalid db_paths");
   char c = static_cast<char>(in.get());
   if (c == '}') return ret;
-  rusty_assert(c == '{', "Invalid db_paths");
+  rusty_assert_eq(c, '{', "Invalid db_paths");
   while (1) {
     std::string path;
-    size_t size;
+    uint64_t size;
     if (in.peek() == '"') {
       in >> std::quoted(path);
-      rusty_assert(in.get() == ',', "Invalid db_paths");
+      rusty_assert_eq(in.get(), ',', "Invalid db_paths");
     } else {
       while ((c = static_cast<char>(in.get())) != ',') path.push_back(c);
     }
     in >> size;
     ret.emplace_back(std::move(path), size);
-    rusty_assert(in.get() == '}', "Invalid db_paths");
+    rusty_assert_eq(in.get(), '}', "Invalid db_paths");
     c = static_cast<char>(in.get());
     if (c != ',') break;
-    rusty_assert(in.get() == '{', "Invalid db_paths");
+    rusty_assert_eq(in.get(), '{', "Invalid db_paths");
   }
-  rusty_assert(c == '}', "Invalid db_paths");
+  rusty_assert_eq(c, '}', "Invalid db_paths");
   return ret;
 }
 
@@ -55,19 +57,18 @@ int MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-// Return the first level in the last path
-int predict_level_assignment(const rocksdb::Options &options) {
+std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
+    const rocksdb::Options &options) {
+  std::vector<std::pair<uint64_t, std::string>> ret;
   uint32_t p = 0;
-  int level = 0;
+  size_t level = 0;
   assert(!options.db_paths.empty());
-
-  std::cerr << "Predicted level assignment:\n";
 
   // size remaining in the most recent path
   uint64_t current_path_size = options.db_paths[0].target_size;
 
   uint64_t level_size;
-  int cur_level = 0;
+  size_t cur_level = 0;
 
   // max_bytes_for_level_base denotes L1 size.
   // We estimate L0 size to be the same as L1.
@@ -82,8 +83,8 @@ int predict_level_assignment(const rocksdb::Options &options) {
     }
     if (cur_level == level) {
       // Does desired level fit in this path?
-      std::cerr << level << ' ' << options.db_paths[p].path << ' ' << level_size
-                << std::endl;
+      rusty_assert_eq(ret.size(), level);
+      ret.emplace_back(level_size, options.db_paths[p].path);
       ++level;
     }
     current_path_size -= level_size;
@@ -106,9 +107,9 @@ int predict_level_assignment(const rocksdb::Options &options) {
     }
     cur_level++;
   }
-  std::cerr << level << "+ " << options.db_paths[p].path << ' ' << level_size
-            << std::endl;
-  return level;
+  rusty_assert_eq(ret.size(), level);
+  ret.emplace_back(level_size, options.db_paths[p].path);
+  return ret;
 }
 
 void empty_directory(std::filesystem::path dir_path) {
@@ -122,97 +123,139 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-bool has_background_work(rocksdb::DB *db) {
-  uint64_t flush_pending;
-  uint64_t compaction_pending;
-  uint64_t flush_running;
-  uint64_t compaction_running;
-  bool ok = db->GetIntProperty(
-      rocksdb::Slice("rocksdb.mem-table-flush-pending"), &flush_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.compaction-pending"),
-                          &compaction_pending);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-flushes"),
-                          &flush_running);
-  rusty_assert(ok, "");
-  ok = db->GetIntProperty(rocksdb::Slice("rocksdb.num-running-compactions"),
-                          &compaction_running);
-  rusty_assert(ok, "");
-  return flush_pending || compaction_pending || flush_running ||
-         compaction_running;
-}
+void bg_stat_printer(WorkOptions *work_options,
+                     std::atomic<bool> *should_stop) {
+  const std::filesystem::path &db_path = work_options->db_path;
 
-void wait_for_background_work(rocksdb::DB *db) {
-  while (1) {
-    if (has_background_work(db)) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-      continue;
-    }
-    // The properties are not get atomically. Test for more 20 times more.
-    int i;
-    for (i = 0; i < 20; ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (has_background_work(db)) {
-        break;
-      }
-    }
-    if (i == 20) {
-      // std::cerr << "There is no background work detected for more than 2
-      // seconds. Exiting...\n";
-      break;
-    }
-  }
-}
+  char buf[16];
 
-auto timestamp_ns() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-void bg_stat_printer(std::filesystem::path db_path,
-                     std::atomic<bool> *should_stop,
-                     std::atomic<size_t> *progress) {
+  std::string pid = std::to_string(getpid());
+
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed\n";
-  
-  auto mem_path = db_path / "mem";
-  std::ofstream(mem_path) << "Timestamp(ns) RSS(KB)\n";
+  progress_out << "Timestamp(ns) operations-executed get\n";
+
+  std::ofstream mem_out(db_path / "mem");
+  std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
+  mem_out << "Timestamp(ns) RSS(KiB) max-rss(KiB)\n";
+  struct rusage rusage;
+
+  auto cputimes_path = db_path / "cputimes";
+  std::string cputimes_command = "echo $(ps -q " + pid +
+                                 " -o cputimes | tail -n 1) >> " +
+                                 cputimes_path.c_str();
+  std::ofstream(cputimes_path) << "Timestamp(ns) cputime(s)\n";
+
+  std::ofstream compaction_stats_out(db_path / "compaction-stats");
+
+  std::ofstream timers_out(db_path / "timers");
+  timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
+                "get-cpu-nanos delete-cpu-nanos\n";
+
+  std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
+
+  auto interval = rusty::time::Duration::from_secs(1);
+  auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    auto value = progress->load(std::memory_order_relaxed);
-    progress_out << timestamp << ' ' << value << std::endl;
-    std::ofstream(mem_path, std::ios_base::app) << timestamp << ' ';
-    std::system(("ps -q " + std::to_string(getpid()) +
-                 " -o rss | tail -n 1 >> " + mem_path.c_str())
-                    .c_str());
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    progress_out << timestamp << ' '
+                 << work_options->progress->load(std::memory_order_relaxed)
+                 << ' '
+                 << work_options->progress_get->load(std::memory_order_relaxed)
+                 << std::endl;
+
+    FILE *pipe = popen(mem_command.c_str(), "r");
+    if (pipe == NULL) {
+      perror("popen");
+      rusty_panic();
+    }
+    rusty_assert(fgets(buf, sizeof(buf), pipe) != NULL, "buf too short");
+    size_t buflen = strlen(buf);
+    rusty_assert(buflen > 0);
+    rusty_assert(buf[--buflen] == '\n');
+    buf[buflen] = 0;
+    if (-1 == pclose(pipe)) {
+      perror("pclose");
+      rusty_panic();
+    }
+    if (-1 == getrusage(RUSAGE_SELF, &rusage)) {
+      perror("getrusage");
+      rusty_panic();
+    }
+    mem_out << timestamp << ' ' << buf << ' ' << rusage.ru_maxrss << std::endl;
+
+    std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
+    std::system(cputimes_command.c_str());
+
+    auto sleep_time =
+        next_begin.checked_duration_since(rusty::time::Instant::now());
+    if (sleep_time.has_value()) {
+      std::this_thread::sleep_for(
+          std::chrono::nanoseconds(sleep_time.value().as_nanos()));
+    }
+    next_begin += interval;
   }
 }
 
 int main(int argc, char **argv) {
+  std::ios::sync_with_stdio(false);
+  std::cin.tie(0);
+  std::cout.tie(0);
+
+  rocksdb::BlockBasedTableOptions table_options;
   rocksdb::Options options;
+  WorkOptions work_options;
 
   namespace po = boost::program_options;
   po::options_description desc("Available options");
   std::string format;
+  std::string arg_switches;
+  size_t num_threads;
+
   std::string arg_db_path;
   std::string arg_db_paths;
   std::string arg_costs;
   size_t cache_size;
-  std::string arg_switches;
-  size_t num_threads;
   double target_cost;
-  std::string workload_file;
+
+  // Options of executor
   desc.add_options()("help", "Print help message");
-  desc.add_options()("cleanup,c", "Empty the directories first.");
-  desc.add_options()("enable_fast_process", "Enable fast processing method.");
   desc.add_options()("format,f",
                      po::value<std::string>(&format)->default_value("ycsb"),
-                     "Trace format: plain/ycsb");
-  // desc.add_options()(
-  //     "use_direct_reads",
-  //     po::value<bool>(&options.use_direct_reads)->default_value(true), "");
+                     "Trace format: plain/plain-length-only/ycsb");
+  desc.add_options()(
+      "load", po::value<std::string>()->implicit_value(""),
+      "Execute the load phase. If a trace is provided with this option, "
+      "execute the trace in the load phase. Will empty the directories first.");
+  desc.add_options()(
+      "run", po::value<std::string>()->implicit_value(""),
+      "Execute the run phase. If a trace is provided with this option, execute "
+      "the trace in the run phase. "
+      "If --load is not provided, the run phase will be executed directly "
+      "without executing the load phase, and the directories won't be cleaned "
+      "up. "
+      "If none of --load and --run is provided, the both phases will be "
+      "executed.");
+  desc.add_options()("switches",
+                     po::value(&arg_switches)->default_value("none"),
+                     "Switches for statistics: none/all/<hex value>\n"
+                     "0x1: Log the latency of each operation\n"
+                     "0x2: Output the result of READ");
+  desc.add_options()("num_threads", po::value(&num_threads)->default_value(1),
+                     "The number of threads to execute the trace\n");
+  desc.add_options()("enable_fast_process",
+                     "Enable fast process including ignoring kNotFound and "
+                     "pushing operations in one channel.");
+  desc.add_options()("enable_fast_generator", "Enable fast generator");
+  desc.add_options()("workload_file", po::value<std::string>(),
+                     "Workload file used in built-in generator");
+  desc.add_options()("export_key_only_trace",
+                     "Export key-only trace generated by built-in generator.");
+  desc.add_options()("export_ans_xxh64", "Export xxhash of ans");
+
+  // Options of rocksdb
+  desc.add_options()("level0_file_num_compaction_trigger",
+                     po::value(&options.level0_file_num_compaction_trigger),
+                     "Number of files in level-0 when compactions start");
   desc.add_options()("db_path",
                      po::value<std::string>(&arg_db_path)->required(),
                      "Path to database");
@@ -228,16 +271,13 @@ int main(int argc, char **argv) {
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
-  desc.add_options()(
-      "switches", po::value<std::string>(&arg_switches)->default_value("none"),
-      "Switches for statistics: none/all/<hex value>\n"
-      "0x1: Log the latency of each operation\n"
-      "0x2: Output the result of READ");
-  desc.add_options()("num_threads",
-                     po::value<size_t>(&num_threads)->default_value(1),
-                     "The number of threads to execute the trace\n");
-  desc.add_options()("enable_fast_generator", "Enable fast generator");
-  desc.add_options()("workload_file", po::value<std::string>(&workload_file)->default_value(""), "Workload file used in built-in generator");
+  desc.add_options()("block_size", po::value<size_t>(&table_options.block_size),
+                     "Default: 4096");
+  desc.add_options()("max_bytes_for_level_base",
+                     po::value(&options.max_bytes_for_level_base));
+  desc.add_options()("optimize_filters_for_hits",
+                     "Do not build filters for the last level");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -245,6 +285,19 @@ int main(int argc, char **argv) {
     return 1;
   }
   po::notify(vm);
+
+  if (vm.count("load")) {
+    work_options.load = true;
+    work_options.load_trace = vm["load"].as<std::string>();
+  }
+  if (vm.count("run")) {
+    work_options.run = true;
+    work_options.run_trace = vm["run"].as<std::string>();
+  }
+  if (work_options.load == false && work_options.run == false) {
+    work_options.load = true;
+    work_options.run = true;
+  }
 
   uint64_t switches;
   if (arg_switches == "none") {
@@ -281,71 +334,103 @@ int main(int argc, char **argv) {
   // To prevent preload all table handlers! It lets one SST be opened twice then when it closes, the pointer in _sstMap becomes nullptr!! 
   options.max_open_files = 500000;
   options.statistics = rocksdb::CreateDBStatistics();
+  options.compression = rocksdb::CompressionType::kNoCompression;
+  // Doesn't make sense for tiered storage
+  options.level_compaction_dynamic_level_bytes = false;
 
-  // Mutant set table options in DB::Open.
-  // rocksdb::BlockBasedTableOptions table_options;
-  // table_options.block_cache = rocksdb::NewLRUCache(cache_size);
-  // table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+  table_options.block_cache = rocksdb::NewLRUCache(cache_size);
+  table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   // From mutant
-  // table_options.pin_l0_filter_and_index_blocks_in_cache = true;
-  // table_options.cache_index_and_filter_blocks = true;
-  // options.table_factory.reset(
-  //     rocksdb::NewBlockBasedTableFactory(table_options));
+  table_options.pin_l0_filter_and_index_blocks_in_cache = false;
+  table_options.cache_index_and_filter_blocks = false;
+  options.table_factory.reset(
+      rocksdb::NewBlockBasedTableFactory(table_options));
 
-  if (vm.count("cleanup")) {
+  if (vm.count("optimize_filters_for_hits")) {
+    options.optimize_filters_for_hits = true;
+  }
+
+  rocksdb::DB *db;
+  if (work_options.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-  }
-  int first_level_in_sd = predict_level_assignment(options);
-  {
-    std::ofstream out(db_path / "first-level-in-sd");
-    out << first_level_in_sd << std::endl;
-  }
+    auto ret = predict_level_assignment(options);
+    rusty_assert(ret.size() > 0);
+    size_t first_level_in_sd = ret.size() - 1;
+    for (size_t level = 0; level < first_level_in_sd; ++level) {
+      std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
+                << std::endl;
+    }
+    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
+              << ' ' << ret[first_level_in_sd].first << std::endl;
+    if (options.db_paths.size() == 1) {
+      first_level_in_sd = 100;
+    }
+    std::ofstream(db_path / "first-level-in-sd")
+        << first_level_in_sd << std::endl;
 
-  if (vm.count("cleanup")) {
+    std::cerr << "Creating database\n";
     options.create_if_missing = true;
   }
-  
-  rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
     return -1;
   }
 
-  std::atomic<bool> should_stop(false);
-  std::atomic<size_t> progress(0);
-  std::thread stat_printer(bg_stat_printer, db_path, &should_stop, &progress);
-
-  std::string pid = std::to_string(getpid());
-  std::string cmd = "pidstat -p " + pid +
-                    " -Hu 1 | "
-                    "awk '{if(NR>3){print $1,$8; fflush(stdout)}}' > " +
-                    db_path.c_str() + "/cpu &";
+  std::string cmd =
+      "pidstat -p " + std::to_string(getpid()) +
+      " -Hu 1 | awk '{if(NR>3){print $1,$8; fflush(stdout)}}' > " +
+      db_path.c_str() + "/cpu &";
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  WorkOptions work_option;
-  work_option.db = db;
-  work_option.switches = switches;
-  work_option.db_path = db_path;
-  work_option.progress = &progress;
-  work_option.num_threads = num_threads;
-  work_option.enable_fast_process = vm.count("enable_fast_process");
-  work_option.format_type = format == "ycsb" ? FormatType::YCSB : FormatType::Plain;
-  work_option.enable_fast_generator = vm.count("enable_fast_generator");
-  work_option.ycsb_gen_options = vm.count("enable_fast_generator") ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file) : YCSBGen::YCSBGeneratorOptions();
-  
-  Tester tester(work_option);
+  std::atomic<uint64_t> progress(0);
+  std::atomic<uint64_t> progress_get(0);
 
-  auto stats_print_func = [&] (std::ostream& log) {
+  work_options.db = db;
+  work_options.switches = switches;
+  work_options.db_path = db_path;
+  work_options.progress = &progress;
+  work_options.progress_get = &progress_get;
+  work_options.num_threads = num_threads;
+  work_options.enable_fast_process = vm.count("enable_fast_process");
+  if (format == "plain") {
+    work_options.format_type = FormatType::Plain;
+  } else if (format == "plain-length-only") {
+    work_options.format_type = FormatType::PlainLengthOnly;
+  } else if (format == "ycsb") {
+    work_options.format_type = FormatType::YCSB;
+  } else {
+    rusty_panic("Unrecognized format %s", format.c_str());
+  }
+  work_options.enable_fast_generator = vm.count("enable_fast_generator");
+  if (work_options.enable_fast_generator) {
+    std::string workload_file = vm["workload_file"].as<std::string>();
+    work_options.ycsb_gen_options =
+        YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    work_options.export_key_only_trace = vm.count("export_key_only_trace");
+  } else {
+    rusty_assert(vm.count("workload_file") == 0,
+                 "workload_file only works with built-in generator!");
+    rusty_assert(vm.count("export_key_only_trace") == 0,
+                 "export_key_only_trace only works with built-in generator!");
+    work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
+  }
+  work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+
+  std::atomic<bool> should_stop(false);
+  std::thread stat_printer(bg_stat_printer, &work_options, &should_stop);
+
+  Tester tester(work_options);
+
+  auto stats_print_func = [&](std::ostream &log) {
     log << "Timestamp: " << timestamp_ns() << "\n";
     log << "rocksdb.block.cache.data.miss: "
-        << options.statistics->getTickerCount(
-              rocksdb::BLOCK_CACHE_DATA_MISS)
+        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
         << "\n";
     log << "rocksdb.block.cache.data.hit: "
         << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
@@ -353,31 +438,19 @@ int main(int argc, char **argv) {
     log << "rocksdb.bloom.filter.useful: "
         << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
         << "\n";
-    // No such option.
-    // log << "rocksdb.bloom.filter.full.positive: "
-    //           << options.statistics->getTickerCount(
-    //                  rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-    //           << "\n";
     log << "rocksdb.memtable.hit: "
-        << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT)
-        << "\n";
+        << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
     log << "rocksdb.l0.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L0)
-        << "\n";
+        << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
     log << "rocksdb.l1.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L1)
-        << "\n";
+        << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
     log << "rocksdb.rocksdb.l2andup.hit: "
         << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
         << "\n";
-    
-    log << "mutant.l0.access: " << rocksdb::Mutant::GetAccessStats(0) << "\n";
-    log << "mutant.l1.access: " << rocksdb::Mutant::GetAccessStats(1) << "\n";
-    log << "mutant.l0.hit: " << rocksdb::Mutant::GetHitStats(0) << "\n";
-    log << "mutant.l1.hit: " << rocksdb::Mutant::GetHitStats(1) << "\n";
+    log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
+    log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
 
-    log << "Timer: " << "\n";
-
+    /* Timer data */
     std::vector<counter_timer::CountTime> timers_status;
     const auto &ts = timers.timers();
     size_t num_types = ts.len();
@@ -387,20 +460,17 @@ int main(int argc, char **argv) {
       rusty::time::Duration time = timer.time();
       timers_status.push_back(counter_timer::CountTime{count, time});
       log << timer_names[i] << ": count " << count << ", total "
-          << time.as_secs_double() << "s\n";
+          << time.as_secs_double() << " s\n";
     }
 
-    log << "end===\n";
-    
     /* Operation counts*/
-    log << "operation counts: " << tester.GetOpParseCounts() << "\n";
     log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
     log << "stat end===" << std::endl;
   };
 
-  auto period_print_stat = [&] () {
+  auto period_print_stat = [&]() {
     std::ofstream period_stats(db_path / "period_stats");
-    while(!should_stop.load()) {
+    while (!should_stop.load()) {
       stats_print_func(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
@@ -408,29 +478,21 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  auto start = std::chrono::steady_clock::now();
-  tester.Test();
-  auto end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) for work\n";
-
-  start = std::chrono::steady_clock::now();
-  wait_for_background_work(db);
-  end = std::chrono::steady_clock::now();
-  std::cerr << (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   end - start)
-                       .count() /
-                   1e9
-            << " second(s) waiting for background work\n";
+  std::filesystem::path info_json_path = db_path / "info.json";
+  std::ofstream info_json_out;
+  if (work_options.load) {
+    info_json_out = std::ofstream(info_json_path);
+    info_json_out << "{" << std::endl;
+  } else {
+    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
+  }
+  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
+  tester.Test(info_json);
+  if (work_options.run) {
+    *info_json.lock() << "}" << std::endl;
+  }
 
   should_stop.store(true, std::memory_order_relaxed);
-
-  std::string rocksdb_stats;
-  rusty_assert(db->GetProperty("rocksdb.stats", &rocksdb_stats), "");
-  std::ofstream(db_path / "rocksdb-stats.txt") << rocksdb_stats;
 
   stats_print_func(std::cerr);
 
