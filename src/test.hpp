@@ -123,7 +123,7 @@ enum class FormatType {
 
 enum class WorkloadType {
   ConfigFile,
-  u155243,
+  u135542,
 };
 
 static inline const char* to_string(YCSBGen::OpType type) {
@@ -321,8 +321,8 @@ class Tester {
         case WorkloadType::ConfigFile:
           GenerateAndExecute(info_json_out);
           break;
-        case WorkloadType::u155243:
-          u155243(info_json_out);
+        case WorkloadType::u135542:
+          u135542(info_json_out);
           break;
       }
     } else {
@@ -985,7 +985,7 @@ class Tester {
     for (auto& t : threads) t.join();
   }
 
-  void u155243(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void u135542(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     const uint64_t num_load_keys = 110000000;
     const uint64_t num_run_op = 220000000;
     const uint64_t offset = 0.05 * num_load_keys;
@@ -1014,15 +1014,15 @@ class Tester {
               .record_count = num_load_keys,
               .operation_count = num_run_op,
           },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
-                                                      0.01, 0.99));
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.01,
+                                                      0.99));
       RunPhase(
           YCSBGen::YCSBGeneratorOptions{
               .record_count = num_load_keys,
               .operation_count = num_run_op,
           },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
-                                                      0.05, 0.95));
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.03,
+                                                      0.97));
       RunPhase(
           YCSBGen::YCSBGeneratorOptions{
               .record_count = num_load_keys,
@@ -1035,22 +1035,22 @@ class Tester {
               .record_count = num_load_keys,
               .operation_count = num_run_op,
           },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.02,
-                                                      0.98));
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.05, 0.95));
       RunPhase(
           YCSBGen::YCSBGeneratorOptions{
               .record_count = num_load_keys,
               .operation_count = num_run_op,
           },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.04,
-                                                      0.96));
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.04, 0.96));
       RunPhase(
           YCSBGen::YCSBGeneratorOptions{
               .record_count = num_load_keys,
               .operation_count = num_run_op,
           },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.03,
-                                                      0.97));
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.02, 0.98));
       finish_run_phase(info_json_out, run_start);
     }
   }
