@@ -112,6 +112,18 @@ static const char* timer_names[] = {
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
+static inline void print_timers(std::ostream& out) {
+  const auto& ts = timers.timers();
+  size_t num_types = ts.size();
+  for (size_t i = 0; i < num_types; ++i) {
+    const auto& timer = ts[i];
+    uint64_t count = timer.count();
+    rusty::time::Duration time = timer.time();
+    out << timer_names[i] << ": count " << count << ", total "
+        << time.as_secs_double() << " s\n";
+  }
+}
+
 static std::atomic<time_t> put_cpu_nanos(0);
 static std::atomic<time_t> get_cpu_nanos(0);
 static std::atomic<time_t> delete_cpu_nanos(0);
@@ -705,6 +717,9 @@ class Tester {
     *info_json_out.lock() << "\t\"load-time(secs)\": "
                           << load_start.elapsed().as_secs_double() << ','
                           << std::endl;
+
+    std::cerr << "Timers in the load phase:\n";
+    print_timers(std::cerr);
   }
 
   void prepare_run_phase(
@@ -714,6 +729,11 @@ class Tester {
 
     for (auto& worker : workers_) {
       worker.prepare_run_phase();
+    }
+
+    const auto& ts = timers.timers();
+    for (const auto& timer : ts) {
+      timer.reset();
     }
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()

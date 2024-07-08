@@ -347,18 +347,7 @@ int main(int argc, char **argv) {
     db->GetProperty("leveldb.stats", &leveldb_stats);
     log << "LevelDB stats: " << leveldb_stats << "\n";
 
-    /* Timer data */
-    std::vector<counter_timer::CountTime> timers_status;
-    const auto &ts = timers.timers();
-    size_t num_types = ts.len();
-    for (size_t i = 0; i < num_types; ++i) {
-      const auto &timer = ts.timer(i);
-      uint64_t count = timer.count();
-      rusty::time::Duration time = timer.time();
-      timers_status.push_back(counter_timer::CountTime{count, time});
-      log << timer_names[i] << ": count " << count << ", total "
-          << time.as_secs_double() << " s\n";
-    }
+    print_timers(log);
 
     db->ReportMigrationStats(log);
 
