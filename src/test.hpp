@@ -317,9 +317,16 @@ void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
 
+class Tester;
+
+void print_other_stats(std::ostream& log, const rocksdb::Options& options,
+                       Tester& tester);
+
 class Tester {
  public:
   Tester(const WorkOptions& option) : options_(option) {}
+
+  const WorkOptions& work_options() const { return options_; }
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     perf_contexts_.resize(options_.num_threads);
@@ -842,8 +849,9 @@ class Tester {
     std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
         << rocksdb_stats;
 
-    std::cerr << "Timers in the load phase:\n";
-    print_timers(std::cerr);
+    std::ofstream other_stats_out(options_.db_path /
+                                  "other-stats-load-finish.txt");
+    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
   }
 
   void prepare_run_phase(
