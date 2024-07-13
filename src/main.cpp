@@ -256,13 +256,29 @@ int main(int argc, char **argv) {
     std::istringstream in(std::move(arg_switches));
     in >> std::hex >> switches;
   }
+  
+  work_options.enable_fast_generator = vm.count("enable_fast_generator");
+  if (work_options.enable_fast_generator) {
+    std::string workload_file = vm["workload_file"].as<std::string>();
+    work_options.ycsb_gen_options =
+        YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    work_options.export_key_only_trace = vm.count("export_key_only_trace");
 
-  // PrismDB
-  num_keys = vm.count("enable_fast_generator")
-                 ? YCSBGen::YCSBGeneratorOptions::ReadFromFile(
-                       vm["workload_file"].as<std::string>())
-                       .record_count
-                 : num_keys;
+    // PrismDB
+    // 1.1 to reduce hash collision.
+    work_options.num_keys = (work_options.ycsb_gen_options.record_count + 
+                            work_options.ycsb_gen_options.operation_count 
+                            * work_options.ycsb_gen_options.insert_proportion) * 1.1;
+    num_keys = work_options.num_keys;
+  } else {
+    rusty_assert(vm.count("workload_file") == 0,
+                 "workload_file only works with built-in generator!");
+    rusty_assert(vm.count("export_key_only_trace") == 0,
+                 "export_key_only_trace only works with built-in generator!");
+    work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
+    work_options.num_keys = num_keys;
+  }
+
   options.env = leveldb::Env::Default();
   options.block_cache = leveldb::NewLRUCache(cache_size);
   options.filter_policy = leveldb::NewBloomFilterPolicy(10);
@@ -311,7 +327,6 @@ int main(int argc, char **argv) {
   work_options.progress = &progress;
   work_options.progress_get = &progress_get;
   work_options.enable_fast_process = vm.count("enable_fast_process");
-  work_options.num_keys = num_keys;
   if (format == "plain") {
     work_options.format_type = FormatType::Plain;
   } else if (format == "plain-length-only") {
@@ -320,19 +335,6 @@ int main(int argc, char **argv) {
     work_options.format_type = FormatType::YCSB;
   } else {
     rusty_panic("Unrecognized format %s", format.c_str());
-  }
-  work_options.enable_fast_generator = vm.count("enable_fast_generator");
-  if (work_options.enable_fast_generator) {
-    std::string workload_file = vm["workload_file"].as<std::string>();
-    work_options.ycsb_gen_options =
-        YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
-    work_options.export_key_only_trace = vm.count("export_key_only_trace");
-  } else {
-    rusty_assert(vm.count("workload_file") == 0,
-                 "workload_file only works with built-in generator!");
-    rusty_assert(vm.count("export_key_only_trace") == 0,
-                 "export_key_only_trace only works with built-in generator!");
-    work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
