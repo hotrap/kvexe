@@ -243,6 +243,7 @@ struct WorkOptions {
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  uint64_t sleep_secs_after_load{0};
 
   size_t num_keys;  // The number of keys after load phase and run phase.
 };
@@ -720,6 +721,11 @@ class Tester {
 
     std::cerr << "Timers in the load phase:\n";
     print_timers(std::cerr);
+
+    if (options_.sleep_secs_after_load) {
+      std::this_thread::sleep_for(
+          std::chrono::seconds(options_.sleep_secs_after_load));
+    }
   }
 
   void prepare_run_phase(
