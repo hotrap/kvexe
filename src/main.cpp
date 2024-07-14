@@ -4,9 +4,9 @@
 
 typedef uint16_t field_size_t;
 
-std::vector<std::filesystem::path> decode_db_paths(std::string db_paths) {
+std::vector<std::pair<std::filesystem::path, size_t>> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
-  std::vector<std::filesystem::path> ret;
+  std::vector<std::pair<std::filesystem::path, size_t>> ret;
   rusty_assert_eq(in.get(), '{', "Invalid db_paths");
   char c = static_cast<char>(in.get());
   if (c == '}') return ret;
@@ -21,7 +21,7 @@ std::vector<std::filesystem::path> decode_db_paths(std::string db_paths) {
       while ((c = static_cast<char>(in.get())) != ',') path.push_back(c);
     }
     in >> size;
-    ret.emplace_back(std::move(path));
+    ret.emplace_back(std::move(path), size);
     rusty_assert_eq(in.get(), '}', "Invalid db_paths");
     c = static_cast<char>(in.get());
     if (c != ',') break;
@@ -270,6 +270,7 @@ int main(int argc, char **argv) {
                             work_options.ycsb_gen_options.operation_count 
                             * work_options.ycsb_gen_options.insert_proportion) * 1.1;
     num_keys = work_options.num_keys;
+    options.stop_upsert_trigger = 0.7 * work_options.ycsb_gen_options.operation_count;
   } else {
     rusty_assert(vm.count("workload_file") == 0,
                  "workload_file only works with built-in generator!");
@@ -296,11 +297,12 @@ int main(int argc, char **argv) {
   // false)); options.table_factory.reset(
   //     leveldb::NewBlockBasedTableFactory(table_options));
 
+  options.fd_size = db_paths[0].second;
   leveldb::DB *db;
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
-    for (auto &path : db_paths) {
+    for (auto &[path, size] : db_paths) {
       empty_directory(path);
     }
     options.create_if_missing = true;
