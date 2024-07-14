@@ -339,25 +339,25 @@ class Tester {
                     options_.db_path /
                     (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
-      std::string value(4096, 0);
       while (!runner.IsEOF()) {
         auto op = runner.GetNextOp(rndgen);
         op.key = gen_prism_key(op.key, 0, options_.num_keys);
         if (key_only_trace_out.has_value())
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
+        std::string value(4096, 0);
         process_op(op, &value);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
     }
     void work(BlockChannel<YCSBGen::Operation>& chan) {
-      std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
         }
         for (const YCSBGen::Operation& op : block) {
+          std::string value(4096, 0);
           process_op(op, &value);
           options_.progress->fetch_add(1, std::memory_order_relaxed);
         }
