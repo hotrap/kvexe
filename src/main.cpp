@@ -4,7 +4,8 @@
 
 typedef uint16_t field_size_t;
 
-std::vector<std::pair<std::filesystem::path, size_t>> decode_db_paths(std::string db_paths) {
+std::vector<std::pair<std::filesystem::path, size_t>> decode_db_paths(
+    std::string db_paths) {
   std::istringstream in(db_paths);
   std::vector<std::pair<std::filesystem::path, size_t>> ret;
   rusty_assert_eq(in.get(), '{', "Invalid db_paths");
@@ -114,6 +115,21 @@ void bg_stat_printer(WorkOptions *work_options,
     }
     next_begin += interval;
   }
+}
+
+void print_other_stats(std::ostream &log, leveldb::DB &db, Tester &tester) {
+  log << "Timestamp: " << timestamp_ns() << "\n";
+  std::string leveldb_stats;
+  db.GetProperty("leveldb.stats", &leveldb_stats);
+  log << "LevelDB stats: " << leveldb_stats << "\n";
+
+  db.ReportMigrationStats(log);
+
+  print_timers(log);
+
+  /* Operation counts*/
+  log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+  log << "stat end===" << std::endl;
 }
 
 int main(int argc, char **argv) {
@@ -259,7 +275,7 @@ int main(int argc, char **argv) {
     std::istringstream in(std::move(arg_switches));
     in >> std::hex >> switches;
   }
-  
+
   work_options.enable_fast_generator = vm.count("enable_fast_generator");
   if (work_options.enable_fast_generator) {
     std::string workload_file = vm["workload_file"].as<std::string>();
@@ -269,11 +285,14 @@ int main(int argc, char **argv) {
 
     // PrismDB
     // 1.1 to reduce hash collision.
-    work_options.num_keys = (work_options.ycsb_gen_options.record_count + 
-                            work_options.ycsb_gen_options.operation_count 
-                            * work_options.ycsb_gen_options.insert_proportion) * 1.1;
+    work_options.num_keys =
+        (work_options.ycsb_gen_options.record_count +
+         work_options.ycsb_gen_options.operation_count *
+             work_options.ycsb_gen_options.insert_proportion) *
+        1.1;
     num_keys = work_options.num_keys;
-    options.stop_upsert_trigger = 0.7 * work_options.ycsb_gen_options.operation_count;
+    options.stop_upsert_trigger =
+        0.7 * work_options.ycsb_gen_options.operation_count;
   } else {
     rusty_assert(vm.count("workload_file") == 0,
                  "workload_file only works with built-in generator!");
@@ -349,25 +368,10 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
-  auto stats_print_func = [&](std::ostream &log) {
-    log << "Timestamp: " << timestamp_ns() << "\n";
-    std::string leveldb_stats;
-    db->GetProperty("leveldb.stats", &leveldb_stats);
-    log << "LevelDB stats: " << leveldb_stats << "\n";
-
-    print_timers(log);
-
-    db->ReportMigrationStats(log);
-
-    /* Operation counts*/
-    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
-    log << "stat end===" << std::endl;
-  };
-
   auto period_print_stat = [&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      stats_print_func(period_stats);
+      print_other_stats(period_stats, *db, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
@@ -390,7 +394,8 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  stats_print_func(std::cerr);
+  print_other_stats(std::cerr, *db, tester);
+
   stat_printer.join();
   period_print_thread.join();
   delete db;

@@ -253,6 +253,10 @@ void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
 
+class Tester;
+
+void print_other_stats(std::ostream& log, leveldb::DB& db, Tester& tester);
+
 static std::string gen_prism_key(const std::string& key, size_t key_id_pre,
                                  size_t key_num) {
   std::hash<std::string> hasher;
@@ -373,8 +377,9 @@ class Tester {
       auto put_start = rusty::time::Instant::now();
       auto s = options_.db->Put(
           write_options_, put.key,
-          leveldb::Slice(put.value.data(),
-                         std::min<size_t>(options_.max_value_size, put.value.size())));
+          leveldb::Slice(
+              put.value.data(),
+              std::min<size_t>(options_.max_value_size, put.value.size())));
       auto put_time = put_start.elapsed();
       time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
@@ -428,8 +433,9 @@ class Tester {
       time_t get_cpu_ns = put_cpu_start - get_cpu_start;
       s = options_.db->Put(
           write_options_, op.key,
-          leveldb::Slice(op.value.data(),
-                         std::min<size_t>(options_.max_value_size, op.value.size())));
+          leveldb::Slice(
+              op.value.data(),
+              std::min<size_t>(options_.max_value_size, op.value.size())));
       time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
@@ -720,8 +726,9 @@ class Tester {
                           << load_start.elapsed().as_secs_double() << ','
                           << std::endl;
 
-    std::cerr << "Timers in the load phase:\n";
-    print_timers(std::cerr);
+    std::ofstream other_stats_out(options_.db_path /
+                                  "other-stats-load-finish.txt");
+    print_other_stats(other_stats_out, *options_.db, *this);
 
     if (options_.sleep_secs_after_load) {
       std::this_thread::sleep_for(
