@@ -4,6 +4,7 @@
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/iostats_context.h>
 #include <rocksdb/perf_context.h>
+#include <rocksdb/rate_limiter.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rusty/keyword.h>
@@ -290,6 +291,7 @@ struct WorkOptions {
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   double db_paths_soft_size_limit_multiplier;
+  std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
@@ -806,6 +808,11 @@ class Tester {
     const auto& ts = timers.timers();
     for (const auto& timer : ts) {
       timer.reset();
+    }
+
+    if (options_.rate_limiter) {
+      options_.rate_limiter->SetBytesPerSecond(
+          std::numeric_limits<int64_t>::max());
     }
 
     options_.db->SetOptions(
