@@ -230,6 +230,43 @@ void bg_stat_printer(WorkOptions *work_options,
   }
 }
 
+void print_other_stats(std::ostream &log, const rocksdb::Options &options,
+                       Tester &tester) {
+  log << "Timestamp: " << timestamp_ns() << "\n";
+  log << "rocksdb.block.cache.data.miss: "
+      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
+      << "\n";
+  log << "rocksdb.block.cache.data.hit: "
+      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
+      << "\n";
+  log << "rocksdb.bloom.filter.useful: "
+      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
+      << "\n";
+  log << "rocksdb.bloom.filter.full.positive: "
+      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE)
+      << "\n";
+  log << "rocksdb.bloom.filter.full.true.positive: "
+      << options.statistics->getTickerCount(
+             rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+      << "\n";
+  log << "rocksdb.memtable.hit: "
+      << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
+  log << "rocksdb.l0.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
+  log << "rocksdb.l1.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
+  log << "rocksdb.rocksdb.l2andup.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << "\n";
+  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
+  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
+
+  print_timers(log);
+
+  /* Operation counts*/
+  log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+  log << "stat end===" << std::endl;
+}
+
 int main(int argc, char **argv) {
   std::ios::sync_with_stdio(false);
   std::cin.tie(0);
@@ -248,6 +285,7 @@ int main(int argc, char **argv) {
   std::string arg_db_path;
   std::string arg_db_paths;
   size_t cache_size;
+  int64_t load_phase_rate_limit;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -312,6 +350,9 @@ int main(int argc, char **argv) {
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
                      "Do not build filters for the last level");
+  desc.add_options()("load_phase_rate_limit",
+                     po::value(&load_phase_rate_limit)->default_value(0),
+                     "0 means not limited.");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -377,6 +418,14 @@ int main(int argc, char **argv) {
 
   if (vm.count("optimize_filters_for_hits")) {
     options.optimize_filters_for_hits = true;
+  }
+
+  if (load_phase_rate_limit) {
+    rocksdb::RateLimiter *rate_limiter =
+        rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10,
+                                       rocksdb::RateLimiter::Mode::kAllIo);
+    options.rate_limiter.reset(rate_limiter);
+    work_options.rate_limiter = options.rate_limiter;
   }
 
   rocksdb::DB *db;
@@ -456,48 +505,10 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
-  auto stats_print_func = [&](std::ostream &log) {
-    log << "Timestamp: " << timestamp_ns() << "\n";
-    log << "rocksdb.block.cache.data.miss: "
-        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
-        << "\n";
-    log << "rocksdb.block.cache.data.hit: "
-        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-        << "\n";
-    log << "rocksdb.bloom.filter.useful: "
-        << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-        << "\n";
-    log << "rocksdb.bloom.filter.full.positive: "
-        << options.statistics->getTickerCount(
-               rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-        << "\n";
-    log << "rocksdb.bloom.filter.full.true.positive: "
-        << options.statistics->getTickerCount(
-               rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
-        << "\n";
-    log << "rocksdb.memtable.hit: "
-        << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
-    log << "rocksdb.l0.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
-    log << "rocksdb.l1.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
-    log << "rocksdb.rocksdb.l2andup.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
-        << "\n";
-    log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
-    log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
-
-    print_timers(log);
-
-    /* Operation counts*/
-    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
-    log << "stat end===" << std::endl;
-  };
-
   auto period_print_stat = [&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      stats_print_func(period_stats);
+      print_other_stats(period_stats, options, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
@@ -520,7 +531,7 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  stats_print_func(std::cerr);
+  print_other_stats(std::cerr, options, tester);
 
   stat_printer.join();
   period_print_thread.join();

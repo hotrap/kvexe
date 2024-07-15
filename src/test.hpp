@@ -4,6 +4,7 @@
 #include <rocksdb/filter_policy.h>
 #include <rocksdb/iostats_context.h>
 #include <rocksdb/perf_context.h>
+#include <rocksdb/rate_limiter.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
 #include <rusty/keyword.h>
@@ -289,6 +290,7 @@ struct WorkOptions {
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
+  std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
@@ -296,6 +298,11 @@ struct WorkOptions {
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
+
+class Tester;
+
+void print_other_stats(std::ostream& log, const rocksdb::Options& options,
+                       Tester& tester);
 
 class Tester {
  public:
@@ -786,8 +793,9 @@ class Tester {
     std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
         << rocksdb_stats;
 
-    std::cerr << "Timers in the load phase:\n";
-    print_timers(std::cerr);
+    std::ofstream other_stats_out(options_.db_path /
+                                  "other-stats-load-finish.txt");
+    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
   }
 
   void prepare_run_phase(
@@ -799,6 +807,11 @@ class Tester {
     const auto& ts = timers.timers();
     for (const auto& timer : ts) {
       timer.reset();
+    }
+
+    if (options_.rate_limiter) {
+      options_.rate_limiter->SetBytesPerSecond(
+          std::numeric_limits<int64_t>::max());
     }
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
