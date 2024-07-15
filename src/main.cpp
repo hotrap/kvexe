@@ -282,6 +282,7 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
     work_options.num_keys = num_keys;
   }
+  work_options.max_value_size = options.maxKVSizeBytes - 34;
 
   options.env = leveldb::Env::Default();
   options.block_cache = leveldb::NewLRUCache(cache_size);

@@ -246,6 +246,7 @@ struct WorkOptions {
   uint64_t sleep_secs_after_load{0};
 
   size_t num_keys;  // The number of keys after load phase and run phase.
+  uint32_t max_value_size;
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -373,7 +374,7 @@ class Tester {
       auto s = options_.db->Put(
           write_options_, put.key,
           leveldb::Slice(put.value.data(),
-                         std::min<size_t>(990, put.value.size())));
+                         std::min<size_t>(options_.max_value_size, put.value.size())));
       auto put_time = put_start.elapsed();
       time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
@@ -428,7 +429,7 @@ class Tester {
       s = options_.db->Put(
           write_options_, op.key,
           leveldb::Slice(op.value.data(),
-                         std::min<size_t>(990, op.value.size())));
+                         std::min<size_t>(options_.max_value_size, op.value.size())));
       time_t put_cpu_ns = cpu_timestamp_ns() - put_cpu_start;
       if (!s.ok()) {
         std::string err = s.ToString();
