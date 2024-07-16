@@ -293,6 +293,8 @@ struct WorkOptions {
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
+  int64_t run_70p_rate_limit{0};
+  uint64_t rate_limit_run_op{0};
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
@@ -399,6 +401,9 @@ class Tester {
         std::unique_lock lck(tester_.thread_local_m_);
       }
 
+      size_t run_op_70p = options_.ycsb_gen_options.record_count +
+                          options_.ycsb_gen_options.operation_count * 0.7;
+
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -412,7 +417,16 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        size_t progress =
+            options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (progress == run_op_70p) {
+          if (options_.run_70p_rate_limit) {
+            std::cerr << timestamp_ns() << " Set rate limit to "
+                      << std::numeric_limits<int64_t>::max() << std::endl;
+            options_.rate_limiter->SetBytesPerSecond(
+                std::numeric_limits<int64_t>::max());
+          }
+        }
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
@@ -613,6 +627,7 @@ class Tester {
   };
 
   void parse(const char* value_prefix, std::istream& trace) {
+    rusty_assert(options_.run_70p_rate_limit == 0, "Not supported yet");
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
@@ -810,8 +825,14 @@ class Tester {
     }
 
     if (options_.rate_limiter) {
-      options_.rate_limiter->SetBytesPerSecond(
-          std::numeric_limits<int64_t>::max());
+      if (options_.run_70p_rate_limit) {
+        std::cerr << timestamp_ns() << " Set rate limit to "
+                  << options_.run_70p_rate_limit << std::endl;
+        options_.rate_limiter->SetBytesPerSecond(options_.run_70p_rate_limit);
+      } else {
+        options_.rate_limiter->SetBytesPerSecond(
+            std::numeric_limits<int64_t>::max());
+      }
     }
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()

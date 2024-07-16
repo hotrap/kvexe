@@ -1,5 +1,6 @@
 #include <sys/resource.h>
 
+#include "rocksdb/rate_limiter.h"
 #include "test.hpp"
 
 typedef uint16_t field_size_t;
@@ -314,6 +315,9 @@ int main(int argc, char **argv) {
   desc.add_options()("load_phase_rate_limit",
                      po::value(&load_phase_rate_limit)->default_value(0),
                      "0 means not limited.");
+  desc.add_options()("run_70p_rate_limit",
+                     po::value(&work_options.run_70p_rate_limit),
+                     "0 means not limited");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -385,12 +389,20 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
+  rocksdb::RateLimiter *rate_limiter;
   if (load_phase_rate_limit) {
-    rocksdb::RateLimiter *rate_limiter =
+    rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10);
-    options.rate_limiter.reset(rate_limiter);
-    work_options.rate_limiter = options.rate_limiter;
+  } else if (work_options.run_70p_rate_limit) {
+    std::cerr << timestamp_ns() << " Set rate limit to "
+              << std::numeric_limits<int64_t>::max() << std::endl;
+    rate_limiter = rocksdb::NewGenericRateLimiter(
+        std::numeric_limits<int64_t>::max(), 100 * 1000, 10);
+  } else {
+    rate_limiter = nullptr;
   }
+  options.rate_limiter.reset(rate_limiter);
+  work_options.rate_limiter = options.rate_limiter;
 
   rocksdb::DB *db;
   if (work_options.load) {
