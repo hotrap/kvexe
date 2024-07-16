@@ -295,6 +295,7 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  uint64_t run_70p_sleep_secs{0};
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -399,6 +400,10 @@ class Tester {
         std::unique_lock lck(tester_.thread_local_m_);
       }
 
+      size_t run_op_70p = options_.ycsb_gen_options.record_count +
+                          options_.ycsb_gen_options.operation_count * 0.7;
+      size_t last_op_in_current_stage = run_op_70p;
+
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -412,7 +417,15 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        size_t progress =
+            options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (progress >= last_op_in_current_stage) {
+          last_op_in_current_stage = std::numeric_limits<size_t>::max();
+          if (options_.run_70p_sleep_secs) {
+            std::this_thread::sleep_for(
+                std::chrono::seconds(options_.run_70p_sleep_secs));
+          }
+        }
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
@@ -939,6 +952,8 @@ class Tester {
   }
 
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    rusty_assert(options_.run_70p_sleep_secs == 0, "Not supported yet");
+
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
       if (!options_.load_trace.empty()) {
