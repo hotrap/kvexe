@@ -195,6 +195,8 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                          min_hot_set_size, max_viscnts_size)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
+        count_access_fd_hot_(0),
+        count_access_fd_cold_(0),
         enable_sampling_(enable_sampling) {
     for (size_t i = 0; i < MAX_NUM_LEVELS; ++i) {
       level_hits_[i].store(0, std::memory_order_relaxed);
@@ -209,16 +211,27 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     }
   }
   void HitLevel(int level, rocksdb::Slice key) override {
+    if (get_key_hit_level_out().has_value()) {
+      get_key_hit_level_out().value()
+          << timestamp_ns() << ' ' << key.ToString() << ' ' << level << '\n';
+    }
+    if (level < 0) level = 0;
     rusty_assert((size_t)level < MAX_NUM_LEVELS);
     level_hits_[level].fetch_add(1, std::memory_order_relaxed);
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
       size_t tier = Tier(level);
-      if (vc_.IsHot(key)) count_access_hot_per_tier_[tier].fetch_add(1);
-    }
-
-    if (get_key_hit_level_out().has_value()) {
-      get_key_hit_level_out().value() << key.ToString() << ' ' << level << '\n';
+      bool is_hot = vc_.IsHot(key);
+      if (is_hot)
+        count_access_hot_per_tier_[tier].fetch_add(1,
+                                                   std::memory_order_relaxed);
+      if (tier == 0) {
+        if (is_hot) {
+          count_access_fd_hot_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+          count_access_fd_cold_.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
     }
   }
   void ScanResult(bool only_fd) override {
@@ -296,14 +309,6 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return vc_.GetIntProperty(property, value);
   }
 
-  std::vector<uint64_t> hit_hot_count() {
-    std::vector<uint64_t> ret;
-    for (size_t i = 0; i < 2; ++i)
-      ret.push_back(
-          count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
-    return ret;
-  }
-
   std::vector<size_t> hit_tier_count() {
     std::vector<size_t> ret(2, 0);
     size_t tier1_first_level =
@@ -335,6 +340,20 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
     return ret;
   }
 
+  std::vector<uint64_t> hit_hot_count() {
+    std::vector<uint64_t> ret;
+    for (size_t i = 0; i < 2; ++i)
+      ret.push_back(
+          count_access_hot_per_tier_[i].load(std::memory_order_relaxed));
+    return ret;
+  }
+  uint64_t count_access_fd_hot() const {
+    return count_access_fd_hot_.load(std::memory_order_relaxed);
+  }
+  uint64_t count_access_fd_cold() const {
+    return count_access_fd_cold_.load(std::memory_order_relaxed);
+  }
+
   uint64_t num_scans() const {
     return num_scans_.load(std::memory_order_relaxed);
   }
@@ -349,8 +368,10 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   VisCnts vc_;
   int tier0_last_level_;
 
-  std::atomic<uint64_t> count_access_hot_per_tier_[2];
   std::atomic<uint64_t> level_hits_[MAX_NUM_LEVELS];
+  std::atomic<uint64_t> count_access_hot_per_tier_[2];
+  std::atomic<uint64_t> count_access_fd_hot_;
+  std::atomic<uint64_t> count_access_fd_cold_;
   std::atomic<uint64_t> num_scans_;
   std::atomic<uint64_t> num_scan_only_fd_;
   bool enable_sampling_{false};
@@ -770,6 +791,53 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   }
 }
 
+void print_other_stats(std::ostream &log, const rocksdb::Options &options,
+                       Tester &tester) {
+  log << "Timestamp: " << timestamp_ns() << "\n";
+  log << "rocksdb.block.cache.data.miss: "
+      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
+      << "\n";
+  log << "rocksdb.block.cache.data.hit: "
+      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
+      << "\n";
+  log << "rocksdb.bloom.filter.useful: "
+      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
+      << "\n";
+  log << "rocksdb.bloom.filter.full.positive: "
+      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE)
+      << "\n";
+  log << "rocksdb.bloom.filter.full.true.positive: "
+      << options.statistics->getTickerCount(
+             rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+      << "\n";
+  log << "rocksdb.memtable.hit: "
+      << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
+  log << "rocksdb.l0.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
+  log << "rocksdb.l1.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
+  log << "rocksdb.rocksdb.l2andup.hit: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << "\n";
+  log << "leader write count: "
+      << options.statistics->getTickerCount(rocksdb::LEADER_WRITE_COUNT)
+      << '\n';
+  log << "non leader write count: "
+      << options.statistics->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT)
+      << '\n';
+
+  log << "Promotion cache hits: "
+      << options.statistics->getTickerCount(rocksdb::GET_HIT_PROMOTION_CACHE)
+      << "\n";
+  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
+  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
+
+  print_timers(log);
+
+  /* Operation counts*/
+  log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+  log << "stat end===" << std::endl;
+}
+
 int main(int argc, char **argv) {
   std::ios::sync_with_stdio(false);
   std::cin.tie(0);
@@ -826,11 +894,17 @@ int main(int argc, char **argv) {
                      "Enable fast process including ignoring kNotFound and "
                      "pushing operations in one channel.");
   desc.add_options()("enable_fast_generator", "Enable fast generator");
+  desc.add_options()("workload",
+                     po::value<std::string>()->default_value("file"),
+                     "file/u135542");
   desc.add_options()("workload_file", po::value<std::string>(),
                      "Workload file used in built-in generator");
   desc.add_options()("export_key_only_trace",
                      "Export key-only trace generated by built-in generator.");
   desc.add_options()("export_ans_xxh64", "Export xxhash of ans");
+  desc.add_options()("std_ans_prefix",
+                     po::value<std::string>(&work_options.std_ans_prefix),
+                     "Prefix of standard ans files");
 
   // Options of rocksdb
   desc.add_options()("max_background_jobs",
@@ -1053,10 +1127,20 @@ int main(int argc, char **argv) {
     rusty_panic("Unrecognized format %s", format.c_str());
   }
   work_options.enable_fast_generator = vm.count("enable_fast_generator");
+  std::string workload = vm["workload"].as<std::string>();
+  if (workload == "file") {
+    work_options.workload_type = WorkloadType::ConfigFile;
+  } else if (workload == "u135542") {
+    work_options.workload_type = WorkloadType::u135542;
+  } else {
+    rusty_panic("Unknown workload %s", workload.c_str());
+  }
   if (work_options.enable_fast_generator) {
-    std::string workload_file = vm["workload_file"].as<std::string>();
-    work_options.ycsb_gen_options =
-        YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    if (work_options.workload_type == WorkloadType::ConfigFile) {
+      std::string workload_file = vm["workload_file"].as<std::string>();
+      work_options.ycsb_gen_options =
+          YCSBGen::YCSBGeneratorOptions::ReadFromFile(workload_file);
+    }
     work_options.export_key_only_trace = vm.count("export_key_only_trace");
   } else {
     rusty_assert(vm.count("workload_file") == 0,
@@ -1073,73 +1157,10 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
-  auto stats_print_func = [&](std::ostream &log) {
-    log << "Timestamp: " << timestamp_ns() << "\n";
-    log << "rocksdb.block.cache.data.miss: "
-        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
-        << "\n";
-    log << "rocksdb.block.cache.data.hit: "
-        << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-        << "\n";
-    log << "rocksdb.bloom.filter.useful: "
-        << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-        << "\n";
-    log << "rocksdb.bloom.filter.full.positive: "
-        << options.statistics->getTickerCount(
-               rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-        << "\n";
-    log << "rocksdb.bloom.filter.full.true.positive: "
-        << options.statistics->getTickerCount(
-               rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
-        << "\n";
-    log << "rocksdb.memtable.hit: "
-        << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
-    log << "rocksdb.l0.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
-    log << "rocksdb.l1.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
-    log << "rocksdb.rocksdb.l2andup.hit: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP)
-        << "\n";
-    log << "Promotion cache hits: "
-        << options.statistics->getTickerCount(rocksdb::GET_HIT_PROMOTION_CACHE)
-        << "\n";
-    log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
-    log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
-
-    /* Statistics of router */
-    if (router) {
-      if (switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-        auto counters = router->hit_hot_count();
-        assert(counters.size() == 2);
-        log << "Access hot per tier: " << counters[0] << ' ' << counters[1]
-            << "\n";
-      }
-      log << "end===\n";
-    }
-
-    /* Timer data */
-    std::vector<counter_timer::CountTime> timers_status;
-    const auto &ts = timers.timers();
-    size_t num_types = ts.len();
-    for (size_t i = 0; i < num_types; ++i) {
-      const auto &timer = ts.timer(i);
-      uint64_t count = timer.count();
-      rusty::time::Duration time = timer.time();
-      timers_status.push_back(counter_timer::CountTime{count, time});
-      log << timer_names[i] << ": count " << count << ", total "
-          << time.as_secs_double() << " s\n";
-    }
-
-    /* Operation counts*/
-    log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
-    log << "stat end===" << std::endl;
-  };
-
   auto period_print_stat = [&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      stats_print_func(period_stats);
+      print_other_stats(period_stats, options, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
@@ -1177,7 +1198,20 @@ int main(int argc, char **argv) {
   }
 
   should_stop.store(true, std::memory_order_relaxed);
-  stats_print_func(std::cerr);
+
+  print_other_stats(std::cerr, options, tester);
+
+  /* Statistics of router */
+  if (router) {
+    if (tester.work_options().switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
+      auto counters = router->hit_hot_count();
+      assert(counters.size() == 2);
+      std::cerr << "Access hot per tier: " << counters[0] << ' ' << counters[1]
+                << "\nAccess FD hot: " << router->count_access_fd_hot()
+                << "\nAccess FD cold: " << router->count_access_fd_cold()
+                << '\n';
+    }
+  }
 
   stat_printer.join();
   period_print_thread.join();

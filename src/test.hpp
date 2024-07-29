@@ -7,9 +7,7 @@
 #include <rocksdb/rate_limiter.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
-#include <rusty/keyword.h>
 #include <rusty/macro.h>
-#include <rusty/primitive.h>
 #include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
@@ -121,6 +119,11 @@ enum class FormatType {
   YCSB,
 };
 
+enum class WorkloadType {
+  ConfigFile,
+  u135542,
+};
+
 static inline const char* to_string(YCSBGen::OpType type) {
   switch (type) {
     case YCSBGen::OpType::INSERT:
@@ -182,6 +185,18 @@ static const char* timer_names[] = {
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
+
+static inline void print_timers(std::ostream& out) {
+  const auto& ts = timers.timers();
+  size_t num_types = ts.size();
+  for (size_t i = 0; i < num_types; ++i) {
+    const auto& timer = ts[i];
+    uint64_t count = timer.count();
+    rusty::time::Duration time = timer.time();
+    out << timer_names[i] << ": count " << count << ", total "
+        << time.as_secs_double() << " s\n";
+  }
+}
 
 static std::atomic<time_t> put_cpu_nanos(0);
 static std::atomic<time_t> get_cpu_nanos(0);
@@ -301,20 +316,29 @@ struct WorkOptions {
   size_t num_threads{1};
   size_t opblock_size{1024};
   bool enable_fast_generator{false};
+  WorkloadType workload_type;
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   double db_paths_soft_size_limit_multiplier;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  std::string std_ans_prefix;
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
 
+class Tester;
+
+void print_other_stats(std::ostream& log, const rocksdb::Options& options,
+                       Tester& tester);
+
 class Tester {
  public:
   Tester(const WorkOptions& option) : options_(option) {}
+
+  const WorkOptions& work_options() const { return options_; }
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     perf_contexts_.resize(options_.num_threads);
@@ -324,7 +348,14 @@ class Tester {
       workers_.emplace_back(*this, i);
     }
     if (options_.enable_fast_generator) {
-      GenerateAndExecute(info_json_out);
+      switch (options_.workload_type) {
+        case WorkloadType::ConfigFile:
+          GenerateAndExecute(info_json_out);
+          break;
+        case WorkloadType::u135542:
+          u135542(info_json_out);
+          break;
+      }
     } else {
       ReadAndExecute(info_json_out);
     }
@@ -363,13 +394,21 @@ class Tester {
           id_(id),
           options_(tester.options_),
           notfound_counts_(tester.notfound_counts_),
+          std_ans_(options_.std_ans_prefix.empty()
+                       ? std::nullopt
+                       : std::optional<std::ifstream>(options_.std_ans_prefix +
+                                                      std::to_string(id_))),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
-                       : std::nullopt) {}
+                       : std::nullopt) {
+      if (std_ans_.has_value()) {
+        rusty_assert(std_ans_.value(), "Fail to open %s",
+                     (options_.std_ans_prefix + std::to_string(id_)).c_str());
+      }
+    }
 
     void load(YCSBGen::YCSBLoadGenerator& loader) {
-      YCSBGen::Operation op;
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
@@ -505,7 +544,7 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.code() == rocksdb::Status::kNotFound) {
+        if (s.IsNotFound()) {
           std::string err = s.ToString();
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
@@ -591,6 +630,16 @@ class Tester {
                 XXH64_update(ans_xxhash_state_, &delimiter, sizeof(delimiter)),
                 XXH_OK);
           }
+          if (std_ans_.has_value()) {
+            std::string std_ans;
+            std_ans_.value() >> std_ans;
+            if (ans != std_ans) {
+              std::cerr << "Result:\n"
+                        << ans << "\nStandard result:\n"
+                        << std_ans << std::endl;
+              rusty_panic();
+            }
+          }
           if (ans_out_) {
             ans_out_.value() << ans << '\n';
           }
@@ -626,6 +675,7 @@ class Tester {
     uint64_t local_read_progress{0};
     uint64_t scanned_{0};
     XXH64_state_t* ans_xxhash_state_{nullptr};
+    std::optional<std::ifstream> std_ans_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
@@ -688,7 +738,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               value_prefix, parse_counts);
+                               value_prefix, parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
@@ -810,12 +860,21 @@ class Tester {
     rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
     std::ofstream(options_.db_path / "rocksdb-stats-load-finish.txt")
         << rocksdb_stats;
+
+    std::ofstream other_stats_out(options_.db_path /
+                                  "other-stats-load-finish.txt");
+    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
   }
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     for (auto& worker : workers_) {
       worker.prepare_run_phase();
+    }
+
+    const auto& ts = timers.timers();
+    for (const auto& timer : ts) {
+      timer.reset();
     }
 
     if (options_.rate_limiter) {
@@ -858,34 +917,35 @@ class Tester {
     }
   }
 
+  void LoadPhase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
+                 const YCSBGen::YCSBGeneratorOptions& options) {
+    std::vector<std::thread> threads;
+    YCSBGen::YCSBLoadGenerator loader(options);
+    std::cerr << "Load phase YCSB Options: " << options.ToString() << std::endl;
+
+    *info_json_out.lock() << "\t\"num-load-op\": " << options.record_count
+                          << ',' << std::endl;
+
+    auto load_start = rusty::time::Instant::now();
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      threads.emplace_back([this, &loader, i]() { workers_[i].load(loader); });
+    }
+    for (auto& t : threads) t.join();
+    finish_load_phase(info_json_out, load_start);
+  }
+
   void GenerateAndExecute(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    std::vector<std::thread> threads;
-
-    std::cerr << "YCSB Options: " << options_.ycsb_gen_options.ToString()
-              << std::endl;
-    uint64_t now_key_num =
-        options_.load ? 0 : options_.ycsb_gen_options.record_count;
-    YCSBGen::YCSBLoadGenerator loader(options_.ycsb_gen_options, now_key_num);
     if (options_.load) {
-      *info_json_out.lock()
-          << "\t\"num-load-op\": " << options_.ycsb_gen_options.record_count
-          << ',' << std::endl;
-
-      auto load_start = rusty::time::Instant::now();
-      for (size_t i = 0; i < options_.num_threads; ++i) {
-        threads.emplace_back(
-            [this, &loader, i]() { workers_[i].load(loader); });
-      }
-      for (auto& t : threads) t.join();
-      threads.clear();
-      finish_load_phase(info_json_out, load_start);
+      LoadPhase(info_json_out, options_.ycsb_gen_options);
     }
 
     if (options_.run) {
+      std::vector<std::thread> threads;
       prepare_run_phase(info_json_out);
       auto run_start = rusty::time::Instant::now();
-      YCSBGen::YCSBRunGenerator runner = loader.into_run_generator();
+      YCSBGen::YCSBRunGenerator runner(options_.ycsb_gen_options,
+                                       options_.ycsb_gen_options.record_count);
       std::vector<clockid_t> clockids;
       std::atomic<size_t> finished(0);
       bool permit_join = false;
@@ -950,6 +1010,87 @@ class Tester {
       }
       cv.notify_all();
       for (auto& t : threads) t.join();
+      finish_run_phase(info_json_out, run_start);
+    }
+  }
+
+  void RunPhase(const YCSBGen::YCSBGeneratorOptions& options,
+                std::unique_ptr<YCSBGen::KeyGenerator> key_generator) {
+    std::vector<std::thread> threads;
+    YCSBGen::YCSBRunGenerator runner(options, options.record_count,
+                                     std::move(key_generator));
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      threads.emplace_back([this, &runner, i]() { workers_[i].run(runner); });
+    }
+    for (auto& t : threads) t.join();
+  }
+
+  void u135542(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    const uint64_t num_load_keys = 110000000;
+    const uint64_t num_run_op = 220000000;
+    const uint64_t offset = 0.05 * num_load_keys;
+
+    if (options_.load) {
+      LoadPhase(info_json_out, YCSBGen::YCSBGeneratorOptions{
+                                   .record_count = num_load_keys,
+                                   .operation_count = num_run_op,
+                                   .read_proportion = 0,
+                                   .insert_proportion = 1,
+                               });
+    }
+
+    if (options_.run) {
+      prepare_run_phase(info_json_out);
+      auto run_start = rusty::time::Instant::now();
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+              .request_distribution = "uniform",
+          },
+          std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.01,
+                                                      0.99));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.03,
+                                                      0.97));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.05,
+                                                      0.95));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.05, 0.95));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.04, 0.96));
+      RunPhase(
+          YCSBGen::YCSBGeneratorOptions{
+              .record_count = num_load_keys,
+              .operation_count = num_run_op,
+          },
+          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                      0.02, 0.98));
       finish_run_phase(info_json_out, run_start);
     }
   }
