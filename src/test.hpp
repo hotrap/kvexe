@@ -5,7 +5,6 @@
 #include <leveldb/table.h>
 #include <rusty/keyword.h>
 #include <rusty/macro.h>
-#include <rusty/primitive.h>
 #include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
