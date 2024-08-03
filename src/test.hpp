@@ -9,9 +9,7 @@
 #include <rocksdb/rate_limiter.h>
 #include <rocksdb/statistics.h>
 #include <rocksdb/table.h>
-#include <rusty/keyword.h>
 #include <rusty/macro.h>
-#include <rusty/primitive.h>
 #include <rusty/sync.h>
 #include <rusty/time.h>
 #include <unistd.h>
