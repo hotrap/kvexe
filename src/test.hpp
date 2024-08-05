@@ -592,7 +592,8 @@ class Tester {
         std::unique_ptr<rocksdb::Iterator> it(
             options_.db->NewIterator(read_options_));
         it->Seek(op.key);
-        for (size_t i = 0; i < op.scan_len && it->Valid(); ++i) {
+        ++scanned_;
+        for (size_t i = 1; i < op.scan_len && it->Valid(); ++i) {
           ++scanned_;
           it->Next();
         }
