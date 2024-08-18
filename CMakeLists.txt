@@ -4,7 +4,7 @@ project(rocksdb-kvexe CXX)
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
 
-add_compile_options(-Wall -Wextra -fexceptions)
+add_compile_options(-fno-omit-frame-pointer -Wall -Wextra -fexceptions)
 IF (CMAKE_BUILD_TYPE STREQUAL Debug)
     ADD_DEFINITIONS(-DDEBUG)
 ENDIF()
