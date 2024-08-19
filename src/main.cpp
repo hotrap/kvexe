@@ -34,15 +34,15 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
 // Return the first level in CD
 size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   rusty_assert_eq(options.db_paths.size(), 2.0);
-  size_t sd_size = options.db_paths[0].target_size;
+  size_t fd_size = options.db_paths[0].target_size;
   for (double x : options.max_bytes_for_level_multiplier_additional) {
     rusty_assert(x - 1 < 1e-6);
   }
   options.max_bytes_for_level_multiplier_additional.clear();
   size_t level = 0;
   uint64_t level_size = options.max_bytes_for_level_base;
-  while (level_size <= sd_size) {
-    sd_size -= level_size;
+  while (level_size <= fd_size) {
+    fd_size -= level_size;
     if (level > 0) {
       level_size *= options.max_bytes_for_level_multiplier;
     }
@@ -58,7 +58,7 @@ size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   }
   // Multiply 0.99 to make room for floating point error
   options.max_bytes_for_level_multiplier_additional.push_back(
-      1 + (double)sd_size / level_size * 0.99);
+      1 + (double)fd_size / level_size * 0.99);
   return level;
 }
 
