@@ -140,7 +140,6 @@ void update_multiplier_additional(rocksdb::DB *db,
 
   double sd_ratio = calc_sd_ratio(last_level_in_fd, last_level_in_fd_size,
                                   last_level, sd_level_size);
-  std::unordered_map<std::string, std::string> new_options;
   if (last_level > ori_last_level) {
     std::cerr << "Last level: " << ori_last_level << " -> " << last_level
               << std::endl;
@@ -171,8 +170,8 @@ void update_multiplier_additional(rocksdb::DB *db,
   str = out.str();
   std::cerr << "Update max_bytes_for_level_multiplier_additional: " << str
             << std::endl;
-  new_options["max_bytes_for_level_multiplier_additional"] = std::move(str);
-  db->SetOptions(new_options);
+  db->SetOptions(
+      {{"max_bytes_for_level_multiplier_additional", std::move(str)}});
 }
 
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
