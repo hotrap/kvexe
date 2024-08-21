@@ -31,7 +31,7 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-// Return the first level in CD
+// Return the first level in SD
 size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   rusty_assert_eq(options.db_paths.size(), 2.0);
   size_t fd_size = options.db_paths[0].target_size;
@@ -52,8 +52,8 @@ size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   // It seems that L0 and L1 are not affected by
   // options.max_bytes_for_level_multiplier_additional
   if (level <= 2) return level;
-  size_t last_level_in_sd = level - 1;
-  for (size_t i = 1; i < last_level_in_sd; ++i) {
+  size_t last_level_in_fd = level - 1;
+  for (size_t i = 1; i < last_level_in_fd; ++i) {
     options.max_bytes_for_level_multiplier_additional.push_back(1.0);
   }
   // Multiply 0.99 to make room for floating point error
