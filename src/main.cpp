@@ -298,7 +298,8 @@ int main(int argc, char **argv) {
 
   // Options of rocksdb
   desc.add_options()("max_background_jobs",
-                     po::value(&options.max_background_jobs));
+                     po::value(&options.max_background_jobs)->default_value(6),
+                     "");
   desc.add_options()("level0_file_num_compaction_trigger",
                      po::value(&options.level0_file_num_compaction_trigger),
                      "Number of files in level-0 when compactions start");
