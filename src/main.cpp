@@ -190,7 +190,7 @@ void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
 bool should_update_max_bytes_for_level_multiplier_additional(
     const std::vector<double> &ori, const std::vector<double> &cur) {
   if (ori.size() != cur.size()) {
-    rusty_assert(ori.size() > cur.size());
+    rusty_assert(ori.size() < cur.size());
     return true;
   }
   for (size_t i = 0; i < ori.size(); ++i) {
@@ -557,6 +557,10 @@ class AutoTuner {
     std::cerr << "Initial max hot set size: " << initial_max_hot_set_size
               << std::endl;
 
+    const uint64_t initial_hot_set_size_limit = vc.GetHotSetSizeLimit();
+    std::cerr << "Initial hot set size limit: " << initial_hot_set_size_limit
+              << std::endl;
+
     uint64_t phy_size_limit = vc.GetPhySizeLimit();
     std::cerr << "Initial physical size limit: " << phy_size_limit << std::endl;
 
@@ -611,7 +615,11 @@ class AutoTuner {
       }
 
       uint64_t hot_set_size_limit = router_.get_vc().GetHotSetSizeLimit();
-      std::cerr << "hot set size limit: " << hot_set_size_limit << std::endl;
+      if (warming_up) {
+        rusty_assert_eq(hot_set_size_limit, initial_hot_set_size_limit);
+      } else {
+        std::cerr << "hot set size limit: " << hot_set_size_limit << std::endl;
+      }
       calc_sd_size_ratio(options_, work_options_.db, last_level_in_fd,
                          last_level_in_fd_size, hot_set_size_limit);
       if (should_update_max_bytes_for_level_multiplier_additional(
