@@ -205,6 +205,11 @@ class BlockChannel {
   bool finish_{false};
   bool writer_waiting_{0};
 
+  uint64_t queue_empty_when_put_{0};
+  uint64_t queue_non_empty_when_put_{0};
+  uint64_t reader_blocked_{0};
+  uint64_t reader_not_blocked_{0};
+
  public:
   BlockChannel(size_t limit_size = 64) : limit_size_(limit_size) {}
   std::vector<T> GetBlock() {
@@ -215,6 +220,7 @@ class BlockChannel {
       }
     }
     if (q_.size()) {
+      reader_not_blocked_ += 1;
       auto ret = std::move(q_.front());
       q_.pop();
       return ret;
@@ -222,6 +228,7 @@ class BlockChannel {
     if (finish_) {
       return {};
     }
+    reader_blocked_ += 1;
     reader_waiting_ += 1;
     cv_r_.wait(lck, [&]() { return finish_ || !q_.empty(); });
     if (q_.empty() && finish_) {
@@ -243,6 +250,11 @@ class BlockChannel {
 
   void PutBlock(const std::vector<T>& block) {
     std::unique_lock lck(m_);
+    if (q_.empty()) {
+      queue_empty_when_put_ += 1;
+    } else {
+      queue_non_empty_when_put_ += 1;
+    }
     q_.push(block);
     if (reader_waiting_) {
       cv_r_.notify_one();
@@ -258,6 +270,14 @@ class BlockChannel {
     finish_ = true;
     cv_r_.notify_all();
   }
+
+  // Must be called when there is no writer.
+  uint64_t queue_empty_when_put() const { return queue_empty_when_put_; }
+  uint64_t queue_non_empty_when_put() const {
+    return queue_non_empty_when_put_;
+  }
+  uint64_t reader_blocked() const { return reader_blocked_; }
+  uint64_t reader_not_blocked() const { return reader_not_blocked_; }
 };
 
 template <typename T>
@@ -770,6 +790,22 @@ class Tester {
     }
 
     for (auto& t : threads) t.join();
+
+    uint64_t queue_empty_when_put = 0;
+    uint64_t queue_non_empty_when_put = 0;
+    uint64_t reader_blocked = 0;
+    uint64_t reader_not_blocked = 0;
+    for (const auto& channel : channel_for_workers) {
+      queue_empty_when_put += channel.queue_empty_when_put();
+      queue_non_empty_when_put += channel.queue_non_empty_when_put();
+      reader_blocked += channel.reader_blocked();
+      reader_not_blocked += channel.reader_not_blocked();
+    }
+    std::cerr << "Queue empty when put: " << queue_empty_when_put << std::endl;
+    std::cerr << "Queue non-empty when put: " << queue_non_empty_when_put
+              << std::endl;
+    std::cerr << "Reader blocked: " << reader_blocked << std::endl;
+    std::cerr << "Reader not blocked: " << reader_not_blocked << std::endl;
   }
 
   void handle_table_name(std::istream& in) {
