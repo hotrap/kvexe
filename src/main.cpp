@@ -102,9 +102,10 @@ double calc_size_ratio(size_t a, double b) {
 }
 void calc_fd_size_ratio(rocksdb::Options &options, size_t first_level_in_sd,
                         uint64_t max_viscnts_size) {
+  options.max_bytes_for_level_multiplier_additional.clear();
   // It seems that L0 and L1 are not affected by
   // options.max_bytes_for_level_multiplier_additional
-  if (first_level_in_sd > 2) return;
+  if (first_level_in_sd <= 2) return;
 
   rusty_assert(options.db_paths[0].target_size > max_viscnts_size,
                "max_viscnts_size %" PRIu64 " too large!", max_viscnts_size);
@@ -1120,7 +1121,6 @@ int main(int argc, char **argv) {
   rusty_assert_eq(ret.size() - 1, first_level_in_sd);
 
   RouterVisCnts *router = nullptr;
-  AutoTuner *autotuner = nullptr;
   if (first_level_in_sd != 0) {
     router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                first_level_in_sd - 1, hot_set_size_limit,
@@ -1218,6 +1218,7 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
+  AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && router) {
     autotuner =
         new AutoTuner(work_options, options, first_level_in_sd,
