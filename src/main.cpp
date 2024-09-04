@@ -44,44 +44,159 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-void calculate_multiplier_addtional(
-    size_t first_level_in_sd,
-    std::vector<double> &max_bytes_for_level_multiplier_additional,
-    const rocksdb::Options &options, uint64_t fd_size,
-    uint64_t &hot_set_size_limit) {
-  rusty_assert_eq(options.db_paths.size(), (size_t)2);
-  rusty_assert(max_bytes_for_level_multiplier_additional.empty());
+size_t calc_first_level_in_sd(const rocksdb::Options &options,
+                              uint64_t max_viscnts_size) {
+  rusty_assert(options.db_paths[0].target_size > max_viscnts_size,
+               "max_viscnts_size too large!");
+  uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
+  size_t level = 0;
+  uint64_t level_size = options.max_bytes_for_level_base;
+  while (level_size <= fd_size) {
+    fd_size -= level_size;
+    if (level > 0) {
+      level_size *= options.max_bytes_for_level_multiplier;
+    }
+    level += 1;
+  }
+  return level;
+}
+
+// Solve the equation: x^a + x^{a-1} + ... + x = b
+double calc_size_ratio(size_t a, double b) {
+  rusty_assert(a > 0);
+  double inv_a = 1 / (double)a;
+  // Let f(x) = x^a + x^{a-1} + ... + x - b = 0
+  // x^a + x^{a-1} + ... + 1 = (x^{a+1} - 1) / (x - 1)
+  // x^a + x^{a-1} + ... + x = (x^{a+1} - 1) / (x - 1) - 1
+  // (x^{a+1} - 1) / (x - 1) - 1 = b
+  // x^{a+1} - 1 = (x - 1) * (b + 1)
+  // x^{a+1} - 1 = (b + 1) x - b - 1
+  // x^{a+1} - (b + 1) x + b = 0
+  // Let g(u) = u^{a+1} - (b + 1) u + maxb
+  // g'(u) = (a + 1) u^a - b - 1
+  // Let g'(u_min) = 0, then u_min = ((b + 1) / (a + 1)) ^ (1 / a)
+  // So x >= ((b + 1) / (a + 1)) ^ (1 / a)
+  // x^a + x^{a-1} + ... + x = b > x^a
+  // So x < b ^ (1 / a)
+  // In conclusion, ((b + 1) / (a + 1)) ^ (1 / a) <= x < b ^ (1 / a)
+  double min = pow((b + 1) / (a + 1), inv_a);
+  double max = pow(b, inv_a);
+  auto f = [a, b](double x) {
+    double sum = 0;
+    double xa = x;
+    for (size_t i = 1; i <= a; ++i) {
+      sum += xa;
+      xa *= x;
+    }
+    return sum - b;
+  };
+  while (max - min >= 0.001) {
+    double x = (max + min) / 2;
+    if (f(x) > 0) {
+      max = x;
+    } else {
+      min = x;
+    }
+  }
+  return (max + min) / 2;
+}
+void calc_fd_size_ratio(rocksdb::Options &options, size_t first_level_in_sd,
+                        uint64_t max_viscnts_size) {
   // It seems that L0 and L1 are not affected by
   // options.max_bytes_for_level_multiplier_additional
-  if (first_level_in_sd <= 2) return;
-  size_t last_level_in_fd = first_level_in_sd - 1;
-  uint64_t level_size = options.max_bytes_for_level_base;
-  rusty_assert(fd_size >= level_size, "Physical size of RALT is too large!");
-  uint64_t last_level_in_fd_size = fd_size - level_size;
-  for (size_t i = 1; i < last_level_in_fd; ++i) {
-    rusty_assert(last_level_in_fd_size >= level_size,
-                 "Physical size of RALT is too large!");
-    last_level_in_fd_size -= level_size;
-    max_bytes_for_level_multiplier_additional.push_back(1.0);
-    level_size *= options.max_bytes_for_level_multiplier;
+  if (first_level_in_sd > 2) return;
+
+  rusty_assert(options.db_paths[0].target_size > max_viscnts_size,
+               "max_viscnts_size %" PRIu64 " too large!", max_viscnts_size);
+  uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
+  double ratio =
+      calc_size_ratio(first_level_in_sd - 2,
+                      (double)(fd_size - 2 * options.max_bytes_for_level_base) /
+                          options.max_bytes_for_level_base);
+  // Multiply 0.999 to make room for floating point error
+  ratio *= 0.999;
+  rusty_assert(options.max_bytes_for_level_multiplier_additional.empty());
+  options.max_bytes_for_level_multiplier_additional.push_back(1.0);
+  for (size_t i = 2; i < first_level_in_sd; ++i) {
+    options.max_bytes_for_level_multiplier_additional.push_back(
+        ratio / options.max_bytes_for_level_multiplier);
   }
-  // Multiply 0.99 to make room for floating point error
-  max_bytes_for_level_multiplier_additional.push_back(
-      (double)last_level_in_fd_size / level_size * 0.99);
-  uint64_t min_effective_size_of_last_level_in_fd =
-      last_level_in_fd / options.max_bytes_for_level_multiplier;
-  uint64_t max_hot_set_size =
-      last_level_in_fd_size - min_effective_size_of_last_level_in_fd;
-  // to avoid making the size of the first level in the slow disk too small
-  hot_set_size_limit = std::min(hot_set_size_limit, max_hot_set_size);
+}
+void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
+                        size_t last_level_in_fd, uint64_t last_level_in_fd_size,
+                        uint64_t hot_set_size_limit) {
+  std::string str;
+  db->GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
+  std::istringstream in(str);
+  // The first two lines are headers.
+  size_t lines_to_skip = 2 + last_level_in_fd + 1;
+  while (in && lines_to_skip) {
+    --lines_to_skip;
+    while (in && in.get() != '\n')
+      ;
+  }
+  if (!in) return;
+
+  size_t last_level = last_level_in_fd;
+  uint64_t sd_level_size = 0;
+  while (in) {
+    size_t level;
+    size_t num_files;
+    size_t size;
+    in >> level >> num_files >> size;
+    if (size == 0) break;
+    last_level = level;
+    sd_level_size += size;
+  }
+  sd_level_size *= 1048576;
+  if (last_level <= last_level_in_fd + 1) return;
+  // unlikely
+  if (sd_level_size <= last_level_in_fd_size) return;
+
+  rusty_assert(last_level_in_fd > 1, "Not implemented yet!");
   uint64_t last_level_in_fd_effective_size =
       last_level_in_fd_size - hot_set_size_limit;
-  uint64_t first_level_in_sd_size = std::max(
-      last_level_in_fd_effective_size * options.max_bytes_for_level_multiplier,
-      last_level_in_fd_size * 1.01);
-  max_bytes_for_level_multiplier_additional.push_back(
-      (double)first_level_in_sd_size /
-      (last_level_in_fd_size * options.max_bytes_for_level_multiplier));
+  size_t a = last_level - last_level_in_fd;
+  double b = (double)sd_level_size / last_level_in_fd_effective_size;
+  double sd_ratio = calc_size_ratio(a, b);
+  // The first level in SD shouldn't be smaller than the last level in FD.
+  if (last_level_in_fd_effective_size * sd_ratio <
+      last_level_in_fd_size * 1.01) {
+    double ratio_additional = 1.01 / options.max_bytes_for_level_multiplier;
+    options.max_bytes_for_level_multiplier_additional.push_back(
+        ratio_additional);
+    uint64_t first_level_in_sd_size = last_level_in_fd_size *
+                                      options.max_bytes_for_level_multiplier *
+                                      ratio_additional;
+    a -= 1;
+    b = (double)(sd_level_size - first_level_in_sd_size) /
+        first_level_in_sd_size;
+    sd_ratio = calc_size_ratio(a, b);
+  }
+  if (sd_ratio > 10) {
+    do {
+      last_level += 1;
+      a += 1;
+      sd_ratio = calc_size_ratio(a, b);
+    } while (sd_ratio > 10);
+  }
+  sd_ratio /= 10;
+  for (size_t level = last_level_in_fd + 1; level < last_level; ++level) {
+    options.max_bytes_for_level_multiplier_additional.push_back(sd_ratio);
+  }
+  options.max_bytes_for_level_multiplier_additional.push_back(100.0);
+}
+bool should_update_max_bytes_for_level_multiplier_additional(
+    const std::vector<double> &ori, const std::vector<double> &cur) {
+  if (ori.size() != cur.size()) {
+    rusty_assert(ori.size() > cur.size());
+    return true;
+  }
+  for (size_t i = 0; i < ori.size(); ++i) {
+    if (cur[i] < ori[i] * 0.99) return true;
+    if (cur[i] > ori[i] * 1.01) return true;
+  }
+  return false;
 }
 
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
@@ -92,9 +207,9 @@ double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
+std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
     const rocksdb::Options &options) {
-  std::vector<std::pair<uint64_t, std::string>> ret;
+  std::vector<std::pair<uint64_t, uint32_t>> ret;
   uint32_t p = 0;
   size_t level = 0;
   assert(!options.db_paths.empty());
@@ -119,7 +234,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     if (cur_level == level) {
       // Does desired level fit in this path?
       rusty_assert_eq(ret.size(), level);
-      ret.emplace_back(level_size, options.db_paths[p].path);
+      ret.emplace_back(level_size, p);
       ++level;
     }
     current_path_size -= level_size;
@@ -143,7 +258,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     cur_level++;
   }
   rusty_assert_eq(ret.size(), level);
-  ret.emplace_back(level_size, options.db_paths[p].path);
+  ret.emplace_back(level_size, p);
   return ret;
 }
 
@@ -410,16 +525,15 @@ class HitRateMonitor {
   std::vector<size_t> period_first_hr_;
 };
 
-class VisCntsUpdater {
+class AutoTuner {
  public:
-  VisCntsUpdater(const WorkOptions &work_options,
-                 const rocksdb::Options &options, size_t first_level_in_sd,
-                 uint64_t max_vc_hot_set_size, uint64_t min_vc_hot_set_size,
-                 size_t wait_op, size_t wait_time_ns, RouterVisCnts &router)
+  AutoTuner(const WorkOptions &work_options, rocksdb::Options &options,
+            size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
+            uint64_t min_vc_hot_set_size, size_t wait_time_ns,
+            RouterVisCnts &router)
       : work_options_(work_options),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
-        wait_op_(wait_op),
         wait_time_ns_(wait_time_ns),
         max_vc_hot_set_size_(max_vc_hot_set_size),
         min_vc_hot_set_size_(min_vc_hot_set_size),
@@ -428,24 +542,27 @@ class VisCntsUpdater {
     th_ = std::thread([&]() { update_thread(); });
   }
 
-  ~VisCntsUpdater() { Stop(); }
+  ~AutoTuner() { Stop(); }
 
   void Stop() {
     stop_signal_ = true;
     th_.join();
   }
 
-  size_t GetCurHotSetSizeLimit() const {
-    return router_.get_vc().GetHotSetSizeLimit();
-  }
-
-  size_t GetCurPhySizeLimit() const {
-    return router_.get_vc().GetPhySizeLimit();
-  }
-
  private:
   void update_thread() {
-    std::vector<double> max_bytes_for_level_multiplier_additional;
+    VisCnts &vc = router_.get_vc();
+    const uint64_t initial_max_hot_set_size = vc.GetMaxHotSetSizeLimit();
+    std::cerr << "Initial max hot set size: " << initial_max_hot_set_size
+              << std::endl;
+
+    uint64_t phy_size_limit = vc.GetPhySizeLimit();
+    std::cerr << "Initial physical size limit: " << phy_size_limit << std::endl;
+
+    const size_t last_level_in_fd = first_level_in_sd_ - 1;
+    std::vector<double> ori_multiplier_additional =
+        options_.max_bytes_for_level_multiplier_additional;
+    bool warming_up = true;
     bool first = true;
     while (!stop_signal_) {
       std::this_thread::sleep_for(std::chrono::nanoseconds(wait_time_ns_));
@@ -453,9 +570,9 @@ class VisCntsUpdater {
         break;
       }
       if (router_.get_vc().DecayCount() > 10) {
-        VisCnts &vc = router_.get_vc();
         if (first) {
           first = false;
+          warming_up = false;
           vc.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
         }
         double hs_step = max_vc_hot_set_size_ / 20.0;
@@ -466,32 +583,47 @@ class VisCntsUpdater {
         auto rate = real_phy_size / (double)real_hot_set_size;
         auto delta =
             rate * hs_step;  // std::max<size_t>(rate * hs_step, (64 << 20));
-        auto phy_size = real_phy_size + delta;
-        std::cerr << "rate " << rate << "," << phy_size << std::endl;
-        router_.get_vc().SetPhysicalSizeLimit(phy_size);
+        phy_size_limit = real_phy_size + delta;
+        std::cerr << "rate " << rate << std::endl;
+        router_.get_vc().SetPhysicalSizeLimit(phy_size_limit);
+        std::cerr << "Update physical size limit: " << phy_size_limit
+                  << std::endl;
+      }
+      calc_fd_size_ratio(options_, first_level_in_sd_, phy_size_limit);
+      rusty_assert(first_level_in_sd_ > 0);
+      uint64_t last_level_in_fd_size =
+          predict_level_assignment(options_)[last_level_in_fd].first;
+      uint64_t min_effective_size_of_last_level_in_fd =
+          last_level_in_fd_size / options_.max_bytes_for_level_multiplier;
+      // to avoid making the size of the first level in the slow disk too small
+      uint64_t max_hot_set_size =
+          last_level_in_fd_size - min_effective_size_of_last_level_in_fd;
+      if (warming_up) {
+        max_hot_set_size = std::min(max_hot_set_size, initial_max_hot_set_size);
+      } else {
+        max_hot_set_size = std::min(max_hot_set_size, max_vc_hot_set_size_);
+      }
+      if (vc.GetMaxHotSetSizeLimit() != max_hot_set_size) {
+        std::cerr << "Update max hot set size limit: " << max_hot_set_size
+                  << std::endl;
+        vc.SetMaxHotSetSizeLimit(max_hot_set_size);
+      }
 
-        uint64_t fd_size = options_.db_paths[0].target_size - phy_size;
-        uint64_t hot_set_size_limit = router_.get_vc().GetHotSetSizeLimit();
-        std::cerr << "fd_size " << fd_size << std::endl;
-        std::cerr << "max_hot_set_size " << hot_set_size_limit << std::endl;
-        max_bytes_for_level_multiplier_additional.clear();
-        uint64_t hot_set_size_limit_ori = hot_set_size_limit;
-        calculate_multiplier_addtional(
-            first_level_in_sd_, max_bytes_for_level_multiplier_additional,
-            options_, fd_size, hot_set_size_limit);
-        if (hot_set_size_limit < hot_set_size_limit_ori) {
-          std::cerr << "SetMaxHotSetSizeLimit " << hot_set_size_limit
-                    << std::endl;
-          vc.SetMaxHotSetSizeLimit(hot_set_size_limit);
-        } else {
-          rusty_assert_eq(hot_set_size_limit, hot_set_size_limit_ori);
-          vc.SetMaxHotSetSizeLimit(max_vc_hot_set_size_);
-        }
+      uint64_t hot_set_size_limit = router_.get_vc().GetHotSetSizeLimit();
+      std::cerr << "New hot set size limit: " << hot_set_size_limit
+                << std::endl;
+      calc_sd_size_ratio(options_, work_options_.db, last_level_in_fd,
+                         last_level_in_fd_size, hot_set_size_limit);
+      if (should_update_max_bytes_for_level_multiplier_additional(
+              ori_multiplier_additional,
+              options_.max_bytes_for_level_multiplier_additional)) {
+        ori_multiplier_additional.assign(
+            options_.max_bytes_for_level_multiplier_additional.begin(),
+            options_.max_bytes_for_level_multiplier_additional.end());
         std::ostringstream out;
-        for (size_t i = 0; i < max_bytes_for_level_multiplier_additional.size();
-             ++i) {
-          out << max_bytes_for_level_multiplier_additional[i];
-          if (i != max_bytes_for_level_multiplier_additional.size()) {
+        for (size_t i = 0; i < ori_multiplier_additional.size(); ++i) {
+          out << ori_multiplier_additional[i];
+          if (i != ori_multiplier_additional.size()) {
             out << ':';
           }
         }
@@ -505,10 +637,9 @@ class VisCntsUpdater {
   }
 
   const WorkOptions &work_options_;
-  const rocksdb::Options &options_;
+  rocksdb::Options &options_;
   const size_t first_level_in_sd_;
 
-  ssize_t wait_op_;
   ssize_t wait_time_ns_;
   uint64_t max_vc_hot_set_size_;
   uint64_t min_vc_hot_set_size_;
@@ -921,9 +1052,6 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
 
-  desc.add_options()("enable_dynamic_vc_param_in_lsm",
-                     "enable_dynami_vc_param_in_lsm");
-
   desc.add_options()("enable_dynamic_only_vc_phy_size",
                      "enable_dynamic_only_vc_phy_size");
 
@@ -989,38 +1117,14 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
-  uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
-  uint64_t level_size = options.max_bytes_for_level_base;
-  rusty_assert(fd_size >= level_size, "max_bytes_for_level_base too small!");
-  uint64_t fd_remain = fd_size - level_size;
-  size_t first_level_in_sd = 1;
-  while (level_size <= fd_remain) {
-    fd_remain -= level_size;
-    level_size *= options.max_bytes_for_level_multiplier;
-    first_level_in_sd += 1;
-  }
+  size_t first_level_in_sd = calc_first_level_in_sd(options, max_viscnts_size);
+  calc_fd_size_ratio(options, first_level_in_sd, max_viscnts_size);
 
-  options.max_bytes_for_level_multiplier_additional.clear();
-  calculate_multiplier_addtional(
-      first_level_in_sd, options.max_bytes_for_level_multiplier_additional,
-      options, fd_size, hot_set_size_limit);
-  std::cerr << "options.max_bytes_for_level_multiplier_additional: ";
-  print_vector(options.max_bytes_for_level_multiplier_additional);
-  std::cerr << std::endl;
   auto ret = predict_level_assignment(options);
   rusty_assert_eq(ret.size() - 1, first_level_in_sd);
-  for (size_t level = 0; level < first_level_in_sd; ++level) {
-    std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
-              << std::endl;
-  }
-  std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second << ' '
-            << ret[first_level_in_sd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_sd = 100;
-  }
 
   RouterVisCnts *router = nullptr;
-  VisCntsUpdater *updater = nullptr;
+  AutoTuner *autotuner = nullptr;
   if (first_level_in_sd != 0) {
     router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                first_level_in_sd - 1, hot_set_size_limit,
@@ -1037,24 +1141,22 @@ int main(int argc, char **argv) {
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
+    for (size_t level = 0; level < first_level_in_sd; ++level) {
+      auto p = ret[level].second;
+      std::cerr << level << ' ' << options.db_paths[p].path << ' '
+                << ret[level].first << std::endl;
+    }
+    auto p = ret[first_level_in_sd].second;
+    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+              << ret[first_level_in_sd].first << std::endl;
+    if (options.db_paths.size() == 1) {
+      first_level_in_sd = 100;
+    }
     std::ofstream(db_path / "first-level-in-sd")
         << first_level_in_sd << std::endl;
 
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
-  }
-
-  // if (vm.count("enable_dynamic_vc_param") && router) {
-  //   updater = new VisCntsUpdater(db_path, max_hot_set_size, max_viscnts_size,
-  //   options.db_paths[0].target_size * 0.7, options.db_paths[0].target_size *
-  //   0.1, 5e5, 2e9, *router);
-  // }
-
-  if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
-    updater = new VisCntsUpdater(work_options, options, first_level_in_sd,
-                                 options.db_paths[0].target_size * 0.7,
-                                 options.db_paths[0].target_size * 0.05, 5e5,
-                                 20e9, *router);
   }
 
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
@@ -1120,6 +1222,13 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
+  if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
+    autotuner =
+        new AutoTuner(work_options, options, first_level_in_sd,
+                      options.db_paths[0].target_size * 0.7,
+                      options.db_paths[0].target_size * 0.05, 20e9, *router);
+  }
+
   auto period_print_stat = [&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
@@ -1179,9 +1288,9 @@ int main(int argc, char **argv) {
   stat_printer.join();
   period_print_thread.join();
   period_print_vc_param_thread.join();
+  delete autotuner;
   delete db;
   delete router;
-  delete updater;
 
   return 0;
 }
