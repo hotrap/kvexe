@@ -399,6 +399,13 @@ class Tester {
       auto s = options_.db->Get(read_options_, read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
+      timers.timer(TimerType::kGet).add(get_time);
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
+      if (latency_out_) {
+        print_latency(latency_out_.value(), YCSBGen::OpType::READ,
+                      get_time.as_nanos());
+      }
+      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -407,13 +414,6 @@ class Tester {
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
       }
-      timers.timer(TimerType::kGet).add(get_time);
-      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
-      if (latency_out_) {
-        print_latency(latency_out_.value(), YCSBGen::OpType::READ,
-                      get_time.as_nanos());
-      }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       return true;
     }
 
@@ -423,10 +423,8 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.IsNotFound()) {
-          std::string err = s.ToString();
-          rusty_panic("GET failed with error: %s\n", err.c_str());
-        }
+        std::string err = s.ToString();
+        rusty_panic("GET failed with error: %s\n", err.c_str());
       }
       time_t put_cpu_start = cpu_timestamp_ns();
       time_t get_cpu_ns = put_cpu_start - get_cpu_start;
