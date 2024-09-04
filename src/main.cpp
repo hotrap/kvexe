@@ -610,8 +610,7 @@ class AutoTuner {
       }
 
       uint64_t hot_set_size_limit = router_.get_vc().GetHotSetSizeLimit();
-      std::cerr << "New hot set size limit: " << hot_set_size_limit
-                << std::endl;
+      std::cerr << "hot set size limit: " << hot_set_size_limit << std::endl;
       calc_sd_size_ratio(options_, work_options_.db, last_level_in_fd,
                          last_level_in_fd_size, hot_set_size_limit);
       if (should_update_max_bytes_for_level_multiplier_additional(
@@ -1050,10 +1049,7 @@ int main(int argc, char **argv) {
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
 
-  desc.add_options()("enable_dynamic_vc_param", "enable_dynamic_vc_param");
-
-  desc.add_options()("enable_dynamic_only_vc_phy_size",
-                     "enable_dynamic_only_vc_phy_size");
+  desc.add_options()("enable_auto_tuning", "enable auto-tuning");
 
   desc.add_options()("enable_sampling", "enable_sampling");
 
@@ -1222,7 +1218,7 @@ int main(int argc, char **argv) {
 
   Tester tester(work_options);
 
-  if (vm.count("enable_dynamic_only_vc_phy_size") && router) {
+  if (vm.count("enable_auto_tuning") && router) {
     autotuner =
         new AutoTuner(work_options, options, first_level_in_sd,
                       options.db_paths[0].target_size * 0.7,
