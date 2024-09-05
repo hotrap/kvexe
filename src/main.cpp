@@ -44,11 +44,8 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-size_t calc_first_level_in_sd(const rocksdb::Options &options,
-                              uint64_t max_viscnts_size) {
-  rusty_assert(options.db_paths[0].target_size > max_viscnts_size,
-               "max_viscnts_size too large!");
-  uint64_t fd_size = options.db_paths[0].target_size - max_viscnts_size;
+size_t calc_first_level_in_sd(const rocksdb::Options &options) {
+  uint64_t fd_size = options.db_paths[0].target_size;
   size_t level = 0;
   uint64_t level_size = options.max_bytes_for_level_base;
   while (level_size <= fd_size) {
@@ -1122,7 +1119,7 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
-  size_t first_level_in_sd = calc_first_level_in_sd(options, max_viscnts_size);
+  size_t first_level_in_sd = calc_first_level_in_sd(options);
   calc_fd_size_ratio(options, first_level_in_sd, max_viscnts_size);
 
   auto ret = predict_level_assignment(options);
