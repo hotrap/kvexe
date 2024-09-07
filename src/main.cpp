@@ -33,7 +33,7 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
 }
 
 // Return the first level in SD
-size_t calculate_multiplier_addtional(rocksdb::Options &options) {
+size_t initial_multiplier_addtional(rocksdb::Options &options) {
   rusty_assert_eq(options.db_paths.size(), 2.0);
   size_t fd_size = options.db_paths[0].target_size;
   for (double x : options.max_bytes_for_level_multiplier_additional) {
@@ -63,6 +63,118 @@ size_t calculate_multiplier_addtional(rocksdb::Options &options) {
   return level;
 }
 
+double calc_sd_ratio(size_t last_level_in_fd, uint64_t last_level_in_fd_size,
+                     size_t last_level, uint64_t sd_level_size) {
+  size_t a = last_level - last_level_in_fd;
+  rusty_assert(a > 0);
+  double inv_a = 1 / (double)a;
+  rusty_assert(sd_level_size >= last_level_in_fd_size);
+  double b = (double)sd_level_size / last_level_in_fd_size;
+  // Solve the equation: f(x) = x^a + x^{a-1} + ... + x - b = 0
+  // x^a + x^{a-1} + ... + 1 = (x^{a+1} - 1) / (x - 1)
+  // x^a + x^{a-1} + ... + x = (x^{a+1} - 1) / (x - 1) - 1
+  // (x^{a+1} - 1) / (x - 1) - 1 = b
+  // x^{a+1} - 1 = (x - 1) * (b + 1)
+  // x^{a+1} - 1 = (b + 1) x - b - 1
+  // x^{a+1} - (b + 1) x + b = 0
+  // Let g(u) = u^{a+1} - (b + 1) u + maxb
+  // g'(u) = (a + 1) u^a - b - 1
+  // Let g'(u_min) = 0, then u_min = ((b + 1) / (a + 1)) ^ (1 / a)
+  // So x >= ((b + 1) / (a + 1)) ^ (1 / a)
+  // x^a + x^{a-1} + ... + x = b > x^a
+  // So x < b ^ (1 / a)
+  // In conclusion, ((b + 1) / (a + 1)) ^ (1 / a) <= x < b ^ (1 / a)
+  double min = pow((b + 1) / (a + 1), inv_a);
+  double max = pow(b, inv_a);
+  auto f = [a, b](double x) {
+    double sum = 0;
+    double xa = x;
+    for (size_t i = 1; i <= a; ++i) {
+      sum += xa;
+      xa *= x;
+    }
+    return sum - b;
+  };
+  while (max - min >= 0.001) {
+    double x = (max + min) / 2;
+    if (f(x) > 0) {
+      max = x;
+    } else {
+      min = x;
+    }
+  }
+  return (max + min) / 2;
+}
+void update_multiplier_additional(rocksdb::DB *db,
+                                  const rocksdb::Options &options,
+                                  size_t last_level_in_fd,
+                                  uint64_t last_level_in_fd_size,
+                                  size_t &ori_last_level,
+                                  double &ori_sd_ratio) {
+  std::string str;
+  db->GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
+  std::istringstream in(str);
+  // The first two lines are headers.
+  size_t lines_to_skip = 2 + last_level_in_fd + 1;
+  while (in && lines_to_skip) {
+    --lines_to_skip;
+    while (in && in.get() != '\n')
+      ;
+  }
+  if (!in) return;
+
+  size_t last_level = last_level_in_fd;
+  uint64_t sd_level_size = 0;
+  while (in) {
+    size_t level;
+    size_t num_files;
+    size_t size;
+    in >> level >> num_files >> size;
+    if (size == 0) break;
+    last_level = level;
+    sd_level_size += size;
+  }
+  sd_level_size *= 1048576;
+  if (last_level <= last_level_in_fd + 1) return;
+  // unlikely
+  if (sd_level_size <= last_level_in_fd_size) return;
+
+  double sd_ratio = calc_sd_ratio(last_level_in_fd, last_level_in_fd_size,
+                                  last_level, sd_level_size);
+  if (last_level > ori_last_level) {
+    std::cerr << "Last level: " << ori_last_level << " -> " << last_level
+              << std::endl;
+    ori_last_level = last_level;
+  } else if (sd_ratio > 10) {
+    do {
+      last_level += 1;
+      ori_last_level = last_level;
+      std::cerr << "Increase num_levels to " << last_level + 1 << std::endl;
+      sd_ratio = calc_sd_ratio(last_level_in_fd, last_level_in_fd_size,
+                               last_level, sd_level_size);
+    } while (sd_ratio > 10);
+  } else {
+    // When applying the new size ratio configuration, sd_ratio < ori_sd_ratio.
+    // At this time we don't change the size ratio configuration.
+    if (sd_ratio - ori_sd_ratio <= 0.01) return;
+  }
+  ori_sd_ratio = sd_ratio;
+  sd_ratio /= 10;
+  std::ostringstream out;
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    out << x << ':';
+  }
+  for (size_t level = last_level_in_fd + 1; level < last_level; ++level) {
+    out << sd_ratio << ':';
+  }
+  out << "100";
+  str = out.str();
+  std::cerr << "Update max_bytes_for_level_multiplier_additional: " << str
+            << std::endl;
+  db->SetOptions(
+      {{"max_bytes_for_level_multiplier_additional", std::move(str)}});
+}
+
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   if (level >= static_cast<int>(
                    options.max_bytes_for_level_multiplier_additional.size())) {
@@ -71,9 +183,9 @@ double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
+std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
     const rocksdb::Options &options) {
-  std::vector<std::pair<uint64_t, std::string>> ret;
+  std::vector<std::pair<uint64_t, uint32_t>> ret;
   uint32_t p = 0;
   size_t level = 0;
   assert(!options.db_paths.empty());
@@ -98,7 +210,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     if (cur_level == level) {
       // Does desired level fit in this path?
       rusty_assert_eq(ret.size(), level);
-      ret.emplace_back(level_size, options.db_paths[p].path);
+      ret.emplace_back(level_size, p);
       ++level;
     }
     current_path_size -= level_size;
@@ -122,7 +234,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     cur_level++;
   }
   rusty_assert_eq(ret.size(), level);
-  ret.emplace_back(level_size, options.db_paths[p].path);
+  ret.emplace_back(level_size, p);
   return ret;
 }
 
@@ -429,22 +541,33 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
+  size_t first_level_in_sd = initial_multiplier_addtional(options);
+  std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]\n";
+
+  auto ret = predict_level_assignment(options);
+  rusty_assert_eq(ret.size() - 1, first_level_in_sd);
+
+  uint64_t last_level_in_fd_size;
+  if (first_level_in_sd == 0) {
+    last_level_in_fd_size = 0;
+  } else {
+    last_level_in_fd_size = ret[first_level_in_sd - 1].first;
+  }
+
   rocksdb::DB *db;
   if (work_options.load) {
-    size_t first_level_in_sd = calculate_multiplier_addtional(options);
-    std::cerr << "options.max_bytes_for_level_multiplier_additional: [";
-    for (double x : options.max_bytes_for_level_multiplier_additional) {
-      std::cerr << x << ',';
-    }
-    std::cerr << "]\n";
-    auto ret = predict_level_assignment(options);
-    rusty_assert_eq(ret.size() - 1, first_level_in_sd);
     for (size_t level = 0; level < first_level_in_sd; ++level) {
-      std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
-                << std::endl;
+      auto p = ret[level].second;
+      std::cerr << level << ' ' << options.db_paths[p].path << ' '
+                << ret[level].first << std::endl;
     }
-    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
-              << ' ' << ret[first_level_in_sd].first << std::endl;
+    auto p = ret[first_level_in_sd].second;
+    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+              << ret[first_level_in_sd].first << std::endl;
     if (options.db_paths.size() == 1) {
       first_level_in_sd = 100;
     }
@@ -507,8 +630,16 @@ int main(int argc, char **argv) {
   Tester tester(work_options);
 
   auto period_print_stat = [&]() {
+    size_t last_level_in_fd = first_level_in_sd - 1;
+    size_t ori_last_level = last_level_in_fd;
+    double ori_sd_ratio = 0;
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
+      if (last_level_in_fd_size > 0) {
+        update_multiplier_additional(db, options, last_level_in_fd,
+                                     last_level_in_fd_size, ori_last_level,
+                                     ori_sd_ratio);
+      }
       print_other_stats(period_stats, options, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
