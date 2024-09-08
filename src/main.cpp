@@ -171,14 +171,14 @@ void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
         first_level_in_sd_size;
     sd_ratio = calc_size_ratio(a, b);
   }
-  if (sd_ratio > 10) {
+  if (sd_ratio > options.max_bytes_for_level_multiplier) {
     do {
       last_level += 1;
       a += 1;
       sd_ratio = calc_size_ratio(a, b);
-    } while (sd_ratio > 10);
+    } while (sd_ratio > options.max_bytes_for_level_multiplier);
   }
-  sd_ratio /= 10;
+  sd_ratio /= options.max_bytes_for_level_multiplier;
   for (size_t level = last_level_in_fd + 1; level < last_level; ++level) {
     options.max_bytes_for_level_multiplier_additional.push_back(sd_ratio);
   }
