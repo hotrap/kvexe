@@ -398,6 +398,7 @@ int main(int argc, char **argv) {
   std::string arg_db_paths;
   size_t cache_size;
   int64_t load_phase_rate_limit;
+  uint64_t secondary_cache_size_MiB;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -467,6 +468,11 @@ int main(int argc, char **argv) {
                      po::value(&load_phase_rate_limit)->default_value(0),
                      "0 means not limited.");
 
+  desc.add_options()(
+      "secondary_cache_size_MiB",
+      po::value<uint64_t>(&secondary_cache_size_MiB)->default_value(5120),
+      "MiB");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -519,7 +525,7 @@ int main(int argc, char **argv) {
   // It seems that the argument enable_replacement is not used.
   auto secondary_cache =
       facebook::rocks_secondary_cache::NewRocksCachelibWrapper(
-          db_path.string(), 5120, true, true, false);
+          db_path.string(), secondary_cache_size_MiB, true, true, false);
 
   rocksdb::LRUCacheOptions lru_cache_opts;
   lru_cache_opts.capacity = cache_size;
