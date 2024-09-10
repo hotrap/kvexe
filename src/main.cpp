@@ -158,6 +158,13 @@ void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
   double b = (double)sd_level_size / last_level_in_fd_effective_size;
   double sd_ratio = calc_size_ratio(a, b);
   size_t level = last_level_in_fd + 1;
+  if (sd_ratio > options.max_bytes_for_level_multiplier) {
+    do {
+      last_level += 1;
+      a += 1;
+      sd_ratio = calc_size_ratio(a, b);
+    } while (sd_ratio > options.max_bytes_for_level_multiplier);
+  }
   // The first level in SD shouldn't be smaller than the last level in FD.
   if (last_level_in_fd_effective_size * sd_ratio <
       last_level_in_fd_size * 1.01) {
@@ -172,20 +179,21 @@ void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
         first_level_in_sd_size;
     sd_ratio = calc_size_ratio(a, b);
     level += 1;
-  }
-  if (sd_ratio > options.max_bytes_for_level_multiplier) {
-    do {
-      last_level += 1;
-      a += 1;
-      sd_ratio = calc_size_ratio(a, b);
-    } while (sd_ratio > options.max_bytes_for_level_multiplier);
-  }
-  sd_ratio /= options.max_bytes_for_level_multiplier;
-  if (level == last_level_in_fd + 1) {
+
+    if (sd_ratio > options.max_bytes_for_level_multiplier) {
+      do {
+        last_level += 1;
+        a += 1;
+        sd_ratio = calc_size_ratio(a, b);
+      } while (sd_ratio > options.max_bytes_for_level_multiplier);
+    }
+  } else {
     options.max_bytes_for_level_multiplier_additional.push_back(
-        last_level_in_fd_effective_size * sd_ratio / last_level_in_fd_size);
+        last_level_in_fd_effective_size * sd_ratio / last_level_in_fd_size /
+        options.max_bytes_for_level_multiplier);
     level += 1;
   }
+  sd_ratio /= options.max_bytes_for_level_multiplier;
   for (; level < last_level; ++level) {
     options.max_bytes_for_level_multiplier_additional.push_back(sd_ratio);
   }
