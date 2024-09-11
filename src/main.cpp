@@ -341,8 +341,10 @@ void bg_stat_printer(WorkOptions *work_options,
   }
 }
 
-void print_other_stats(std::ostream &log, const rocksdb::Options &options,
+void print_other_stats(std::ostream &log, const WorkOptions &work_options,
                        Tester &tester) {
+  rocksdb::Options options = work_options.db->GetOptions();
+
   log << "Timestamp: " << timestamp_ns() << "\n";
   log << "rocksdb.block.cache.data.miss: "
       << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
@@ -382,6 +384,24 @@ void print_other_stats(std::ostream &log, const rocksdb::Options &options,
   /* Operation counts*/
   log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
   log << "stat end===" << std::endl;
+
+  auto cache_stats = work_options.cache->getGlobalCacheStats();
+  log << "numItems: " << cache_stats.numItems << '\n'
+      << "numCacheGets: " << cache_stats.numCacheGets << '\n'
+      << "numCacheGetMiss: " << cache_stats.numCacheGetMiss << '\n'
+      << "numNvmGets: " << cache_stats.numNvmGets << '\n'
+      << "numNvmGetMiss: " << cache_stats.numNvmGetMiss << '\n'
+      << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n';
+}
+void print_heavy_stats(std::ostream &out, const WorkOptions &work_options) {
+  auto stats = work_options.cache->getAccessContainerDistributionStats();
+  out << "numKeys: " << stats.numKeys << '\n'
+      << "numBuckets: " << stats.numBuckets << '\n'
+      << "itemDistribution: [";
+  for (auto [i, x] : stats.itemDistribution) {
+    out << '{' << i << ',' << x << "},";
+  }
+  out << "]\n";
 }
 
 int main(int argc, char **argv) {
@@ -403,6 +423,8 @@ int main(int argc, char **argv) {
   std::string arg_db_paths;
   size_t cache_size;
   int64_t load_phase_rate_limit;
+
+  uint64_t cachelib_size;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -476,6 +498,8 @@ int main(int argc, char **argv) {
       po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
           ->default_value(1.1));
 
+  desc.add_options()("cachelib_size", po::value<uint64_t>(&cachelib_size));
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -514,6 +538,14 @@ int main(int argc, char **argv) {
   // Doesn't make sense for tiered storage
   options.level_compaction_dynamic_level_bytes = false;
 
+  if (work_options.load) {
+    std::cerr << "Emptying directories\n";
+    empty_directory(db_path);
+    for (auto path : options.db_paths) {
+      empty_directory(path.path);
+    }
+  }
+
   table_options.block_cache = rocksdb::NewLRUCache(cache_size);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   options.table_factory.reset(
@@ -522,6 +554,19 @@ int main(int argc, char **argv) {
   if (vm.count("optimize_filters_for_hits")) {
     options.optimize_filters_for_hits = true;
   }
+
+  facebook::cachelib::LruAllocator::Config lruConfig;
+  facebook::cachelib::LruAllocator::NvmCacheConfig nvmConfig;
+  nvmConfig.navyConfig.setBlockSize(4096);
+  nvmConfig.navyConfig.setSimpleFile(db_path / "cachelib", cachelib_size,
+                                     true /*truncateFile*/);
+  nvmConfig.navyConfig.blockCache().setRegionSize(16 * 1024 * 1024);
+  lruConfig.enableNvmCache(nvmConfig);
+  lruConfig.setAccessConfig({/*bucketsPower*/ 25, /*locksPower*/ 10})
+      .validate();
+  facebook::cachelib::LruAllocator cache(lruConfig);
+  auto poolId =
+      cache.addPool("default_pool", cache.getCacheMemoryStats().ramCacheSize);
 
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
@@ -550,11 +595,6 @@ int main(int argc, char **argv) {
 
   rocksdb::DB *db;
   if (work_options.load) {
-    std::cerr << "Emptying directories\n";
-    empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
     for (size_t level = 0; level < first_level_in_sd; ++level) {
       auto p = ret[level].second;
       std::cerr << level << ' ' << options.db_paths[p].path << ' '
@@ -618,6 +658,8 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+  work_options.cache = &cache;
+  work_options.poolId = poolId;
 
   std::atomic<bool> should_stop(false);
   std::thread stat_printer(bg_stat_printer, &work_options, &should_stop);
@@ -635,7 +677,7 @@ int main(int argc, char **argv) {
                                      last_level_in_fd_size, ori_last_level,
                                      ori_sd_ratio);
       }
-      print_other_stats(period_stats, options, tester);
+      print_other_stats(period_stats, work_options, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
@@ -658,7 +700,8 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  print_other_stats(std::cerr, options, tester);
+  print_other_stats(std::cerr, work_options, tester);
+  print_heavy_stats(std::cerr, work_options);
 
   stat_printer.join();
   period_print_thread.join();

@@ -1,3 +1,4 @@
+#include <cachelib/allocator/CacheAllocator.h>
 #include <pthread.h>
 #include <rocksdb/cache.h>
 #include <rocksdb/db.h>
@@ -147,14 +148,32 @@ enum class TimerType : size_t {
   kOutput,
   kSerialize,
   kDeserialize,
+  kCacheUpdate,
+  kCacheUpdateExisting,
+  kCacheRead,
+  kCacheInsert,
+  kCacheDelete,
   kEnd,
 };
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Put",         "Get",       "Delete",      "Scan",   "InputOperation",
-    "InputInsert", "InputRead", "InputUpdate", "Output", "Serialize",
+    "Put",
+    "Get",
+    "Delete",
+    "Scan",
+    "InputOperation",
+    "InputInsert",
+    "InputRead",
+    "InputUpdate",
+    "Output",
+    "Serialize",
     "Deserialize",
+    "CacheUpdate",
+    "CacheUpdateExisting",
+    "CacheRead",
+    "CacheInsert",
+    "CacheDelete",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
@@ -312,6 +331,8 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  facebook::cachelib::LruAllocator* cache;
+  facebook::cachelib::PoolId poolId;
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -320,8 +341,9 @@ void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
 
 class Tester;
 
-void print_other_stats(std::ostream& log, const rocksdb::Options& options,
+void print_other_stats(std::ostream& log, const WorkOptions& work_options,
                        Tester& tester);
+void print_heavy_stats(std::ostream& out, const WorkOptions& work_options);
 
 class Tester {
  public:
@@ -457,6 +479,22 @@ class Tester {
 
    private:
     void do_put(const YCSBGen::Operation& put) {
+      {
+        auto update_cache_start = timers.timer(TimerType::kCacheUpdate).start();
+        auto handle = options_.cache->findToWrite(put.key);
+        if (handle) {
+          auto update_existing_start =
+              timers.timer(TimerType::kCacheUpdateExisting).start();
+          if (handle->getSize() == put.value.size()) {
+            memcpy(handle->getMemory(), put.value.data(), put.value.size());
+          } else {
+            handle = options_.cache->allocate(options_.poolId, put.key,
+                                              put.value.size());
+            memcpy(handle->getMemory(), put.value.data(), put.value.size());
+            options_.cache->insertOrReplace(handle);
+          }
+        }
+      }
       time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s =
@@ -478,9 +516,28 @@ class Tester {
     // Return found or not
     bool do_read(const YCSBGen::Operation& read, std::string* value) {
       time_t get_cpu_start = cpu_timestamp_ns();
-      auto get_start = rusty::time::Instant::now();
-      auto s = options_.db->Get(read_options_, read.key, value);
-      auto get_time = get_start.elapsed();
+      auto start = rusty::time::Instant::now();
+      rocksdb::Status s;
+      {
+        auto handle = options_.cache->find(read.key);
+        timers.timer(TimerType::kCacheRead).add(start.elapsed());
+        if (handle) {
+          const char* d = (const char*)handle->getMemory();
+          size_t s = handle->getSize();
+          value->resize(s);
+          value->assign(d, d + s);
+        } else {
+          s = options_.db->Get(read_options_, read.key, value);
+          auto cache_insert_start =
+              timers.timer(TimerType::kCacheInsert).start();
+          auto handle = options_.cache->allocate(options_.poolId, read.key,
+                                                 value->size());
+          rusty_assert_eq(handle->getSize(), value->size());
+          memcpy(handle->getMemory(), value->data(), value->size());
+          options_.cache->insertOrReplace(handle);
+        }
+      }
+      auto get_time = start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       timers.timer(TimerType::kGet).add(get_time);
       get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
@@ -501,6 +558,7 @@ class Tester {
     }
 
     void do_read_modify_write(const YCSBGen::Operation& op) {
+      rusty_panic("Not supported yet");
       time_t get_cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       std::string value;
@@ -528,6 +586,10 @@ class Tester {
     }
 
     void do_delete(const YCSBGen::Operation& op) {
+      {
+        auto start = timers.timer(TimerType::kCacheDelete).start();
+        options_.cache->remove(op.key);
+      }
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       auto s = options_.db->Delete(write_options_, op.key);
@@ -546,6 +608,7 @@ class Tester {
     }
 
     void do_scan(const YCSBGen::Operation& op) {
+      rusty_panic("Not supported yet");
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       {
@@ -828,7 +891,8 @@ class Tester {
 
     std::ofstream other_stats_out(options_.db_path /
                                   "other-stats-load-finish.txt");
-    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
+    print_other_stats(other_stats_out, options_, *this);
+    print_heavy_stats(other_stats_out, options_);
   }
 
   void prepare_run_phase(

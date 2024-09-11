@@ -12,6 +12,8 @@ ENDIF()
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
+find_package(cachelib REQUIRED)
+
 include_directories(
     ${ROCKSDB_INCLUDE}
 )
@@ -25,6 +27,7 @@ target_link_libraries(${PROJECT_NAME}
 	PRIVATE
 		counter-timer
 		boost_program_options
+		cachelib
 )
 # target_compile_features can omit -std flag in compile_commands.json
 # https://gitlab.kitware.com/cmake/cmake/-/issues/23397
