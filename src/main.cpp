@@ -1009,7 +1009,7 @@ int main(int argc, char **argv) {
   desc.add_options()("enable_fast_generator", "Enable fast generator");
   desc.add_options()("workload",
                      po::value<std::string>()->default_value("file"),
-                     "file/u24685531");
+                     "file/u24685531/2-4-6-8");
   desc.add_options()("workload_file", po::value<std::string>(),
                      "Workload file used in built-in generator");
   desc.add_options()("export_key_only_trace",
@@ -1213,6 +1213,8 @@ int main(int argc, char **argv) {
     work_options.workload_type = WorkloadType::ConfigFile;
   } else if (workload == "u24685531") {
     work_options.workload_type = WorkloadType::u24685531;
+  } else if (workload == "2-4-6-8") {
+    work_options.workload_type = WorkloadType::hotspot_2_4_6_8;
   } else {
     rusty_panic("Unknown workload %s", workload.c_str());
   }

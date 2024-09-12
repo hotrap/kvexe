@@ -122,6 +122,7 @@ enum class FormatType {
 enum class WorkloadType {
   ConfigFile,
   u24685531,
+  hotspot_2_4_6_8,
 };
 
 static inline const char* to_string(YCSBGen::OpType type) {
@@ -361,6 +362,8 @@ class Tester {
         case WorkloadType::u24685531:
           u24685531(info_json_out);
           break;
+        case WorkloadType::hotspot_2_4_6_8:
+          hotspot_2_4_6_8(info_json_out);
       }
     } else {
       ReadAndExecute(info_json_out);
@@ -1044,9 +1047,9 @@ class Tester {
     }
     for (auto& t : threads) t.join();
   }
+  const uint64_t num_load_keys = 110000000;
+  const uint64_t num_run_op = 220000000;
   void run_hotspot(uint64_t offset, double hotspot_set_fraction) {
-    const uint64_t num_load_keys = 110000000;
-    const uint64_t num_run_op = 220000000;
     RunPhase(
         YCSBGen::YCSBGeneratorOptions{
             .record_count = num_load_keys,
@@ -1056,11 +1059,7 @@ class Tester {
                                                     hotspot_set_fraction,
                                                     1 - hotspot_set_fraction));
   }
-  void u24685531(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    const uint64_t num_load_keys = 110000000;
-    const uint64_t num_run_op = 220000000;
-    const uint64_t offset = 0.05 * num_load_keys;
-
+  void load_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     if (options_.load) {
       LoadPhase(info_json_out, YCSBGen::YCSBGeneratorOptions{
                                    .record_count = num_load_keys,
@@ -1069,7 +1068,10 @@ class Tester {
                                    .insert_proportion = 1,
                                });
     }
-
+  }
+  void u24685531(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    const uint64_t offset = 0.05 * num_load_keys;
+    load_phase(info_json_out);
     if (options_.run) {
       prepare_run_phase(info_json_out);
       auto run_start = rusty::time::Instant::now();
@@ -1088,6 +1090,18 @@ class Tester {
       run_hotspot(offset, 0.05);
       run_hotspot(offset, 0.03);
       run_hotspot(offset, 0.01);
+      finish_run_phase(info_json_out, run_start);
+    }
+  }
+  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    load_phase(info_json_out);
+    if (options_.run) {
+      prepare_run_phase(info_json_out);
+      auto run_start = rusty::time::Instant::now();
+      run_hotspot(0, 0.02);
+      run_hotspot(0, 0.04);
+      run_hotspot(0, 0.06);
+      run_hotspot(0, 0.08);
       finish_run_phase(info_json_out, run_start);
     }
   }
