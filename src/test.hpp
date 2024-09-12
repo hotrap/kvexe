@@ -331,6 +331,7 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+  uint64_t run_70p_ops{0};
   facebook::cachelib::LruAllocator* cache;
   facebook::cachelib::PoolId poolId;
 };
@@ -440,6 +441,15 @@ class Tester {
         tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
       }
 
+      size_t run_op_70p = options_.ycsb_gen_options.record_count +
+                          options_.ycsb_gen_options.operation_count * 0.7;
+      size_t last_op_in_current_stage = run_op_70p;
+
+      uint64_t run_70p_ops = options_.run_70p_ops / options_.num_threads;
+      auto interval = rusty::time::Duration::from_nanos(
+          run_70p_ops ? 1000000000 / run_70p_ops : 0);
+      auto next_begin = rusty::time::Instant::now() + interval;
+
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -453,7 +463,22 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        size_t progress =
+            options_.progress->fetch_add(1, std::memory_order_relaxed);
+        if (progress >= last_op_in_current_stage) {
+          last_op_in_current_stage = std::numeric_limits<size_t>::max();
+          if (interval.as_nanos()) {
+            interval = rusty::time::Duration::from_nanos(0);
+          }
+        }
+        if (interval.as_nanos() != 0) {
+          auto now = rusty::time::Instant::now();
+          if (now < next_begin) {
+            std::this_thread::sleep_for(
+                std::chrono::nanoseconds((next_begin - now).as_nanos()));
+          }
+          next_begin += interval;
+        }
       }
       {
         std::unique_lock lck(tester_.thread_local_m_);
