@@ -503,6 +503,7 @@ int main(int argc, char **argv) {
           ->default_value(1.1));
 
   desc.add_options()("cachelib_size", po::value<uint64_t>(&cachelib_size));
+  desc.add_options()("cachelib_ram_size", po::value<size_t>());
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -568,6 +569,9 @@ int main(int argc, char **argv) {
   lruConfig.enableNvmCache(nvmConfig);
   lruConfig.setAccessConfig({/*bucketsPower*/ 25, /*locksPower*/ 10})
       .validate();
+  if (vm.count("cachelib_ram_size")) {
+    lruConfig.setCacheSize(vm["cachelib_ram_size"].as<size_t>());
+  }
   facebook::cachelib::LruAllocator cache(lruConfig);
   auto poolId =
       cache.addPool("default_pool", cache.getCacheMemoryStats().ramCacheSize);
