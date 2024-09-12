@@ -293,7 +293,7 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
-  uint64_t run_70p_sleep_secs{0};
+  uint64_t run_70p_ops{0};
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -402,6 +402,11 @@ class Tester {
                           options_.ycsb_gen_options.operation_count * 0.7;
       size_t last_op_in_current_stage = run_op_70p;
 
+      uint64_t run_70p_ops = options_.run_70p_ops / options_.num_threads;
+      auto interval = rusty::time::Duration::from_nanos(
+          run_70p_ops ? 1000000000 / run_70p_ops : 0);
+      auto next_begin = rusty::time::Instant::now() + interval;
+
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
               ? std::make_optional<std::ofstream>(
@@ -419,10 +424,17 @@ class Tester {
             options_.progress->fetch_add(1, std::memory_order_relaxed);
         if (progress >= last_op_in_current_stage) {
           last_op_in_current_stage = std::numeric_limits<size_t>::max();
-          if (options_.run_70p_sleep_secs) {
-            std::this_thread::sleep_for(
-                std::chrono::seconds(options_.run_70p_sleep_secs));
+          if (interval.as_nanos()) {
+            interval = rusty::time::Duration::from_nanos(0);
           }
+        }
+        if (interval.as_nanos() != 0) {
+          auto now = rusty::time::Instant::now();
+          if (now < next_begin) {
+            std::this_thread::sleep_for(
+                std::chrono::nanoseconds((next_begin - now).as_nanos()));
+          }
+          next_begin += interval;
         }
       }
       {
@@ -948,7 +960,7 @@ class Tester {
   }
 
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    rusty_assert(options_.run_70p_sleep_secs == 0, "Not supported yet");
+    rusty_assert(options_.run_70p_ops == 0, "Not supported yet");
 
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
