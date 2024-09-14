@@ -317,10 +317,11 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                 int tier0_last_level, size_t init_hot_set_size,
                 size_t max_viscnts_size, uint64_t switches,
                 size_t max_hot_set_size, size_t min_hot_set_size,
+                size_t bloom_bfk, 
                 bool enable_sampling)
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-                         min_hot_set_size, max_viscnts_size)),
+                         min_hot_set_size, max_viscnts_size, bloom_bfk)),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
         count_access_fd_hot_(0),
@@ -975,6 +976,7 @@ int main(int argc, char **argv) {
   double arg_max_hot_set_size;
   double arg_max_viscnts_size;
   int compaction_pri;
+  int ralt_bloom_bpk;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1074,6 +1076,8 @@ int main(int argc, char **argv) {
 
   desc.add_options()("enable_sampling", "enable_sampling");
 
+  desc.add_options()("ralt_bloom_bpk", po::value<int>(&ralt_bloom_bpk)->default_value(10), "The number of bits per key in RALT bloom filter.");
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
   if (vm.count("help")) {
@@ -1145,7 +1149,7 @@ int main(int argc, char **argv) {
     router = new RouterVisCnts(options.comparator, viscnts_path_str,
                                first_level_in_sd - 1, hot_set_size_limit,
                                max_viscnts_size, switches, hot_set_size_limit,
-                               hot_set_size_limit, vm.count("enable_sampling"));
+                               hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
 
     options.compaction_router = router;
   }
