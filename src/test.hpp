@@ -293,7 +293,7 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
-  uint64_t run_70p_ops{0};
+  uint64_t run_90p_ops{0};
 };
 
 void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
@@ -398,13 +398,13 @@ class Tester {
         std::unique_lock lck(tester_.thread_local_m_);
       }
 
-      size_t run_op_70p = options_.ycsb_gen_options.record_count +
-                          options_.ycsb_gen_options.operation_count * 0.7;
-      size_t last_op_in_current_stage = run_op_70p;
+      size_t run_op_90p = options_.ycsb_gen_options.record_count +
+                          options_.ycsb_gen_options.operation_count * 0.9;
+      size_t last_op_in_current_stage = run_op_90p;
 
-      uint64_t run_70p_ops = options_.run_70p_ops / options_.num_threads;
+      uint64_t run_90p_ops = options_.run_90p_ops / options_.num_threads;
       auto interval = rusty::time::Duration::from_nanos(
-          run_70p_ops ? 1000000000 / run_70p_ops : 0);
+          run_90p_ops ? 1000000000 / run_90p_ops : 0);
       auto next_begin = rusty::time::Instant::now() + interval;
 
       std::optional<std::ofstream> key_only_trace_out =
@@ -960,7 +960,7 @@ class Tester {
   }
 
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    rusty_assert(options_.run_70p_ops == 0, "Not supported yet");
+    rusty_assert(options_.run_90p_ops == 0, "Not supported yet");
 
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
