@@ -31,6 +31,121 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
+double calc_size_ratio(size_t last_calculated_level,
+                       uint64_t last_calculated_level_size, size_t last_level,
+                       uint64_t size_to_distribute) {
+  size_t a = last_level - last_calculated_level;
+  rusty_assert(a > 0);
+  double inv_a = 1 / (double)a;
+  rusty_assert(size_to_distribute >= last_calculated_level_size);
+  double b = (double)size_to_distribute / last_calculated_level_size;
+  // Solve the equation: f(x) = x^a + x^{a-1} + ... + x - b = 0
+  // x^a + x^{a-1} + ... + 1 = (x^{a+1} - 1) / (x - 1)
+  // x^a + x^{a-1} + ... + x = (x^{a+1} - 1) / (x - 1) - 1
+  // (x^{a+1} - 1) / (x - 1) - 1 = b
+  // x^{a+1} - 1 = (x - 1) * (b + 1)
+  // x^{a+1} - 1 = (b + 1) x - b - 1
+  // x^{a+1} - (b + 1) x + b = 0
+  // Let g(u) = u^{a+1} - (b + 1) u + maxb
+  // g'(u) = (a + 1) u^a - b - 1
+  // Let g'(u_min) = 0, then u_min = ((b + 1) / (a + 1)) ^ (1 / a)
+  // So x >= ((b + 1) / (a + 1)) ^ (1 / a)
+  // x^a + x^{a-1} + ... + x = b > x^a
+  // So x < b ^ (1 / a)
+  // In conclusion, ((b + 1) / (a + 1)) ^ (1 / a) <= x < b ^ (1 / a)
+  double min = pow((b + 1) / (a + 1), inv_a);
+  double max = pow(b, inv_a);
+  auto f = [a, b](double x) {
+    double sum = 0;
+    double xa = x;
+    for (size_t i = 1; i <= a; ++i) {
+      sum += xa;
+      xa *= x;
+    }
+    return sum - b;
+  };
+  while (max - min >= 0.001) {
+    double x = (max + min) / 2;
+    if (f(x) > 0) {
+      max = x;
+    } else {
+      min = x;
+    }
+  }
+  return (max + min) / 2;
+}
+void update_multiplier_additional(rocksdb::DB *db,
+                                  const rocksdb::Options &options,
+                                  size_t last_calculated_level,
+                                  uint64_t last_calculated_level_size,
+                                  size_t &ori_last_level,
+                                  double &ori_size_ratio) {
+  std::string str;
+  db->GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
+  std::istringstream in(str);
+  // The first two lines are headers.
+  size_t lines_to_skip = 2 + last_calculated_level + 1;
+  while (in && lines_to_skip) {
+    --lines_to_skip;
+    while (in && in.get() != '\n')
+      ;
+  }
+  if (!in) return;
+
+  size_t last_level = last_calculated_level;
+  uint64_t size_to_distribute = 0;
+  while (in) {
+    size_t level;
+    size_t num_files;
+    size_t size;
+    in >> level >> num_files >> size;
+    if (size == 0) break;
+    last_level = level;
+    size_to_distribute += size;
+  }
+  size_to_distribute *= 1048576;
+  if (last_level <= last_calculated_level + 1) return;
+  // unlikely
+  if (size_to_distribute <= last_calculated_level_size) return;
+
+  double size_ratio =
+      calc_size_ratio(last_calculated_level, last_calculated_level_size,
+                      last_level, size_to_distribute);
+  if (last_level > ori_last_level) {
+    std::cerr << "Last level: " << ori_last_level << " -> " << last_level
+              << std::endl;
+    ori_last_level = last_level;
+  } else if (size_ratio > 10) {
+    do {
+      last_level += 1;
+      ori_last_level = last_level;
+      std::cerr << "Increase num_levels to " << last_level + 1 << std::endl;
+      size_ratio =
+          calc_size_ratio(last_calculated_level, last_calculated_level_size,
+                          last_level, size_to_distribute);
+    } while (size_ratio > 10);
+  } else {
+    // When applying the new size ratio configuration, sd_ratio < ori_sd_ratio.
+    // At this time we don't change the size ratio configuration.
+    if (size_ratio - ori_size_ratio <= 0.01) return;
+  }
+  ori_size_ratio = size_ratio;
+  size_ratio /= 10;
+  std::ostringstream out;
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    out << x << ':';
+  }
+  for (size_t level = last_calculated_level + 1; level < last_level; ++level) {
+    out << size_ratio << ':';
+  }
+  out << "100";
+  str = out.str();
+  std::cerr << "Update max_bytes_for_level_multiplier_additional: " << str
+            << std::endl;
+  db->SetOptions(
+      {{"max_bytes_for_level_multiplier_additional", std::move(str)}});
+}
+
 double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   if (level >= static_cast<int>(
                    options.max_bytes_for_level_multiplier_additional.size())) {
@@ -39,9 +154,9 @@ double MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
+std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
     const rocksdb::Options &options) {
-  std::vector<std::pair<uint64_t, std::string>> ret;
+  std::vector<std::pair<uint64_t, uint32_t>> ret;
   uint32_t p = 0;
   size_t level = 0;
   assert(!options.db_paths.empty());
@@ -66,7 +181,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     if (cur_level == level) {
       // Does desired level fit in this path?
       rusty_assert_eq(ret.size(), level);
-      ret.emplace_back(level_size, options.db_paths[p].path);
+      ret.emplace_back(level_size, p);
       ++level;
     }
     current_path_size -= level_size;
@@ -90,7 +205,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     cur_level++;
   }
   rusty_assert_eq(ret.size(), level);
-  ret.emplace_back(level_size, options.db_paths[p].path);
+  ret.emplace_back(level_size, p);
   return ret;
 }
 
@@ -380,6 +495,9 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
+  options.max_bytes_for_level_multiplier_additional.clear();
+  options.max_bytes_for_level_multiplier_additional.push_back(1);
+
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10,
@@ -399,11 +517,13 @@ int main(int argc, char **argv) {
     rusty_assert(ret.size() > 0);
     size_t first_level_in_sd = ret.size() - 1;
     for (size_t level = 0; level < first_level_in_sd; ++level) {
-      std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
-                << std::endl;
+      auto p = ret[level].second;
+      std::cerr << level << ' ' << options.db_paths[p].path << ' '
+                << ret[level].first << std::endl;
     }
-    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
-              << ' ' << ret[first_level_in_sd].first << std::endl;
+    auto p = ret[first_level_in_sd].second;
+    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+              << ret[first_level_in_sd].first << std::endl;
     if (options.db_paths.size() == 1) {
       first_level_in_sd = 100;
     }
@@ -466,8 +586,13 @@ int main(int argc, char **argv) {
   Tester tester(work_options);
 
   auto period_print_stat = [&]() {
+    size_t ori_last_level = 1;
+    double ori_size_ratio = 0;
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
+      update_multiplier_additional(db, options, 1,
+                                   options.max_bytes_for_level_base,
+                                   ori_last_level, ori_size_ratio);
       print_other_stats(period_stats, options, tester);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
