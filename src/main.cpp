@@ -1076,7 +1076,7 @@ int main(int argc, char **argv) {
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
   desc.add_options()("enable_sampling", "enable_sampling");
-  desc.add_options()("ralt_bloom_bpk", po::value<int>(&ralt_bloom_bpk)->default_value(10), "The number of bits per key in RALT bloom filter.");
+  desc.add_options()("ralt_bloom_bpk", po::value<int>(&ralt_bloom_bpk)->default_value(14), "The number of bits per key in RALT bloom filter.");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
