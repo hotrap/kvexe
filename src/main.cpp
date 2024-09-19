@@ -941,8 +941,19 @@ void print_other_stats(std::ostream &log, const rocksdb::Options &options,
       << '\n';
 
   log << "Promotion cache hits: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_PROMOTION_CACHE)
-      << "\n";
+      << options.statistics->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT)
+      << '\n';
+  log << "Promotion cache insert fail to lock: "
+      << options.statistics->getTickerCount(
+             rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
+      << '\n';
+  log << "Promotion cache insert fail due to compacted: "
+      << options.statistics->getTickerCount(
+             rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
+      << '\n';
+  log << "Promotion cache insert success: "
+      << options.statistics->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT)
+      << '\n';
   log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
   log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
 
