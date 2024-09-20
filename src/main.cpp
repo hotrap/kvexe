@@ -311,15 +311,16 @@ class TimedIter : public rocksdb::TraitIterator<T> {
   std::unique_ptr<rocksdb::TraitIterator<T>> iter_;
 };
 
-class RALT : public rocksdb::RALT {
+class RaltWrapper : public rocksdb::RALT {
  public:
-  RALT(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-       int tier0_last_level, size_t init_hot_set_size, size_t max_viscnts_size,
-       uint64_t switches, size_t max_hot_set_size, size_t min_hot_set_size,
-       size_t bloom_bfk, bool enable_sampling)
+  RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
+              int tier0_last_level, size_t init_hot_set_size,
+              size_t max_viscnts_size, uint64_t switches,
+              size_t max_hot_set_size, size_t min_hot_set_size,
+              size_t bloom_bfk, bool enable_sampling)
       : switches_(switches),
-        vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-                         min_hot_set_size, max_viscnts_size, bloom_bfk)),
+        vc_(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
+                         min_hot_set_size, max_viscnts_size, bloom_bfk),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
         count_access_fd_hot_(0),
@@ -541,7 +542,8 @@ class AutoTuner {
  public:
   AutoTuner(const WorkOptions &work_options, rocksdb::Options &options,
             size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
-            uint64_t min_vc_hot_set_size, size_t wait_time_ns, RALT &ralt)
+            uint64_t min_vc_hot_set_size, size_t wait_time_ns,
+            RaltWrapper &ralt)
       : work_options_(work_options),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
@@ -662,14 +664,14 @@ class AutoTuner {
   ssize_t wait_time_ns_;
   uint64_t max_vc_hot_set_size_;
   uint64_t min_vc_hot_set_size_;
-  RALT &ralt_;
+  RaltWrapper &ralt_;
   std::ofstream log_;
 
   bool stop_signal_{false};
   std::thread th_;
 };
 
-void print_vc_param(RALT &ralt, WorkOptions *work_options,
+void print_vc_param(RaltWrapper &ralt, WorkOptions *work_options,
                     std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
   auto vc_parameter_path = db_path / "vc_param";
@@ -685,7 +687,7 @@ void print_vc_param(RALT &ralt, WorkOptions *work_options,
 void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options->db;
-  auto ralt = static_cast<RALT *>(options->ralt);
+  auto ralt = static_cast<RaltWrapper *>(options->ralt);
   const std::filesystem::path &db_path = work_options->db_path;
 
   char buf[16];
@@ -1143,12 +1145,12 @@ int main(int argc, char **argv) {
   auto ret = predict_level_assignment(options);
   rusty_assert_eq(ret.size() - 1, first_level_in_sd);
 
-  RALT *ralt = nullptr;
+  RaltWrapper *ralt = nullptr;
   if (first_level_in_sd != 0) {
-    ralt = new RALT(options.comparator, viscnts_path_str, first_level_in_sd - 1,
-                    hot_set_size_limit, max_viscnts_size, switches,
-                    hot_set_size_limit, hot_set_size_limit, ralt_bloom_bpk,
-                    vm.count("enable_sampling"));
+    ralt = new RaltWrapper(
+        options.comparator, viscnts_path_str, first_level_in_sd - 1,
+        hot_set_size_limit, max_viscnts_size, switches, hot_set_size_limit,
+        hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
 
     options.ralt = ralt;
   }
