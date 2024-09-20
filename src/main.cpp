@@ -317,8 +317,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
                 int tier0_last_level, size_t init_hot_set_size,
                 size_t max_viscnts_size, uint64_t switches,
                 size_t max_hot_set_size, size_t min_hot_set_size,
-                size_t bloom_bfk, 
-                bool enable_sampling)
+                size_t bloom_bfk, bool enable_sampling)
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
                          min_hot_set_size, max_viscnts_size, bloom_bfk)),
@@ -908,59 +907,49 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
 
 void print_other_stats(std::ostream &log, const rocksdb::Options &options,
                        Tester &tester) {
+  const std::shared_ptr<rocksdb::Statistics> &stats = options.statistics;
   log << "Timestamp: " << timestamp_ns() << "\n";
   log << "rocksdb.block.cache.data.miss: "
-      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
-      << "\n";
+      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS) << '\n';
   log << "rocksdb.block.cache.data.hit: "
-      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-      << "\n";
+      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT) << '\n';
   log << "rocksdb.bloom.filter.useful: "
-      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-      << "\n";
+      << stats->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL) << '\n';
   log << "rocksdb.bloom.filter.full.positive: "
-      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE)
-      << "\n";
+      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE) << '\n';
   log << "rocksdb.bloom.filter.full.true.positive: "
-      << options.statistics->getTickerCount(
-             rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
-      << "\n";
+      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+      << '\n';
   log << "rocksdb.memtable.hit: "
-      << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
-  log << "rocksdb.l0.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
-  log << "rocksdb.l1.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
+      << stats->getTickerCount(rocksdb::MEMTABLE_HIT) << '\n';
+  log << "rocksdb.l0.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L0)
+      << '\n';
+  log << "rocksdb.l1.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L1)
+      << '\n';
   log << "rocksdb.rocksdb.l2andup.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << "\n";
+      << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
   log << "leader write count: "
-      << options.statistics->getTickerCount(rocksdb::LEADER_WRITE_COUNT)
-      << '\n';
+      << stats->getTickerCount(rocksdb::LEADER_WRITE_COUNT) << '\n';
   log << "non leader write count: "
-      << options.statistics->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT)
-      << '\n';
+      << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
 
   log << "Promotion cache hits: "
-      << options.statistics->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT)
-      << '\n';
+      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT) << '\n';
   log << "Promotion cache insert fail to lock: "
-      << options.statistics->getTickerCount(
-             rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
+      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
       << '\n';
   log << "Promotion cache insert fail due to compacted: "
-      << options.statistics->getTickerCount(
-             rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
+      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
       << '\n';
   log << "Promotion cache insert success: "
-      << options.statistics->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT)
-      << '\n';
-  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
-  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
+      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << '\n';
+  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << '\n';
+  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << '\n';
 
   print_timers(log);
 
   /* Operation counts*/
-  log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
+  log << "notfound counts: " << tester.GetNotFoundCounts() << '\n';
   log << "stat end===" << std::endl;
 }
 
@@ -1087,7 +1076,9 @@ int main(int argc, char **argv) {
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
   desc.add_options()("enable_sampling", "enable_sampling");
-  desc.add_options()("ralt_bloom_bpk", po::value<int>(&ralt_bloom_bpk)->default_value(14), "The number of bits per key in RALT bloom filter.");
+  desc.add_options()("ralt_bloom_bpk",
+                     po::value<int>(&ralt_bloom_bpk)->default_value(14),
+                     "The number of bits per key in RALT bloom filter.");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -1157,10 +1148,10 @@ int main(int argc, char **argv) {
 
   RouterVisCnts *router = nullptr;
   if (first_level_in_sd != 0) {
-    router = new RouterVisCnts(options.comparator, viscnts_path_str,
-                               first_level_in_sd - 1, hot_set_size_limit,
-                               max_viscnts_size, switches, hot_set_size_limit,
-                               hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
+    router = new RouterVisCnts(
+        options.comparator, viscnts_path_str, first_level_in_sd - 1,
+        hot_set_size_limit, max_viscnts_size, switches, hot_set_size_limit,
+        hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
 
     options.compaction_router = router;
   }
