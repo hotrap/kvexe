@@ -4,7 +4,7 @@
 #include <counter_timer_vec.hpp>
 #include <sstream>
 
-#include "rocksdb/compaction_router.h"
+#include "rocksdb/ralt.h"
 #include "test.hpp"
 #include "viscnts.h"
 
@@ -311,13 +311,12 @@ class TimedIter : public rocksdb::TraitIterator<T> {
   std::unique_ptr<rocksdb::TraitIterator<T>> iter_;
 };
 
-class RouterVisCnts : public rocksdb::CompactionRouter {
+class RALT : public rocksdb::RALT {
  public:
-  RouterVisCnts(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-                int tier0_last_level, size_t init_hot_set_size,
-                size_t max_viscnts_size, uint64_t switches,
-                size_t max_hot_set_size, size_t min_hot_set_size,
-                size_t bloom_bfk, bool enable_sampling)
+  RALT(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
+       int tier0_last_level, size_t init_hot_set_size, size_t max_viscnts_size,
+       uint64_t switches, size_t max_hot_set_size, size_t min_hot_set_size,
+       size_t bloom_bfk, bool enable_sampling)
       : switches_(switches),
         vc_(VisCnts::New(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
                          min_hot_set_size, max_viscnts_size, bloom_bfk)),
@@ -330,7 +329,7 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
       level_hits_[i].store(0, std::memory_order_relaxed);
     }
   }
-  const char *Name() const override { return "RouterVisCnts"; }
+  const char *Name() const override { return "RALT"; }
   size_t Tier(int level) override {
     if (level <= tier0_last_level_) {
       return 0;
@@ -389,9 +388,9 @@ class RouterVisCnts : public rocksdb::CompactionRouter {
   }
   // The returned pointer will stay valid until the next call to Seek or
   // NextHot with this iterator
-  rocksdb::CompactionRouter::Iter LowerBound(rocksdb::Slice key) override {
+  rocksdb::RALT::Iter LowerBound(rocksdb::Slice key) override {
     auto guard = timers.timer(TimerType::kLowerBound).start();
-    return rocksdb::CompactionRouter::Iter(
+    return rocksdb::RALT::Iter(
         std::make_unique<TimedIter<rocksdb::HotRecInfo>>(vc_.LowerBound(key)));
   }
   size_t RangeHotSize(rocksdb::Slice smallest,
@@ -542,15 +541,14 @@ class AutoTuner {
  public:
   AutoTuner(const WorkOptions &work_options, rocksdb::Options &options,
             size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
-            uint64_t min_vc_hot_set_size, size_t wait_time_ns,
-            RouterVisCnts &router)
+            uint64_t min_vc_hot_set_size, size_t wait_time_ns, RALT &ralt)
       : work_options_(work_options),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
         wait_time_ns_(wait_time_ns),
         max_vc_hot_set_size_(max_vc_hot_set_size),
         min_vc_hot_set_size_(min_vc_hot_set_size),
-        router_(router),
+        ralt_(ralt),
         log_(work_options_.db_path / "vc_log") {
     th_ = std::thread([&]() { update_thread(); });
   }
@@ -564,7 +562,7 @@ class AutoTuner {
 
  private:
   void update_thread() {
-    VisCnts &vc = router_.get_vc();
+    VisCnts &vc = ralt_.get_vc();
     const uint64_t initial_max_hot_set_size = vc.GetMaxHotSetSizeLimit();
     std::cerr << "Initial max hot set size: " << initial_max_hot_set_size
               << std::endl;
@@ -588,7 +586,7 @@ class AutoTuner {
       }
       uint64_t real_hot_set_size = vc.GetRealHotSetSize();
       std::cerr << "real_hot_set_size " << real_hot_set_size << '\n';
-      if (router_.get_vc().DecayCount() > 10) {
+      if (ralt_.get_vc().DecayCount() > 10) {
         if (first) {
           first = false;
           warming_up = false;
@@ -602,7 +600,7 @@ class AutoTuner {
             rate * hs_step;  // std::max<size_t>(rate * hs_step, (64 << 20));
         phy_size_limit = real_phy_size + delta;
         std::cerr << "rate " << rate << std::endl;
-        router_.get_vc().SetPhysicalSizeLimit(phy_size_limit);
+        ralt_.get_vc().SetPhysicalSizeLimit(phy_size_limit);
         std::cerr << "Update physical size limit: " << phy_size_limit
                   << std::endl;
       }
@@ -664,14 +662,14 @@ class AutoTuner {
   ssize_t wait_time_ns_;
   uint64_t max_vc_hot_set_size_;
   uint64_t min_vc_hot_set_size_;
-  RouterVisCnts &router_;
+  RALT &ralt_;
   std::ofstream log_;
 
   bool stop_signal_{false};
   std::thread th_;
 };
 
-void print_vc_param(RouterVisCnts &router, WorkOptions *work_options,
+void print_vc_param(RALT &ralt, WorkOptions *work_options,
                     std::atomic<bool> *should_stop) {
   const std::filesystem::path &db_path = work_options->db_path;
   auto vc_parameter_path = db_path / "vc_param";
@@ -679,15 +677,15 @@ void print_vc_param(RouterVisCnts &router, WorkOptions *work_options,
   while (!should_stop->load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     auto timestamp = timestamp_ns();
-    out << timestamp << " " << router.get_vc().GetHotSetSizeLimit() << " "
-        << router.get_vc().GetPhySizeLimit() << std::endl;
+    out << timestamp << " " << ralt.get_vc().GetHotSetSizeLimit() << " "
+        << ralt.get_vc().GetPhySizeLimit() << std::endl;
   }
 }
 
 void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options->db;
-  auto router = static_cast<RouterVisCnts *>(options->compaction_router);
+  auto ralt = static_cast<RALT *>(options->ralt);
   const std::filesystem::path &db_path = work_options->db_path;
 
   char buf[16];
@@ -714,39 +712,38 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
                 "get-cpu-nanos delete-cpu-nanos";
   uint64_t value;
-  bool has_viscnts_compaction_thread_cpu_nanos =
-      router->get_viscnts_int_property("viscnts.compaction.thread.cpu.nanos",
-                                       &value);
+  bool has_viscnts_compaction_thread_cpu_nanos = ralt->get_viscnts_int_property(
+      "viscnts.compaction.thread.cpu.nanos", &value);
   if (has_viscnts_compaction_thread_cpu_nanos) {
     timers_out << " viscnts.compaction.thread.cpu.nanos";
   }
-  bool has_viscnts_flush_thread_cpu_nanos = router->get_viscnts_int_property(
-      "viscnts.flush.thread.cpu.nanos", &value);
+  bool has_viscnts_flush_thread_cpu_nanos =
+      ralt->get_viscnts_int_property("viscnts.flush.thread.cpu.nanos", &value);
   if (has_viscnts_flush_thread_cpu_nanos) {
     timers_out << " viscnts.flush.thread.cpu.nanos";
   }
-  bool has_viscnts_decay_thread_cpu_nanos = router->get_viscnts_int_property(
-      "viscnts.decay.thread.cpu.nanos", &value);
+  bool has_viscnts_decay_thread_cpu_nanos =
+      ralt->get_viscnts_int_property("viscnts.decay.thread.cpu.nanos", &value);
   if (has_viscnts_decay_thread_cpu_nanos) {
     timers_out << " viscnts.decay.thread.cpu.nanos";
   }
   bool has_viscnts_compaction_cpu_nanos =
-      router->get_viscnts_int_property("viscnts.compaction.cpu.nanos", &value);
+      ralt->get_viscnts_int_property("viscnts.compaction.cpu.nanos", &value);
   if (has_viscnts_compaction_cpu_nanos) {
     timers_out << " viscnts.compaction.cpu.nanos";
   }
   bool has_viscnts_flush_cpu_nanos =
-      router->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value);
+      ralt->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value);
   if (has_viscnts_flush_cpu_nanos) {
     timers_out << " viscnts.flush.cpu.nanos";
   }
   bool has_viscnts_decay_scan_cpu_nanos =
-      router->get_viscnts_int_property("viscnts.decay.scan.cpu.nanos", &value);
+      ralt->get_viscnts_int_property("viscnts.decay.scan.cpu.nanos", &value);
   if (has_viscnts_decay_scan_cpu_nanos) {
     timers_out << " viscnts.decay.scan.cpu.nanos";
   }
   bool has_viscnts_decay_write_cpu_nanos =
-      router->get_viscnts_int_property("viscnts.decay.write.cpu.nanos", &value);
+      ralt->get_viscnts_int_property("viscnts.decay.write.cpu.nanos", &value);
   if (has_viscnts_decay_write_cpu_nanos) {
     timers_out << " viscnts.decay.write.cpu.nanos";
   }
@@ -822,37 +819,37 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << delete_cpu_nanos.load(std::memory_order_relaxed);
     if (has_viscnts_compaction_thread_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.compaction.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_flush_thread_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.flush.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_thread_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.decay.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_compaction_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.compaction.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_flush_cpu_nanos) {
       rusty_assert(
-          router->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value));
+          ralt->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_scan_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.decay.scan.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_write_cpu_nanos) {
-      rusty_assert(router->get_viscnts_int_property(
+      rusty_assert(ralt->get_viscnts_int_property(
           "viscnts.decay.write.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
@@ -876,22 +873,22 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
         << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
     num_accesses_out << timestamp;
-    auto level_hits = router->level_hits();
+    auto level_hits = ralt->level_hits();
     for (size_t hits : level_hits) {
       num_accesses_out << ' ' << hits;
     }
     num_accesses_out << std::endl;
 
     uint64_t viscnts_read;
-    rusty_assert(router->get_viscnts_int_property(
-        VisCnts::Properties::kReadBytes, &viscnts_read));
+    rusty_assert(ralt->get_viscnts_int_property(VisCnts::Properties::kReadBytes,
+                                                &viscnts_read));
     uint64_t viscnts_write;
-    rusty_assert(router->get_viscnts_int_property(
+    rusty_assert(ralt->get_viscnts_int_property(
         VisCnts::Properties::kWriteBytes, &viscnts_write));
     viscnts_io_out << timestamp << ' ' << viscnts_read << ' ' << viscnts_write
                    << std::endl;
 
-    VisCnts &vc = router->get_vc();
+    VisCnts &vc = ralt->get_vc();
     viscnts_sizes << timestamp << ' ' << vc.GetRealPhySize() << ' '
                   << vc.GetRealHotSetSize() << std::endl;
 
@@ -1146,14 +1143,14 @@ int main(int argc, char **argv) {
   auto ret = predict_level_assignment(options);
   rusty_assert_eq(ret.size() - 1, first_level_in_sd);
 
-  RouterVisCnts *router = nullptr;
+  RALT *ralt = nullptr;
   if (first_level_in_sd != 0) {
-    router = new RouterVisCnts(
-        options.comparator, viscnts_path_str, first_level_in_sd - 1,
-        hot_set_size_limit, max_viscnts_size, switches, hot_set_size_limit,
-        hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
+    ralt = new RALT(options.comparator, viscnts_path_str, first_level_in_sd - 1,
+                    hot_set_size_limit, max_viscnts_size, switches,
+                    hot_set_size_limit, hot_set_size_limit, ralt_bloom_bpk,
+                    vm.count("enable_sampling"));
 
-    options.compaction_router = router;
+    options.ralt = ralt;
   }
 
   rocksdb::DB *db;
@@ -1247,11 +1244,11 @@ int main(int argc, char **argv) {
   Tester tester(work_options);
 
   AutoTuner *autotuner = nullptr;
-  if (vm.count("enable_auto_tuning") && router) {
+  if (vm.count("enable_auto_tuning") && ralt) {
     autotuner =
         new AutoTuner(work_options, options, first_level_in_sd,
                       options.db_paths[0].target_size * 0.7,
-                      options.db_paths[0].target_size * 0.05, 20e9, *router);
+                      options.db_paths[0].target_size * 0.05, 20e9, *ralt);
   }
 
   auto period_print_stat = [&]() {
@@ -1263,7 +1260,7 @@ int main(int argc, char **argv) {
   };
 
   auto print_vc_param_func = [&]() {
-    print_vc_param(*router, &work_options, &should_stop);
+    print_vc_param(*ralt, &work_options, &should_stop);
   };
 
   std::thread period_print_vc_param_thread(print_vc_param_func);
@@ -1298,15 +1295,14 @@ int main(int argc, char **argv) {
 
   print_other_stats(std::cerr, options, tester);
 
-  /* Statistics of router */
-  if (router) {
+  /* Statistics of RALT */
+  if (ralt) {
     if (tester.work_options().switches & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-      auto counters = router->hit_hot_count();
+      auto counters = ralt->hit_hot_count();
       assert(counters.size() == 2);
       std::cerr << "Access hot per tier: " << counters[0] << ' ' << counters[1]
-                << "\nAccess FD hot: " << router->count_access_fd_hot()
-                << "\nAccess FD cold: " << router->count_access_fd_cold()
-                << '\n';
+                << "\nAccess FD hot: " << ralt->count_access_fd_hot()
+                << "\nAccess FD cold: " << ralt->count_access_fd_cold() << '\n';
     }
   }
 
@@ -1315,7 +1311,7 @@ int main(int argc, char **argv) {
   period_print_vc_param_thread.join();
   delete autotuner;
   delete db;
-  delete router;
+  delete ralt;
 
   return 0;
 }
