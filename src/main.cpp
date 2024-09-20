@@ -331,13 +331,6 @@ class RaltWrapper : public rocksdb::RALT {
     }
   }
   const char *Name() const override { return "RALT"; }
-  size_t Tier(int level) override {
-    if (level <= tier0_last_level_) {
-      return 0;
-    } else {
-      return 1;
-    }
-  }
   void HitLevel(int level, rocksdb::Slice key) override {
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value()
@@ -348,7 +341,7 @@ class RaltWrapper : public rocksdb::RALT {
     level_hits_[level].fetch_add(1, std::memory_order_relaxed);
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
-      size_t tier = Tier(level);
+      size_t tier = level <= tier0_last_level_ ? 0 : 1;
       bool is_hot = vc_.IsHot(key);
       if (is_hot)
         count_access_hot_per_tier_[tier].fetch_add(1,
