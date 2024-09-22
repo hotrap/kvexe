@@ -286,51 +286,25 @@ bool is_empty_directory(std::string dir_path) {
   return it == std::filesystem::end(it);
 }
 
-enum class PerLevelTimerType : size_t {
-  kEnd,
-};
-constexpr size_t PER_LEVEL_TIMER_NUM =
-    static_cast<size_t>(PerLevelTimerType::kEnd);
-const char *per_level_timer_names[] = {};
-static_assert(PER_LEVEL_TIMER_NUM ==
-              sizeof(per_level_timer_names) / sizeof(const char *));
-counter_timer_vec::TypedTimersVector<PerLevelTimerType> per_level_timers(
-    PER_LEVEL_TIMER_NUM);
-
-template <typename T>
-class TimedIter : public rocksdb::TraitIterator<T> {
- public:
-  TimedIter(std::unique_ptr<rocksdb::TraitIterator<T>> iter)
-      : iter_(std::move(iter)) {}
-  rocksdb::optional<T> next() override {
-    auto guard = timers.timer(TimerType::kNextHot).start();
-    return iter_->next();
-  }
-
- private:
-  std::unique_ptr<rocksdb::TraitIterator<T>> iter_;
-};
-
-class RaltWrapper : public rocksdb::RALT {
+class RaltWrapper : public RALT {
  public:
   RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
               int tier0_last_level, size_t init_hot_set_size,
               size_t max_viscnts_size, uint64_t switches,
               size_t max_hot_set_size, size_t min_hot_set_size,
-              size_t bloom_bfk, bool enable_sampling)
-      : switches_(switches),
-        vc_(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-                         min_hot_set_size, max_viscnts_size, bloom_bfk),
+              size_t bloom_bfk)
+      : RALT(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
+             min_hot_set_size, max_viscnts_size, bloom_bfk),
+        switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
         count_access_fd_hot_(0),
-        count_access_fd_cold_(0),
-        enable_sampling_(enable_sampling) {
+        count_access_fd_cold_(0) {
     for (size_t i = 0; i < MAX_NUM_LEVELS; ++i) {
       level_hits_[i].store(0, std::memory_order_relaxed);
     }
   }
-  const char *Name() const override { return "RALT"; }
+  const char *Name() const override { return "RALT-wrapper"; }
   void HitLevel(int level, rocksdb::Slice key) override {
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value()
@@ -342,7 +316,7 @@ class RaltWrapper : public rocksdb::RALT {
 
     if (switches_ & MASK_COUNT_ACCESS_HOT_PER_TIER) {
       size_t tier = level <= tier0_last_level_ ? 0 : 1;
-      bool is_hot = vc_.IsHot(key);
+      bool is_hot = IsHot(key);
       if (is_hot)
         count_access_hot_per_tier_[tier].fetch_add(1,
                                                    std::memory_order_relaxed);
@@ -354,47 +328,6 @@ class RaltWrapper : public rocksdb::RALT {
         }
       }
     }
-  }
-  void Access(rocksdb::Slice key, size_t vlen) override {
-    thread_local static std::optional<std::mt19937> rgen;
-    auto guard = timers.timer(TimerType::kAccess).start();
-    double rate =
-        count_access_hot_per_tier_[0].load(std::memory_order_relaxed) /
-        (double)(count_access_hot_per_tier_[0].load(std::memory_order_relaxed) +
-                 count_access_hot_per_tier_[1].load(std::memory_order_relaxed));
-    if (rate > 0.95 && enable_sampling_) {
-      double A = (0.95 / rate);
-      if (!rgen) {
-        rgen = std::mt19937(std::random_device()());
-      }
-      std::uniform_real_distribution<> dis(0, 1);
-      if (dis(rgen.value()) < A) {
-        vc_.Access(key, vlen);
-      }
-    } else {
-      vc_.Access(key, vlen);
-    }
-  }
-
-  bool IsHot(rocksdb::Slice key) override {
-    auto guard = timers.timer(TimerType::kIsHot).start();
-    return vc_.IsHot(key);
-  }
-  // The returned pointer will stay valid until the next call to Seek or
-  // NextHot with this iterator
-  rocksdb::RALT::Iter LowerBound(rocksdb::Slice key) override {
-    auto guard = timers.timer(TimerType::kLowerBound).start();
-    return rocksdb::RALT::Iter(
-        std::make_unique<TimedIter<rocksdb::HotRecInfo>>(vc_.LowerBound(key)));
-  }
-  size_t RangeHotSize(rocksdb::Slice smallest,
-                      rocksdb::Slice largest) override {
-    auto guard = timers.timer(TimerType::kRangeHotSize).start();
-    return vc_.RangeHotSize(smallest, largest);
-  }
-
-  bool get_viscnts_int_property(std::string_view property, uint64_t *value) {
-    return vc_.GetIntProperty(property, value);
   }
 
   std::vector<size_t> hit_tier_count() {
@@ -442,83 +375,14 @@ class RaltWrapper : public rocksdb::RALT {
     return count_access_fd_cold_.load(std::memory_order_relaxed);
   }
 
-  VisCnts &get_vc() { return vc_; }
-
  private:
   const uint64_t switches_;
-  VisCnts vc_;
   int tier0_last_level_;
 
   std::atomic<uint64_t> level_hits_[MAX_NUM_LEVELS];
   std::atomic<uint64_t> count_access_hot_per_tier_[2];
   std::atomic<uint64_t> count_access_fd_hot_;
   std::atomic<uint64_t> count_access_fd_cold_;
-  bool enable_sampling_{false};
-};
-
-class HitRateMonitor {
- public:
-  HitRateMonitor(size_t threshold) : threshold_(threshold) {}
-
-  void BeginPeriod(const std::vector<size_t> &hr) {
-    lst_hr_ = hr;
-    period_first_hr_ = hr;
-    is_stable_ = false;
-    tick_ = 0;
-    max_rate_ = 0;
-    min_rate_ = 1;
-    eq_tick_ = 0;
-    is_in_per_ = true;
-  }
-
-  double AddPeriodData(const std::vector<size_t> &hr) {
-    if ((ssize_t)hr[1] + hr[0] - lst_hr_[1] - lst_hr_[0] < threshold_) {
-      return -1;
-    }
-    double rate = CalcRate(lst_hr_, hr);
-    if (max_rate_ + 0.005 < rate || min_rate_ - 0.005 > rate) {
-      max_rate_ = std::max(max_rate_, rate);
-      min_rate_ = std::min(min_rate_, rate);
-      eq_tick_ = 0;
-    } else {
-      eq_tick_ += 1;
-    }
-    if (eq_tick_ == 1) {
-      period_first_hr_ = hr;
-    }
-    if (eq_tick_ == 4) {
-      is_stable_ = true;
-    }
-    lst_hr_ = hr;
-    tick_ += 1;
-    return rate;
-  }
-
-  bool IsStable() const { return is_stable_; }
-
-  double GetStableRate() const { return CalcRate(period_first_hr_, lst_hr_); }
-
-  bool IsInPeriod() const { return is_in_per_; }
-
-  void EndPeriod() { is_in_per_ = false; }
-
- private:
-  double CalcRate(const std::vector<size_t> &L,
-                  const std::vector<size_t> &R) const {
-    double rate = ((double)R[0] - L[0]) / ((double)R[0] - L[0] + R[1] - L[1]);
-    return rate;
-  }
-
-  double lst_rate_{0};
-  double max_rate_{0};
-  double min_rate_{0};
-  bool is_stable_{false};
-  bool is_in_per_{false};
-  size_t tick_{0};
-  size_t eq_tick_{0};
-  size_t threshold_{100};
-  std::vector<size_t> lst_hr_;
-  std::vector<size_t> period_first_hr_;
 };
 
 class AutoTuner {
@@ -547,16 +411,15 @@ class AutoTuner {
 
  private:
   void update_thread() {
-    VisCnts &vc = ralt_.get_vc();
-    const uint64_t initial_max_hot_set_size = vc.GetMaxHotSetSizeLimit();
+    const uint64_t initial_max_hot_set_size = ralt_.GetMaxHotSetSizeLimit();
     std::cerr << "Initial max hot set size: " << initial_max_hot_set_size
               << std::endl;
 
-    const uint64_t initial_hot_set_size_limit = vc.GetHotSetSizeLimit();
+    const uint64_t initial_hot_set_size_limit = ralt_.GetHotSetSizeLimit();
     std::cerr << "Initial hot set size limit: " << initial_hot_set_size_limit
               << std::endl;
 
-    uint64_t phy_size_limit = vc.GetPhySizeLimit();
+    uint64_t phy_size_limit = ralt_.GetPhySizeLimit();
     std::cerr << "Initial physical size limit: " << phy_size_limit << std::endl;
 
     const size_t last_level_in_fd = first_level_in_sd_ - 1;
@@ -569,23 +432,23 @@ class AutoTuner {
       if (stop_signal_) {
         break;
       }
-      uint64_t real_hot_set_size = vc.GetRealHotSetSize();
+      uint64_t real_hot_set_size = ralt_.GetRealHotSetSize();
       std::cerr << "real_hot_set_size " << real_hot_set_size << '\n';
-      if (ralt_.get_vc().DecayCount() > 10) {
+      if (ralt_.DecayCount() > 10) {
         if (first) {
           first = false;
           warming_up = false;
-          vc.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
+          ralt_.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
         }
         double hs_step = max_vc_hot_set_size_ / 20.0;
-        uint64_t real_phy_size = vc.GetRealPhySize();
+        uint64_t real_phy_size = ralt_.GetRealPhySize();
         std::cerr << "real_phy_size " << real_phy_size << '\n';
         auto rate = real_phy_size / (double)real_hot_set_size;
         auto delta =
             rate * hs_step;  // std::max<size_t>(rate * hs_step, (64 << 20));
         phy_size_limit = real_phy_size + delta;
         std::cerr << "rate " << rate << std::endl;
-        ralt_.get_vc().SetPhysicalSizeLimit(phy_size_limit);
+        ralt_.SetPhysicalSizeLimit(phy_size_limit);
         std::cerr << "Update physical size limit: " << phy_size_limit
                   << std::endl;
       }
@@ -603,17 +466,17 @@ class AutoTuner {
       } else {
         max_hot_set_size = std::min(max_hot_set_size, max_vc_hot_set_size_);
       }
-      if (vc.GetMaxHotSetSizeLimit() != max_hot_set_size) {
+      if (ralt_.GetMaxHotSetSizeLimit() != max_hot_set_size) {
         std::cerr << "Update max hot set size limit: " << max_hot_set_size
                   << std::endl;
-        vc.SetMaxHotSetSizeLimit(max_hot_set_size);
+        ralt_.SetMaxHotSetSizeLimit(max_hot_set_size);
       }
 
       uint64_t hot_set_size;
       if (warming_up) {
         hot_set_size = real_hot_set_size;
       } else {
-        hot_set_size = vc.GetHotSetSizeLimit();
+        hot_set_size = ralt_.GetHotSetSizeLimit();
         std::cerr << "hot set size limit: " << hot_set_size << std::endl;
       }
       calc_sd_size_ratio(options_, work_options_.db, last_level_in_fd,
@@ -662,15 +525,15 @@ void print_vc_param(RaltWrapper &ralt, WorkOptions *work_options,
   while (!should_stop->load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     auto timestamp = timestamp_ns();
-    out << timestamp << " " << ralt.get_vc().GetHotSetSizeLimit() << " "
-        << ralt.get_vc().GetPhySizeLimit() << std::endl;
+    out << timestamp << " " << ralt.GetHotSetSizeLimit() << " "
+        << ralt.GetPhySizeLimit() << std::endl;
   }
 }
 
 void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                      std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options->db;
-  auto ralt = static_cast<RaltWrapper *>(options->ralt);
+  auto &ralt = *static_cast<RaltWrapper *>(options->ralt);
   const std::filesystem::path &db_path = work_options->db_path;
 
   char buf[16];
@@ -697,38 +560,38 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
                 "get-cpu-nanos delete-cpu-nanos";
   uint64_t value;
-  bool has_viscnts_compaction_thread_cpu_nanos = ralt->get_viscnts_int_property(
-      "viscnts.compaction.thread.cpu.nanos", &value);
+  bool has_viscnts_compaction_thread_cpu_nanos =
+      ralt.GetIntProperty("viscnts.compaction.thread.cpu.nanos", &value);
   if (has_viscnts_compaction_thread_cpu_nanos) {
     timers_out << " viscnts.compaction.thread.cpu.nanos";
   }
   bool has_viscnts_flush_thread_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.flush.thread.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.flush.thread.cpu.nanos", &value);
   if (has_viscnts_flush_thread_cpu_nanos) {
     timers_out << " viscnts.flush.thread.cpu.nanos";
   }
   bool has_viscnts_decay_thread_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.decay.thread.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.decay.thread.cpu.nanos", &value);
   if (has_viscnts_decay_thread_cpu_nanos) {
     timers_out << " viscnts.decay.thread.cpu.nanos";
   }
   bool has_viscnts_compaction_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.compaction.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.compaction.cpu.nanos", &value);
   if (has_viscnts_compaction_cpu_nanos) {
     timers_out << " viscnts.compaction.cpu.nanos";
   }
   bool has_viscnts_flush_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.flush.cpu.nanos", &value);
   if (has_viscnts_flush_cpu_nanos) {
     timers_out << " viscnts.flush.cpu.nanos";
   }
   bool has_viscnts_decay_scan_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.decay.scan.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.decay.scan.cpu.nanos", &value);
   if (has_viscnts_decay_scan_cpu_nanos) {
     timers_out << " viscnts.decay.scan.cpu.nanos";
   }
   bool has_viscnts_decay_write_cpu_nanos =
-      ralt->get_viscnts_int_property("viscnts.decay.write.cpu.nanos", &value);
+      ralt.GetIntProperty("viscnts.decay.write.cpu.nanos", &value);
   if (has_viscnts_decay_write_cpu_nanos) {
     timers_out << " viscnts.decay.write.cpu.nanos";
   }
@@ -804,38 +667,35 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << delete_cpu_nanos.load(std::memory_order_relaxed);
     if (has_viscnts_compaction_thread_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.compaction.thread.cpu.nanos", &value));
+      rusty_assert(
+          ralt.GetIntProperty("viscnts.compaction.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_flush_thread_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.flush.thread.cpu.nanos", &value));
+      rusty_assert(
+          ralt.GetIntProperty("viscnts.flush.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_thread_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.decay.thread.cpu.nanos", &value));
+      rusty_assert(
+          ralt.GetIntProperty("viscnts.decay.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_compaction_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.compaction.cpu.nanos", &value));
+      rusty_assert(ralt.GetIntProperty("viscnts.compaction.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_flush_cpu_nanos) {
-      rusty_assert(
-          ralt->get_viscnts_int_property("viscnts.flush.cpu.nanos", &value));
+      rusty_assert(ralt.GetIntProperty("viscnts.flush.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_scan_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.decay.scan.cpu.nanos", &value));
+      rusty_assert(ralt.GetIntProperty("viscnts.decay.scan.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_viscnts_decay_write_cpu_nanos) {
-      rusty_assert(ralt->get_viscnts_int_property(
-          "viscnts.decay.write.cpu.nanos", &value));
+      rusty_assert(
+          ralt.GetIntProperty("viscnts.decay.write.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     timers_out << std::endl;
@@ -858,24 +718,23 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
         << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
     num_accesses_out << timestamp;
-    auto level_hits = ralt->level_hits();
+    auto level_hits = ralt.level_hits();
     for (size_t hits : level_hits) {
       num_accesses_out << ' ' << hits;
     }
     num_accesses_out << std::endl;
 
     uint64_t viscnts_read;
-    rusty_assert(ralt->get_viscnts_int_property(VisCnts::Properties::kReadBytes,
-                                                &viscnts_read));
+    rusty_assert(
+        ralt.GetIntProperty(RALT::Properties::kReadBytes, &viscnts_read));
     uint64_t viscnts_write;
-    rusty_assert(ralt->get_viscnts_int_property(
-        VisCnts::Properties::kWriteBytes, &viscnts_write));
+    rusty_assert(
+        ralt.GetIntProperty(RALT::Properties::kWriteBytes, &viscnts_write));
     viscnts_io_out << timestamp << ' ' << viscnts_read << ' ' << viscnts_write
                    << std::endl;
 
-    VisCnts &vc = ralt->get_vc();
-    viscnts_sizes << timestamp << ' ' << vc.GetRealPhySize() << ' '
-                  << vc.GetRealHotSetSize() << std::endl;
+    viscnts_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
+                  << ralt.GetRealHotSetSize() << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -1057,7 +916,6 @@ int main(int argc, char **argv) {
 
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
-  desc.add_options()("enable_sampling", "enable_sampling");
   desc.add_options()("ralt_bloom_bpk",
                      po::value<int>(&ralt_bloom_bpk)->default_value(14),
                      "The number of bits per key in RALT bloom filter.");
@@ -1133,7 +991,7 @@ int main(int argc, char **argv) {
     ralt = new RaltWrapper(
         options.comparator, viscnts_path_str, first_level_in_sd - 1,
         hot_set_size_limit, max_viscnts_size, switches, hot_set_size_limit,
-        hot_set_size_limit, ralt_bloom_bpk, vm.count("enable_sampling"));
+        hot_set_size_limit, ralt_bloom_bpk);
 
     options.ralt = ralt;
   }
@@ -1263,17 +1121,7 @@ int main(int argc, char **argv) {
   tester.Test(info_json);
   if (work_options.run) {
     auto info_json_locked = info_json.lock();
-    *info_json_locked
-        << "\t\"IsHot(secs)\": "
-        << timers.timer(TimerType::kIsHot).time().as_secs_double() << ",\n"
-        << "\t\"LowerBound(secs)\": "
-        << timers.timer(TimerType::kLowerBound).time().as_secs_double() << ",\n"
-        << "\t\"RangeHotSize(secs)\": "
-        << timers.timer(TimerType::kRangeHotSize).time().as_secs_double()
-        << ",\n"
-        << "\t\"NextHot(secs)\": "
-        << timers.timer(TimerType::kNextHot).time().as_secs_double() << "\n}"
-        << std::endl;
+    *info_json_locked << "}" << std::endl;
   }
 
   should_stop.store(true, std::memory_order_relaxed);
