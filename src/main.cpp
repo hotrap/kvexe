@@ -390,17 +390,7 @@ class RaltWrapper : public rocksdb::RALT {
   size_t RangeHotSize(rocksdb::Slice smallest,
                       rocksdb::Slice largest) override {
     auto guard = timers.timer(TimerType::kRangeHotSize).start();
-    rocksdb::Bound start{
-        .user_key = smallest,
-        .excluded = false,
-    };
-    rocksdb::Bound end{
-        .user_key = largest,
-        .excluded = false,
-    };
-    rocksdb::RangeBounds range{.start = start, .end = end};
-    size_t ret = vc_.RangeHotSize(range);
-    return ret;
+    return vc_.RangeHotSize(smallest, largest);
   }
 
   bool get_viscnts_int_property(std::string_view property, uint64_t *value) {
