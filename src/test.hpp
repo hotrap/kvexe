@@ -121,7 +121,8 @@ enum class FormatType {
 
 enum class WorkloadType {
   ConfigFile,
-  u135542,
+  u24685531,
+  hotspot_2_4_6_8,
 };
 
 static inline const char* to_string(YCSBGen::OpType type) {
@@ -154,34 +155,14 @@ enum class TimerType : size_t {
   kOutput,
   kSerialize,
   kDeserialize,
-  kAccess,
-  kIsHot,
-  kLowerBound,
-  kRangeHotSize,
-  kNextHot,
-  kLastPromoted,
   kEnd,
 };
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
 static const char* timer_names[] = {
-    "Put",
-    "Get",
-    "Delete",
-    "Scan",
-    "InputOperation",
-    "InputInsert",
-    "InputRead",
-    "InputUpdate",
-    "Output",
-    "Serialize",
+    "Put",         "Get",       "Delete",      "Scan",   "InputOperation",
+    "InputInsert", "InputRead", "InputUpdate", "Output", "Serialize",
     "Deserialize",
-    "Access",
-    "IsHot",
-    "LowerBound",
-    "RangeHotSize",
-    "NextHot",
-    "LastPromoted",
 };
 static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
@@ -219,6 +200,11 @@ class BlockChannel {
   bool finish_{false};
   bool writer_waiting_{0};
 
+  uint64_t queue_empty_when_put_{0};
+  uint64_t queue_non_empty_when_put_{0};
+  uint64_t reader_blocked_{0};
+  uint64_t reader_not_blocked_{0};
+
  public:
   BlockChannel(size_t limit_size = 64) : limit_size_(limit_size) {}
   std::vector<T> GetBlock() {
@@ -229,6 +215,7 @@ class BlockChannel {
       }
     }
     if (q_.size()) {
+      reader_not_blocked_ += 1;
       auto ret = std::move(q_.front());
       q_.pop();
       return ret;
@@ -236,6 +223,7 @@ class BlockChannel {
     if (finish_) {
       return {};
     }
+    reader_blocked_ += 1;
     reader_waiting_ += 1;
     cv_r_.wait(lck, [&]() { return finish_ || !q_.empty(); });
     if (q_.empty() && finish_) {
@@ -257,6 +245,11 @@ class BlockChannel {
 
   void PutBlock(const std::vector<T>& block) {
     std::unique_lock lck(m_);
+    if (q_.empty()) {
+      queue_empty_when_put_ += 1;
+    } else {
+      queue_non_empty_when_put_ += 1;
+    }
     q_.push(block);
     if (reader_waiting_) {
       cv_r_.notify_one();
@@ -272,6 +265,14 @@ class BlockChannel {
     finish_ = true;
     cv_r_.notify_all();
   }
+
+  // Must be called when there is no writer.
+  uint64_t queue_empty_when_put() const { return queue_empty_when_put_; }
+  uint64_t queue_non_empty_when_put() const {
+    return queue_non_empty_when_put_;
+  }
+  uint64_t reader_blocked() const { return reader_blocked_; }
+  uint64_t reader_not_blocked() const { return reader_not_blocked_; }
 };
 
 template <typename T>
@@ -352,9 +353,11 @@ class Tester {
         case WorkloadType::ConfigFile:
           GenerateAndExecute(info_json_out);
           break;
-        case WorkloadType::u135542:
-          u135542(info_json_out);
+        case WorkloadType::u24685531:
+          u24685531(info_json_out);
           break;
+        case WorkloadType::hotspot_2_4_6_8:
+          hotspot_2_4_6_8(info_json_out);
       }
     } else {
       ReadAndExecute(info_json_out);
@@ -520,6 +523,13 @@ class Tester {
       auto s = options_.db->Get(read_options_, read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
+      timers.timer(TimerType::kGet).add(get_time);
+      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
+      if (latency_out_) {
+        print_latency(latency_out_.value(), YCSBGen::OpType::READ,
+                      get_time.as_nanos());
+      }
+      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -528,13 +538,6 @@ class Tester {
           rusty_panic("GET failed with error: %s\n", err.c_str());
         }
       }
-      timers.timer(TimerType::kGet).add(get_time);
-      get_cpu_nanos.fetch_add(get_cpu_ns, std::memory_order_relaxed);
-      if (latency_out_) {
-        print_latency(latency_out_.value(), YCSBGen::OpType::READ,
-                      get_time.as_nanos());
-      }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
       return true;
     }
 
@@ -544,10 +547,8 @@ class Tester {
       std::string value;
       auto s = options_.db->Get(read_options_, op.key, &value);
       if (!s.ok()) {
-        if (s.IsNotFound()) {
-          std::string err = s.ToString();
-          rusty_panic("GET failed with error: %s\n", err.c_str());
-        }
+        std::string err = s.ToString();
+        rusty_panic("GET failed with error: %s\n", err.c_str());
       }
       time_t put_cpu_start = cpu_timestamp_ns();
       time_t get_cpu_ns = put_cpu_start - get_cpu_start;
@@ -787,6 +788,22 @@ class Tester {
     }
 
     for (auto& t : threads) t.join();
+
+    uint64_t queue_empty_when_put = 0;
+    uint64_t queue_non_empty_when_put = 0;
+    uint64_t reader_blocked = 0;
+    uint64_t reader_not_blocked = 0;
+    for (const auto& channel : channel_for_workers) {
+      queue_empty_when_put += channel.queue_empty_when_put();
+      queue_non_empty_when_put += channel.queue_non_empty_when_put();
+      reader_blocked += channel.reader_blocked();
+      reader_not_blocked += channel.reader_not_blocked();
+    }
+    std::cerr << "Queue empty when put: " << queue_empty_when_put << std::endl;
+    std::cerr << "Queue non-empty when put: " << queue_non_empty_when_put
+              << std::endl;
+    std::cerr << "Reader blocked: " << reader_blocked << std::endl;
+    std::cerr << "Reader not blocked: " << reader_not_blocked << std::endl;
   }
 
   void handle_table_name(std::istream& in) {
@@ -1025,12 +1042,19 @@ class Tester {
     }
     for (auto& t : threads) t.join();
   }
-
-  void u135542(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    const uint64_t num_load_keys = 110000000;
-    const uint64_t num_run_op = 220000000;
-    const uint64_t offset = 0.05 * num_load_keys;
-
+  const uint64_t num_load_keys = 110000000;
+  const uint64_t num_run_op = 220000000;
+  void run_hotspot(uint64_t offset, double hotspot_set_fraction) {
+    RunPhase(
+        YCSBGen::YCSBGeneratorOptions{
+            .record_count = num_load_keys,
+            .operation_count = num_run_op,
+        },
+        std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
+                                                    hotspot_set_fraction,
+                                                    1 - hotspot_set_fraction));
+  }
+  void load_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
     if (options_.load) {
       LoadPhase(info_json_out, YCSBGen::YCSBGeneratorOptions{
                                    .record_count = num_load_keys,
@@ -1039,7 +1063,10 @@ class Tester {
                                    .insert_proportion = 1,
                                });
     }
-
+  }
+  void u24685531(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    const uint64_t offset = 0.05 * num_load_keys;
+    load_phase(info_json_out);
     if (options_.run) {
       prepare_run_phase(info_json_out);
       auto run_start = rusty::time::Instant::now();
@@ -1050,48 +1077,26 @@ class Tester {
               .request_distribution = "uniform",
           },
           std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.01,
-                                                      0.99));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.03,
-                                                      0.97));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, 0, 0.05,
-                                                      0.95));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
-                                                      0.05, 0.95));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
-                                                      0.04, 0.96));
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-          },
-          std::make_unique<YCSBGen::HotspotGenerator>(0, num_load_keys, offset,
-                                                      0.02, 0.98));
+      run_hotspot(0, 0.02);
+      run_hotspot(0, 0.04);
+      run_hotspot(0, 0.06);
+      run_hotspot(0, 0.08);
+      run_hotspot(0, 0.05);
+      run_hotspot(offset, 0.05);
+      run_hotspot(offset, 0.03);
+      run_hotspot(offset, 0.01);
+      finish_run_phase(info_json_out, run_start);
+    }
+  }
+  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+    load_phase(info_json_out);
+    if (options_.run) {
+      prepare_run_phase(info_json_out);
+      auto run_start = rusty::time::Instant::now();
+      run_hotspot(0, 0.02);
+      run_hotspot(0, 0.04);
+      run_hotspot(0, 0.06);
+      run_hotspot(0, 0.08);
       finish_run_phase(info_json_out, run_start);
     }
   }
