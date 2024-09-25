@@ -385,10 +385,10 @@ class Tester {
 
     {
       std::unique_lock lck(thread_local_m_);
-      if (!perf_contexts_.empty() && perf_contexts_[0]) {
+      if (perf_contexts_[0]) {
         log << "rocksdb Perf: " << perf_contexts_[0]->ToString() << '\n';
       }
-      if (!iostats_contexts_.empty() && iostats_contexts_[0]) {
+      if (iostats_contexts_[0]) {
         log << "rocksdb IOStats: " << iostats_contexts_[0]->ToString() << '\n';
       }
     }
