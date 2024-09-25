@@ -527,7 +527,7 @@ int main(int argc, char **argv) {
   std::atomic<bool> should_stop(false);
   std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
 
-  auto period_print_stat = [&]() {
+  std::thread period_print_thread([&]() {
     size_t ori_last_level = 1;
     double ori_size_ratio = 0;
     std::ofstream period_stats(db_path / "period_stats");
@@ -538,16 +538,12 @@ int main(int argc, char **argv) {
       tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-  };
-
-  std::thread period_print_thread(period_print_stat);
+  });
 
   tester.Test();
-
-  should_stop.store(true, std::memory_order_relaxed);
-
   tester.print_other_stats(std::cerr);
 
+  should_stop.store(true, std::memory_order_relaxed);
   stat_printer.join();
   period_print_thread.join();
   delete db;
