@@ -303,6 +303,7 @@ struct WorkOptions {
   std::string run_trace;
   FormatType format_type;
   rocksdb::DB* db;
+  const rocksdb::Options* options;
   uint64_t switches;
   std::filesystem::path db_path;
   std::atomic<uint64_t>* progress;
@@ -316,11 +317,6 @@ struct WorkOptions {
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
-
-class Tester;
-
-void print_other_stats(std::ostream& log, const rocksdb::Options& options,
-                       Tester& tester);
 
 class Tester {
  public:
@@ -351,18 +347,47 @@ class Tester {
                           << std::endl;
   }
 
-  std::string GetRocksdbPerf() {
-    std::unique_lock lck(thread_local_m_);
-    if (perf_contexts_.empty()) return "";
-    if (perf_contexts_[0] == nullptr) return "";
-    return perf_contexts_[0]->ToString();
-  }
+  void print_other_stats(std::ostream& log) {
+    const std::shared_ptr<rocksdb::Statistics>& stats =
+        options_.options->statistics;
+    log << "Timestamp: " << timestamp_ns() << "\n";
+    log << "rocksdb.block.cache.data.miss: "
+        << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS) << '\n';
+    log << "rocksdb.block.cache.data.hit: "
+        << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT) << '\n';
+    log << "rocksdb.bloom.filter.useful: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL) << '\n';
+    log << "rocksdb.bloom.filter.full.positive: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE) << '\n';
+    log << "rocksdb.bloom.filter.full.true.positive: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+        << '\n';
+    log << "rocksdb.memtable.hit: "
+        << stats->getTickerCount(rocksdb::MEMTABLE_HIT) << '\n';
+    log << "rocksdb.l0.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L0)
+        << '\n';
+    log << "rocksdb.l1.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L1)
+        << '\n';
+    log << "rocksdb.rocksdb.l2andup.hit: "
+        << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
+    log << "leader write count: "
+        << stats->getTickerCount(rocksdb::LEADER_WRITE_COUNT) << '\n';
+    log << "non leader write count: "
+        << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
 
-  std::string GetRocksdbIOStats() {
-    std::unique_lock lck(thread_local_m_);
-    if (iostats_contexts_.empty()) return "";
-    if (iostats_contexts_[0] == nullptr) return "";
-    return iostats_contexts_[0]->ToString();
+    print_timers(log);
+
+    {
+      std::unique_lock lck(thread_local_m_);
+      if (!perf_contexts_.empty() && perf_contexts_[0]) {
+        log << "rocksdb Perf: " << perf_contexts_[0]->ToString() << '\n';
+      }
+      if (!iostats_contexts_.empty() && iostats_contexts_[0]) {
+        log << "rocksdb IOStats: " << iostats_contexts_[0]->ToString() << '\n';
+      }
+    }
+
+    log << "stat end===" << std::endl;
   }
 
  private:
@@ -833,7 +858,7 @@ class Tester {
 
     std::ofstream other_stats_out(options_.db_path /
                                   "other-stats-load-finish.txt");
-    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
+    print_other_stats(other_stats_out);
   }
 
   void prepare_run_phase(

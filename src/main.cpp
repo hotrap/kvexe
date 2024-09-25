@@ -2,7 +2,11 @@
 
 #include "test.hpp"
 
-typedef uint16_t field_size_t;
+static inline void empty_directory(std::filesystem::path dir_path) {
+  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
+    std::filesystem::remove_all(path);
+  }
+}
 
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
@@ -240,17 +244,6 @@ std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
   return ret;
 }
 
-void empty_directory(std::filesystem::path dir_path) {
-  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
-    std::filesystem::remove_all(path);
-  }
-}
-
-bool is_empty_directory(std::string dir_path) {
-  auto it = std::filesystem::directory_iterator(dir_path);
-  return it == std::filesystem::end(it);
-}
-
 void bg_stat_printer(WorkOptions *work_options,
                      std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options->db;
@@ -342,41 +335,6 @@ void bg_stat_printer(WorkOptions *work_options,
     }
     next_begin += interval;
   }
-}
-
-void print_other_stats(std::ostream &log, const rocksdb::Options &options,
-                       Tester &tester) {
-  const std::shared_ptr<rocksdb::Statistics> &stats = options.statistics;
-  log << "Timestamp: " << timestamp_ns() << "\n";
-  log << "rocksdb.block.cache.data.miss: "
-      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS) << '\n';
-  log << "rocksdb.block.cache.data.hit: "
-      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT) << '\n';
-  log << "rocksdb.bloom.filter.useful: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL) << '\n';
-  log << "rocksdb.bloom.filter.full.positive: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE) << '\n';
-  log << "rocksdb.bloom.filter.full.true.positive: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
-      << '\n';
-  log << "rocksdb.memtable.hit: "
-      << stats->getTickerCount(rocksdb::MEMTABLE_HIT) << '\n';
-  log << "rocksdb.l0.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L0)
-      << '\n';
-  log << "rocksdb.l1.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L1)
-      << '\n';
-  log << "rocksdb.rocksdb.l2andup.hit: "
-      << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
-  log << "leader write count: "
-      << stats->getTickerCount(rocksdb::LEADER_WRITE_COUNT) << '\n';
-  log << "non leader write count: "
-      << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
-  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << '\n';
-  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << '\n';
-
-  print_timers(log);
-
-  log << "stat end===" << std::endl;
 }
 
 int main(int argc, char **argv) {
@@ -590,6 +548,7 @@ int main(int argc, char **argv) {
   std::atomic<uint64_t> progress_get(0);
 
   work_options.db = db;
+  work_options.options = &options;
   work_options.switches = switches;
   work_options.db_path = db_path;
   work_options.progress = &progress;
@@ -635,7 +594,7 @@ int main(int argc, char **argv) {
                                      last_calculated_level_size, ori_last_level,
                                      ori_size_ratio);
       }
-      print_other_stats(period_stats, options, tester);
+      tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   };
@@ -658,7 +617,7 @@ int main(int argc, char **argv) {
 
   should_stop.store(true, std::memory_order_relaxed);
 
-  print_other_stats(std::cerr, options, tester);
+  tester.print_other_stats(std::cerr);
 
   stat_printer.join();
   period_print_thread.join();
