@@ -134,6 +134,10 @@ static inline const char* to_string(YCSBGen::OpType type) {
   }
   rusty_panic();
 }
+static inline void print_latency(std::ofstream& out, YCSBGen::OpType op,
+                                 uint64_t nanos) {
+  out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
+}
 
 enum class TimerType : size_t {
   kPut,
@@ -305,7 +309,6 @@ struct WorkOptions {
   std::atomic<uint64_t>* progress_get;
   bool enable_fast_process{false};
   size_t num_threads{1};
-  size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   double db_paths_soft_size_limit_multiplier;
@@ -313,10 +316,6 @@ struct WorkOptions {
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
 };
-
-void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
-  out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
-}
 
 class Tester;
 
@@ -643,7 +642,7 @@ class Tester {
 
     std::vector<BlockChannelClient<YCSBGen::Operation>> opblocks;
     for (auto& channel : channel_for_workers) {
-      opblocks.emplace_back(&channel, options_.opblock_size);
+      opblocks.emplace_back(&channel, 1024);
     }
 
     std::vector<std::thread> threads;
