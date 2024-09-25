@@ -341,16 +341,15 @@ class Tester {
       ReadAndExecute(info_json_out);
     }
 
+    uint64_t not_found = 0;
     uint64_t scanned = 0;
     for (const auto& worker : workers_) {
+      not_found += worker.not_found();
       scanned += worker.scanned();
     }
-    *info_json_out.lock() << "\t\"scanned-records\": " << scanned << ","
+    *info_json_out.lock() << "\t\"not-found\": " << not_found << ","
+                          << "\t\"scanned-records\": " << scanned << ","
                           << std::endl;
-  }
-
-  uint64_t GetNotFoundCounts() const {
-    return notfound_counts_.load(std::memory_order_relaxed);
   }
 
   std::string GetRocksdbPerf() {
@@ -374,7 +373,6 @@ class Tester {
         : tester_(tester),
           id_(id),
           options_(tester.options_),
-          notfound_counts_(tester.notfound_counts_),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -467,6 +465,7 @@ class Tester {
       }
     }
 
+    uint64_t not_found() const { return not_found_; }
     uint64_t scanned() const { return scanned_; }
 
    private:
@@ -608,13 +607,8 @@ class Tester {
             ans_out_.value() << ans << '\n';
           }
           if (!found) {
-            local_notfound_counts++;
-            if ((local_read_progress & 15) == 15) {
-              notfound_counts_ += local_notfound_counts;
-              local_notfound_counts = 0;
-            }
+            not_found_ += 1;
           }
-          local_read_progress++;
         } break;
         case YCSBGen::OpType::RMW:
           do_read_modify_write(op);
@@ -633,10 +627,8 @@ class Tester {
     const WorkOptions& options_;
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
-    std::atomic<uint64_t>& notfound_counts_;
 
-    uint64_t local_notfound_counts{0};
-    uint64_t local_read_progress{0};
+    uint64_t not_found_{0};
     uint64_t scanned_{0};
     XXH64_state_t* ans_xxhash_state_{nullptr};
     std::optional<std::ofstream> ans_out_;
@@ -1017,7 +1009,6 @@ class Tester {
   WorkOptions options_;
   std::vector<Worker> workers_;
 
-  std::atomic<uint64_t> notfound_counts_{0};
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
