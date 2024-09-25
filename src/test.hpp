@@ -337,17 +337,18 @@ void print_other_stats(std::ostream& log, const rocksdb::Options& options,
 
 class Tester {
  public:
-  Tester(const WorkOptions& option) : options_(option) {}
+  Tester(const WorkOptions& option)
+      : options_(option),
+        perf_contexts_(options_.num_threads),
+        iostats_contexts_(options_.num_threads) {
+    for (size_t i = 0; i < options_.num_threads; ++i) {
+      workers_.emplace_back(*this, i);
+    }
+  }
 
   const WorkOptions& work_options() const { return options_; }
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    perf_contexts_.resize(options_.num_threads);
-    iostats_contexts_.resize(options_.num_threads);
-
-    for (size_t i = 0; i < options_.num_threads; ++i) {
-      workers_.emplace_back(*this, i);
-    }
     if (options_.enable_fast_generator) {
       switch (options_.workload_type) {
         case WorkloadType::ConfigFile:
@@ -429,15 +430,32 @@ class Tester {
         rusty_assert(ans_xxhash_state_);
         XXH64_reset(ans_xxhash_state_, 0);
       }
+
+      rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
+        tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
+      }
     }
     void finish_run_phase() {
+      std::string id = std::to_string(id_);
       if (ans_xxhash_state_) {
-        std::ofstream(options_.db_path /
-                      ("ans-" + std::to_string(id_) + ".xxh64"))
+        std::ofstream(options_.db_path / ("ans-" + id + ".xxh64"))
             << std::hex << std::setw(16) << std::setfill('0')
             << XXH64_digest(ans_xxhash_state_) << std::endl;
         XXH64_freeState(ans_xxhash_state_);
         ans_xxhash_state_ = nullptr;
+      }
+
+      std::ofstream(options_.db_path / ("run-phase-perf-context-" + id))
+          << tester_.perf_contexts_[id_]->ToString();
+      std::ofstream(options_.db_path / ("run-phase-iostats-contexts-" + id))
+          << tester_.iostats_contexts_[id_]->ToString();
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = nullptr;
+        tester_.iostats_contexts_[id_] = nullptr;
       }
     }
     void maybe_enable_key_hit_level() {
@@ -447,14 +465,8 @@ class Tester {
       }
     }
     void run(YCSBGen::YCSBRunGenerator& runner) {
+      prepare_run_phase();
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
-
-      rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
-      {
-        std::unique_lock lck(tester_.thread_local_m_);
-        tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
-        tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
-      }
 
       maybe_enable_key_hit_level();
       std::optional<std::ofstream> key_only_trace_out =
@@ -472,15 +484,13 @@ class Tester {
         process_op(op, &value);
         options_.progress->fetch_add(1, std::memory_order_relaxed);
       }
-      {
-        std::unique_lock lck(tester_.thread_local_m_);
-        tester_.perf_contexts_[id_] = nullptr;
-        tester_.iostats_contexts_[id_] = nullptr;
-      }
+      finish_run_phase();
     }
-    void work(BlockChannel<YCSBGen::Operation>& chan) {
+    void work(bool run, BlockChannel<YCSBGen::Operation>& chan) {
+      if (run) {
+        prepare_run_phase();
+      }
       maybe_enable_key_hit_level();
-
       std::string value;
       for (;;) {
         auto block = chan.GetBlock();
@@ -491,6 +501,9 @@ class Tester {
           process_op(op, &value);
           options_.progress->fetch_add(1, std::memory_order_relaxed);
         }
+      }
+      if (run) {
+        finish_run_phase();
       }
     }
 
@@ -681,7 +694,7 @@ class Tester {
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(const char* value_prefix, std::istream& trace) {
+  void parse(bool run, std::istream& trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
@@ -694,9 +707,9 @@ class Tester {
 
     std::vector<std::thread> threads;
     for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, &channel_for_workers, i]() {
+      threads.emplace_back([this, run, &channel_for_workers, i]() {
         size_t index = options_.enable_fast_process ? 0 : i;
-        workers_[i].work(channel_for_workers[index]);
+        workers_[i].work(run, channel_for_workers[index]);
       });
     }
 
@@ -739,7 +752,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               value_prefix, parse_counts + 1);
+                               run ? "load-" : "run-", parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
@@ -885,10 +898,6 @@ class Tester {
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    for (auto& worker : workers_) {
-      worker.prepare_run_phase();
-    }
-
     const auto& ts = timers.timers();
     for (const auto& timer : ts) {
       timer.reset();
@@ -928,10 +937,6 @@ class Tester {
                           << std::endl;
     rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
     std::ofstream(options_.db_path / "rocksdb-stats.txt") << rocksdb_stats;
-
-    for (auto& worker : workers_) {
-      worker.finish_run_phase();
-    }
   }
 
   void LoadPhase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
@@ -1111,7 +1116,7 @@ class Tester {
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
-      parse("load-", trace);
+      parse(false, trace);
       finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
@@ -1125,7 +1130,7 @@ class Tester {
 
       prepare_run_phase(info_json_out);
       auto start = rusty::time::Instant::now();
-      parse("run-", trace);
+      parse(true, trace);
       finish_run_phase(info_json_out, start);
     }
   }
@@ -1137,6 +1142,4 @@ class Tester {
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
-
-  friend class Worker;
 };
