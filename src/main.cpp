@@ -244,10 +244,10 @@ std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
   return ret;
 }
 
-void bg_stat_printer(WorkOptions *work_options,
-                     std::atomic<bool> *should_stop) {
-  rocksdb::DB *db = work_options->db;
-  const std::filesystem::path &db_path = work_options->db_path;
+void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
+  const WorkOptions &work_options = tester->work_options();
+  rocksdb::DB *db = work_options.db;
+  const std::filesystem::path &db_path = work_options.db_path;
 
   char buf[16];
 
@@ -279,11 +279,8 @@ void bg_stat_printer(WorkOptions *work_options,
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' '
-                 << work_options->progress->load(std::memory_order_relaxed)
-                 << ' '
-                 << work_options->progress_get->load(std::memory_order_relaxed)
-                 << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << ' '
+                 << tester->progress_get() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -350,7 +347,6 @@ int main(int argc, char **argv) {
   po::options_description desc("Available options");
   std::string format;
   std::string arg_switches;
-  size_t num_threads;
 
   std::string arg_db_path;
   std::string arg_db_paths;
@@ -380,7 +376,8 @@ int main(int argc, char **argv) {
                      "Switches for statistics: none/all/<hex value>\n"
                      "0x1: Log the latency of each operation\n"
                      "0x2: Output the result of READ");
-  desc.add_options()("num_threads", po::value(&num_threads)->default_value(1),
+  desc.add_options()("num_threads",
+                     po::value(&work_options.num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
@@ -544,16 +541,10 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  std::atomic<uint64_t> progress(0);
-  std::atomic<uint64_t> progress_get(0);
-
   work_options.db = db;
   work_options.options = &options;
   work_options.switches = switches;
   work_options.db_path = db_path;
-  work_options.progress = &progress;
-  work_options.progress_get = &progress_get;
-  work_options.num_threads = num_threads;
   work_options.enable_fast_process = vm.count("enable_fast_process");
   if (format == "plain") {
     work_options.format_type = FormatType::Plain;
@@ -579,10 +570,10 @@ int main(int argc, char **argv) {
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
-  std::atomic<bool> should_stop(false);
-  std::thread stat_printer(bg_stat_printer, &work_options, &should_stop);
-
   Tester tester(work_options);
+
+  std::atomic<bool> should_stop(false);
+  std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
 
   auto period_print_stat = [&]() {
     size_t ori_last_level = last_calculated_level;
