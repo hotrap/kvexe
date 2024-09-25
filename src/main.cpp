@@ -316,7 +316,6 @@ int main(int argc, char **argv) {
   po::options_description desc("Available options");
   std::string format;
   std::string arg_switches;
-  size_t num_threads;
 
   std::string arg_db_path;
   std::string arg_db_paths;
@@ -346,7 +345,8 @@ int main(int argc, char **argv) {
                      "Switches for statistics: none/all/<hex value>\n"
                      "0x1: Log the latency of each operation\n"
                      "0x2: Output the result of READ");
-  desc.add_options()("num_threads", po::value(&num_threads)->default_value(1),
+  desc.add_options()("num_threads",
+                     po::value(&work_options.num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
@@ -497,7 +497,6 @@ int main(int argc, char **argv) {
   work_options.options = &options;
   work_options.switches = switches;
   work_options.db_path = db_path;
-  work_options.num_threads = num_threads;
   work_options.enable_fast_process = vm.count("enable_fast_process");
   if (format == "plain") {
     work_options.format_type = FormatType::Plain;
