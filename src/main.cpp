@@ -542,19 +542,7 @@ int main(int argc, char **argv) {
 
   std::thread period_print_thread(period_print_stat);
 
-  std::filesystem::path info_json_path = db_path / "info.json";
-  std::ofstream info_json_out;
-  if (work_options.load) {
-    info_json_out = std::ofstream(info_json_path);
-    info_json_out << "{" << std::endl;
-  } else {
-    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
-  }
-  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
-  tester.Test(info_json);
-  if (work_options.run) {
-    *info_json.lock() << "}" << std::endl;
-  }
+  tester.Test();
 
   should_stop.store(true, std::memory_order_relaxed);
 
