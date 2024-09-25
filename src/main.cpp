@@ -2,7 +2,11 @@
 
 #include "test.hpp"
 
-typedef uint16_t field_size_t;
+static inline void empty_directory(std::filesystem::path dir_path) {
+  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
+    std::filesystem::remove_all(path);
+  }
+}
 
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
@@ -207,17 +211,6 @@ std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
   rusty_assert_eq(ret.size(), level);
   ret.emplace_back(level_size, p);
   return ret;
-}
-
-void empty_directory(std::filesystem::path dir_path) {
-  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
-    std::filesystem::remove_all(path);
-  }
-}
-
-bool is_empty_directory(std::string dir_path) {
-  auto it = std::filesystem::directory_iterator(dir_path);
-  return it == std::filesystem::end(it);
 }
 
 void bg_stat_printer(WorkOptions *work_options,
