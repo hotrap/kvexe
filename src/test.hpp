@@ -306,8 +306,6 @@ struct WorkOptions {
   const rocksdb::Options* options;
   uint64_t switches;
   std::filesystem::path db_path;
-  std::atomic<uint64_t>* progress;
-  std::atomic<uint64_t>* progress_get;
   bool enable_fast_process{false};
   size_t num_threads{1};
   bool enable_fast_generator{false};
@@ -327,6 +325,14 @@ class Tester {
     for (size_t i = 0; i < options_.num_threads; ++i) {
       workers_.emplace_back(*this, i);
     }
+  }
+
+  const WorkOptions& work_options() const { return options_; }
+  uint64_t progress() const {
+    return progress_.load(std::memory_order_relaxed);
+  }
+  uint64_t progress_get() const {
+    return progress_get_.load(std::memory_order_relaxed);
   }
 
   void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
@@ -407,7 +413,7 @@ class Tester {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
         do_put(op);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
     }
     void prepare_run_phase() {
@@ -465,7 +471,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
       finish_run_phase();
     }
@@ -481,7 +487,7 @@ class Tester {
         }
         for (const YCSBGen::Operation& op : block) {
           process_op(op, &value);
-          options_.progress->fetch_add(1, std::memory_order_relaxed);
+          tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
       if (run) {
@@ -525,7 +531,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -561,7 +567,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation& op) {
@@ -1036,4 +1042,7 @@ class Tester {
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
+
+  std::atomic<uint64_t> progress_{0};
+  std::atomic<uint64_t> progress_get_{0};
 };
