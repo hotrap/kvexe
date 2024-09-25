@@ -1025,33 +1025,15 @@ int main(int argc, char **argv) {
   std::atomic<bool> should_stop(false);
   std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
 
-  auto period_print_stat = [&]() {
+  std::thread period_print_thread([&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
       tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-  };
+  });
 
-  std::thread period_print_thread(period_print_stat);
-
-  std::filesystem::path info_json_path = db_path / "info.json";
-  std::ofstream info_json_out;
-  if (work_options.load) {
-    info_json_out = std::ofstream(info_json_path);
-    info_json_out << "{" << std::endl;
-  } else {
-    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
-  }
-  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
-  tester.Test(info_json);
-  if (work_options.run) {
-    auto info_json_locked = info_json.lock();
-    *info_json_locked << "}" << std::endl;
-  }
-
-  should_stop.store(true, std::memory_order_relaxed);
-
+  tester.Test();
   tester.print_other_stats(std::cerr);
 
   /* Statistics of RALT */
@@ -1065,6 +1047,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  should_stop.store(true, std::memory_order_relaxed);
   stat_printer.join();
   period_print_thread.join();
   delete autotuner;
