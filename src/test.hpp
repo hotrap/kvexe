@@ -359,7 +359,7 @@ class Tester {
       scanned += worker.scanned();
     }
     if (options_.run) {
-      *info_json_out.lock() << "\t\"not-found\": " << not_found << ","
+      *info_json_out.lock() << "\t\"not-found\": " << not_found << ",\n"
                             << "\t\"scanned-records\": " << scanned << "\n}";
     } else {
       rusty_assert_eq(not_found, (uint64_t)0);
