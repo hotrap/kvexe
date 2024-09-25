@@ -335,7 +335,17 @@ class Tester {
     return progress_get_.load(std::memory_order_relaxed);
   }
 
-  void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void Test() {
+    std::filesystem::path info_json_path = options_.db_path / "info.json";
+    std::ofstream info_json;
+    if (options_.load) {
+      info_json = std::ofstream(info_json_path);
+      info_json << "{" << std::endl;
+    } else {
+      info_json = std::ofstream(info_json_path, std::ios_base::app);
+    }
+    rusty::sync::Mutex<std::ofstream> info_json_out(std::move(info_json));
+
     if (options_.enable_fast_generator) {
       GenerateAndExecute(info_json_out);
     } else {
@@ -348,9 +358,13 @@ class Tester {
       not_found += worker.not_found();
       scanned += worker.scanned();
     }
-    *info_json_out.lock() << "\t\"not-found\": " << not_found << ","
-                          << "\t\"scanned-records\": " << scanned << ","
-                          << std::endl;
+    if (options_.run) {
+      *info_json_out.lock() << "\t\"not-found\": " << not_found << ","
+                            << "\t\"scanned-records\": " << scanned << "\n}";
+    } else {
+      rusty_assert_eq(not_found, (uint64_t)0);
+      rusty_assert_eq(scanned, (uint64_t)0);
+    }
   }
 
   void print_other_stats(std::ostream& log) {
@@ -385,10 +399,10 @@ class Tester {
 
     {
       std::unique_lock lck(thread_local_m_);
-      if (!perf_contexts_.empty() && perf_contexts_[0]) {
+      if (perf_contexts_[0]) {
         log << "rocksdb Perf: " << perf_contexts_[0]->ToString() << '\n';
       }
-      if (!iostats_contexts_.empty() && iostats_contexts_[0]) {
+      if (iostats_contexts_[0]) {
         log << "rocksdb IOStats: " << iostats_contexts_[0]->ToString() << '\n';
       }
     }
