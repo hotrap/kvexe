@@ -510,19 +510,6 @@ class AutoTuner {
   std::thread th_;
 };
 
-void print_vc_param(RaltWrapper &ralt, WorkOptions *work_options,
-                    std::atomic<bool> *should_stop) {
-  const std::filesystem::path &db_path = work_options->db_path;
-  auto vc_parameter_path = db_path / "vc_param";
-  std::ofstream out(vc_parameter_path);
-  while (!should_stop->load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    auto timestamp = timestamp_ns();
-    out << timestamp << " " << ralt.GetHotSetSizeLimit() << " "
-        << ralt.GetPhySizeLimit() << std::endl;
-  }
-}
-
 void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   const WorkOptions &work_options = tester->work_options();
   rocksdb::DB *db = work_options.db;
@@ -605,11 +592,16 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream num_accesses_out(db_path / "num-accesses");
 
+  // Stats of RALT
+
   std::ofstream viscnts_io_out(db_path / "viscnts-io");
   viscnts_io_out << "Timestamp(ns) read write\n";
 
   std::ofstream viscnts_sizes(db_path / "viscnts-sizes");
   viscnts_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
+
+  std::ofstream vc_param_out(db_path / "vc_param");
+  vc_param_out << "Timestamp(ns) hot-set-size-limit phy-size-limit\n";
 
   auto stats = options->statistics;
 
@@ -725,6 +717,9 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
     viscnts_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
                   << ralt.GetRealHotSetSize() << std::endl;
+
+    vc_param_out << timestamp << ' ' << ralt.GetHotSetSizeLimit() << ' '
+                 << ralt.GetPhySizeLimit() << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -1038,11 +1033,6 @@ int main(int argc, char **argv) {
     }
   };
 
-  auto print_vc_param_func = [&]() {
-    print_vc_param(*ralt, &work_options, &should_stop);
-  };
-
-  std::thread period_print_vc_param_thread(print_vc_param_func);
   std::thread period_print_thread(period_print_stat);
 
   std::filesystem::path info_json_path = db_path / "info.json";
@@ -1077,7 +1067,6 @@ int main(int argc, char **argv) {
 
   stat_printer.join();
   period_print_thread.join();
-  period_print_vc_param_thread.join();
   delete autotuner;
   delete db;
   delete ralt;
