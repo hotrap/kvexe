@@ -789,8 +789,6 @@ void print_other_stats(std::ostream &log, const rocksdb::Options &options,
 
   print_timers(log);
 
-  /* Operation counts*/
-  log << "notfound counts: " << tester.GetNotFoundCounts() << '\n';
   log << "stat end===" << std::endl;
 }
 
