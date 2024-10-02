@@ -380,8 +380,19 @@ class Tester {
       scanned += worker.scanned();
     }
     if (options_.run) {
-      *info_json_out.lock() << "\t\"not-found\": " << not_found << ",\n"
-                            << "\t\"scanned-records\": " << scanned << "\n}";
+      const rocksdb::Statistics& stats = *options_.options->statistics;
+      *info_json_out.lock()
+          << "\t\"pc-insert-fail-lock\": "
+          << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
+          << ",\n"
+          << "\t\"pc-insert-fail-compacted\": "
+          << stats.getTickerCount(
+                 rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
+          << ",\n"
+          << "\t\"pc-insert\": "
+          << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << ",\n"
+          << "\t\"not-found\": " << not_found << ",\n"
+          << "\t\"scanned-records\": " << scanned << "\n}";
     } else {
       rusty_assert_eq(not_found, (uint64_t)0);
       rusty_assert_eq(scanned, (uint64_t)0);
@@ -418,14 +429,6 @@ class Tester {
 
     log << "Promotion cache hits: "
         << stats->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT) << '\n';
-    log << "Promotion cache insert fail to lock: "
-        << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
-        << '\n';
-    log << "Promotion cache insert fail due to compacted: "
-        << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
-        << '\n';
-    log << "Promotion cache insert success: "
-        << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << '\n';
 
     print_timers(log);
 
