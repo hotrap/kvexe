@@ -8,7 +8,11 @@
 #include "test.hpp"
 #include "viscnts.h"
 
-typedef uint16_t field_size_t;
+static inline void empty_directory(std::filesystem::path dir_path) {
+  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
+    std::filesystem::remove_all(path);
+  }
+}
 
 constexpr size_t MAX_NUM_LEVELS = 8;
 
@@ -275,17 +279,6 @@ std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
   return ret;
 }
 
-void empty_directory(std::filesystem::path dir_path) {
-  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
-    std::filesystem::remove_all(path);
-  }
-}
-
-bool is_empty_directory(std::string dir_path) {
-  auto it = std::filesystem::directory_iterator(dir_path);
-  return it == std::filesystem::end(it);
-}
-
 class RaltWrapper : public RALT {
  public:
   RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
@@ -532,24 +525,12 @@ class AutoTuner {
   std::thread th_;
 };
 
-void print_vc_param(RaltWrapper &ralt, WorkOptions *work_options,
-                    std::atomic<bool> *should_stop) {
-  const std::filesystem::path &db_path = work_options->db_path;
-  auto vc_parameter_path = db_path / "vc_param";
-  std::ofstream out(vc_parameter_path);
-  while (!should_stop->load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-    auto timestamp = timestamp_ns();
-    out << timestamp << " " << ralt.GetHotSetSizeLimit() << " "
-        << ralt.GetPhySizeLimit() << std::endl;
-  }
-}
-
-void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
-                     std::atomic<bool> *should_stop) {
-  rocksdb::DB *db = work_options->db;
+void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
+  const WorkOptions &work_options = tester->work_options();
+  rocksdb::DB *db = work_options.db;
+  const std::filesystem::path &db_path = work_options.db_path;
+  const rocksdb::Options *options = work_options.options;
   auto &ralt = *static_cast<RaltWrapper *>(options->ralt);
-  const std::filesystem::path &db_path = work_options->db_path;
 
   char buf[16];
 
@@ -629,11 +610,16 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   std::ofstream num_scans_out(db_path / "num-scans");
   num_scans_out << "Timestamp(ns) Total FD\n";
 
+  // Stats of RALT
+
   std::ofstream viscnts_io_out(db_path / "viscnts-io");
   viscnts_io_out << "Timestamp(ns) read write\n";
 
   std::ofstream viscnts_sizes(db_path / "viscnts-sizes");
   viscnts_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
+
+  std::ofstream vc_param_out(db_path / "vc_param");
+  vc_param_out << "Timestamp(ns) hot-set-size-limit phy-size-limit\n";
 
   auto stats = options->statistics;
 
@@ -641,12 +627,8 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-
-    progress_out << timestamp << ' '
-                 << work_options->progress->load(std::memory_order_relaxed)
-                 << ' '
-                 << work_options->progress_get->load(std::memory_order_relaxed)
-                 << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << ' '
+                 << tester->progress_get() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -757,6 +739,9 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     viscnts_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
                   << ralt.GetRealHotSetSize() << std::endl;
 
+    vc_param_out << timestamp << ' ' << ralt.GetHotSetSizeLimit() << ' '
+                 << ralt.GetPhySizeLimit() << std::endl;
+
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
     if (sleep_time.has_value()) {
@@ -765,54 +750,6 @@ void bg_stat_printer(WorkOptions *work_options, const rocksdb::Options *options,
     }
     next_begin += interval;
   }
-}
-
-void print_other_stats(std::ostream &log, const rocksdb::Options &options,
-                       Tester &tester) {
-  const std::shared_ptr<rocksdb::Statistics> &stats = options.statistics;
-  log << "Timestamp: " << timestamp_ns() << "\n";
-  log << "rocksdb.block.cache.data.miss: "
-      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS) << '\n';
-  log << "rocksdb.block.cache.data.hit: "
-      << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT) << '\n';
-  log << "rocksdb.bloom.filter.useful: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL) << '\n';
-  log << "rocksdb.bloom.filter.full.positive: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE) << '\n';
-  log << "rocksdb.bloom.filter.full.true.positive: "
-      << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
-      << '\n';
-  log << "rocksdb.memtable.hit: "
-      << stats->getTickerCount(rocksdb::MEMTABLE_HIT) << '\n';
-  log << "rocksdb.l0.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L0)
-      << '\n';
-  log << "rocksdb.l1.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L1)
-      << '\n';
-  log << "rocksdb.rocksdb.l2andup.hit: "
-      << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
-  log << "leader write count: "
-      << stats->getTickerCount(rocksdb::LEADER_WRITE_COUNT) << '\n';
-  log << "non leader write count: "
-      << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
-
-  log << "Promotion cache hits: "
-      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT) << '\n';
-  log << "Promotion cache insert fail to lock: "
-      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
-      << '\n';
-  log << "Promotion cache insert fail due to compacted: "
-      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
-      << '\n';
-  log << "Promotion cache insert success: "
-      << stats->getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << '\n';
-  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << '\n';
-  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << '\n';
-
-  print_timers(log);
-
-  /* Operation counts*/
-  log << "notfound counts: " << tester.GetNotFoundCounts() << '\n';
-  log << "stat end===" << std::endl;
 }
 
 int main(int argc, char **argv) {
@@ -828,7 +765,6 @@ int main(int argc, char **argv) {
   po::options_description desc("Available options");
   std::string format;
   std::string arg_switches;
-  size_t num_threads;
 
   std::string arg_db_path;
   std::string arg_db_paths;
@@ -866,7 +802,8 @@ int main(int argc, char **argv) {
                      "0x2: Output the result of READ\n"
                      "0x4: count access hot per tier\n"
                      "0x8: Log key and the level hit");
-  desc.add_options()("num_threads", po::value(&num_threads)->default_value(1),
+  desc.add_options()("num_threads",
+                     po::value(&work_options.num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
@@ -1055,15 +992,10 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  std::atomic<uint64_t> progress(0);
-  std::atomic<uint64_t> progress_get(0);
-
   work_options.db = db;
+  work_options.options = &options;
   work_options.switches = switches;
   work_options.db_path = db_path;
-  work_options.progress = &progress;
-  work_options.progress_get = &progress_get;
-  work_options.num_threads = num_threads;
   work_options.enable_fast_process = vm.count("enable_fast_process");
   if (format == "plain") {
     work_options.format_type = FormatType::Plain;
@@ -1101,12 +1033,6 @@ int main(int argc, char **argv) {
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
-  std::atomic<bool> should_stop(false);
-  std::thread stat_printer(bg_stat_printer, &work_options, &options,
-                           &should_stop);
-
-  Tester tester(work_options);
-
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
     autotuner =
@@ -1115,39 +1041,21 @@ int main(int argc, char **argv) {
                       options.db_paths[0].target_size * 0.05, 20e9, *ralt);
   }
 
-  auto period_print_stat = [&]() {
+  Tester tester(work_options);
+
+  std::atomic<bool> should_stop(false);
+  std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
+
+  std::thread period_print_thread([&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      print_other_stats(period_stats, options, tester);
+      tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-  };
+  });
 
-  auto print_vc_param_func = [&]() {
-    print_vc_param(*ralt, &work_options, &should_stop);
-  };
-
-  std::thread period_print_vc_param_thread(print_vc_param_func);
-  std::thread period_print_thread(period_print_stat);
-
-  std::filesystem::path info_json_path = db_path / "info.json";
-  std::ofstream info_json_out;
-  if (work_options.load) {
-    info_json_out = std::ofstream(info_json_path);
-    info_json_out << "{" << std::endl;
-  } else {
-    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
-  }
-  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
-  tester.Test(info_json);
-  if (work_options.run) {
-    auto info_json_locked = info_json.lock();
-    *info_json_locked << "}" << std::endl;
-  }
-
-  should_stop.store(true, std::memory_order_relaxed);
-
-  print_other_stats(std::cerr, options, tester);
+  tester.Test();
+  tester.print_other_stats(std::cerr);
 
   /* Statistics of RALT */
   if (ralt) {
@@ -1160,9 +1068,9 @@ int main(int argc, char **argv) {
     }
   }
 
+  should_stop.store(true, std::memory_order_relaxed);
   stat_printer.join();
   period_print_thread.join();
-  period_print_vc_param_thread.join();
   delete autotuner;
   delete db;
   delete ralt;
