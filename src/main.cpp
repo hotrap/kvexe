@@ -412,8 +412,9 @@ int main(int argc, char **argv) {
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
-  desc.add_options()("block_size", po::value<size_t>(&table_options.block_size),
-                     "Default: 4096");
+  desc.add_options()(
+      "block_size",
+      po::value<size_t>(&table_options.block_size)->default_value(16384));
   desc.add_options()("max_bytes_for_level_base",
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
