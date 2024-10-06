@@ -2,7 +2,11 @@
 
 #include "test.hpp"
 
-typedef uint16_t field_size_t;
+static inline void empty_directory(std::filesystem::path dir_path) {
+  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
+    std::filesystem::remove_all(path);
+  }
+}
 
 std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   std::istringstream in(db_paths);
@@ -57,9 +61,9 @@ int MaxBytesMultiplerAdditional(const rocksdb::Options &options, int level) {
   return options.max_bytes_for_level_multiplier_additional[level];
 }
 
-std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
+std::vector<std::pair<uint64_t, uint32_t>> predict_level_assignment(
     const rocksdb::Options &options) {
-  std::vector<std::pair<uint64_t, std::string>> ret;
+  std::vector<std::pair<uint64_t, uint32_t>> ret;
   uint32_t p = 0;
   size_t level = 0;
   assert(!options.db_paths.empty());
@@ -84,7 +88,7 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     if (cur_level == level) {
       // Does desired level fit in this path?
       rusty_assert_eq(ret.size(), level);
-      ret.emplace_back(level_size, options.db_paths[p].path);
+      ret.emplace_back(level_size, p);
       ++level;
     }
     current_path_size -= level_size;
@@ -108,24 +112,13 @@ std::vector<std::pair<uint64_t, std::string>> predict_level_assignment(
     cur_level++;
   }
   rusty_assert_eq(ret.size(), level);
-  ret.emplace_back(level_size, options.db_paths[p].path);
+  ret.emplace_back(level_size, p);
   return ret;
 }
 
-void empty_directory(std::filesystem::path dir_path) {
-  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
-    std::filesystem::remove_all(path);
-  }
-}
-
-bool is_empty_directory(std::string dir_path) {
-  auto it = std::filesystem::directory_iterator(dir_path);
-  return it == std::filesystem::end(it);
-}
-
-void bg_stat_printer(WorkOptions *work_options,
-                     std::atomic<bool> *should_stop) {
-  const std::filesystem::path &db_path = work_options->db_path;
+void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
+  const WorkOptions &work_options = tester->work_options();
+  const std::filesystem::path &db_path = work_options.db_path;
 
   char buf[16];
 
@@ -157,11 +150,8 @@ void bg_stat_printer(WorkOptions *work_options,
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' '
-                 << work_options->progress->load(std::memory_order_relaxed)
-                 << ' '
-                 << work_options->progress_get->load(std::memory_order_relaxed)
-                 << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << ' '
+                 << tester->progress_get() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -196,36 +186,6 @@ void bg_stat_printer(WorkOptions *work_options,
   }
 }
 
-void print_other_stats(std::ostream &log, const rocksdb::Options &options,
-                       Tester &tester) {
-  log << "Timestamp: " << timestamp_ns() << "\n";
-  log << "rocksdb.block.cache.data.miss: "
-      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS)
-      << "\n";
-  log << "rocksdb.block.cache.data.hit: "
-      << options.statistics->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT)
-      << "\n";
-  log << "rocksdb.bloom.filter.useful: "
-      << options.statistics->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL)
-      << "\n";
-  log << "rocksdb.memtable.hit: "
-      << options.statistics->getTickerCount(rocksdb::MEMTABLE_HIT) << "\n";
-  log << "rocksdb.l0.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L0) << "\n";
-  log << "rocksdb.l1.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L1) << "\n";
-  log << "rocksdb.rocksdb.l2andup.hit: "
-      << options.statistics->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << "\n";
-  log << "rocksdb Perf: " << tester.GetRocksdbPerf() << "\n";
-  log << "rocksdb IOStats: " << tester.GetRocksdbIOStats() << "\n";
-
-  print_timers(log);
-
-  /* Operation counts*/
-  log << "notfound counts: " << tester.GetNotFoundCounts() << "\n";
-  log << "stat end===" << std::endl;
-}
-
 int main(int argc, char **argv) {
   std::ios::sync_with_stdio(false);
   std::cin.tie(0);
@@ -239,7 +199,6 @@ int main(int argc, char **argv) {
   po::options_description desc("Available options");
   std::string format;
   std::string arg_switches;
-  size_t num_threads;
   int max_background_jobs;
 
   std::string arg_db_path;
@@ -272,7 +231,8 @@ int main(int argc, char **argv) {
                      "Switches for statistics: none/all/<hex value>\n"
                      "0x1: Log the latency of each operation\n"
                      "0x2: Output the result of READ");
-  desc.add_options()("num_threads", po::value(&num_threads)->default_value(1),
+  desc.add_options()("num_threads",
+                     po::value(&work_options.num_threads)->default_value(1),
                      "The number of threads to execute the trace\n");
   desc.add_options()("enable_fast_process",
                      "Enable fast process including ignoring kNotFound and "
@@ -310,8 +270,9 @@ int main(int argc, char **argv) {
   desc.add_options()("cache_size",
                      po::value<size_t>(&cache_size)->default_value(8 << 20),
                      "Capacity of LRU block cache in bytes. Default: 8MiB");
-  desc.add_options()("block_size", po::value<size_t>(&table_options.block_size),
-                     "Default: 4096");
+  desc.add_options()(
+      "block_size",
+      po::value<size_t>(&table_options.block_size)->default_value(16384));
   desc.add_options()("max_bytes_for_level_base",
                      po::value(&options.max_bytes_for_level_base));
   desc.add_options()("optimize_filters_for_hits",
@@ -390,6 +351,9 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
+  options.max_bytes_for_level_multiplier_additional.clear();
+  options.max_bytes_for_level_multiplier_additional.push_back(1);
+
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10);
@@ -408,11 +372,13 @@ int main(int argc, char **argv) {
     rusty_assert(ret.size() > 0);
     size_t first_level_in_sd = ret.size() - 1;
     for (size_t level = 0; level < first_level_in_sd; ++level) {
-      std::cerr << level << ' ' << ret[level].second << ' ' << ret[level].first
-                << std::endl;
+      auto p = ret[level].second;
+      std::cerr << level << ' ' << options.db_paths[p].path << ' '
+                << ret[level].first << std::endl;
     }
-    std::cerr << first_level_in_sd << "+ " << ret[first_level_in_sd].second
-              << ' ' << ret[first_level_in_sd].first << std::endl;
+    auto p = ret[first_level_in_sd].second;
+    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+              << ret[first_level_in_sd].first << std::endl;
     if (options.db_paths.size() == 1) {
       first_level_in_sd = 100;
     }
@@ -435,15 +401,10 @@ int main(int argc, char **argv) {
   std::cerr << cmd << std::endl;
   std::system(cmd.c_str());
 
-  std::atomic<uint64_t> progress(0);
-  std::atomic<uint64_t> progress_get(0);
-
   work_options.db = db;
+  work_options.options = &options;
   work_options.switches = switches;
   work_options.db_path = db_path;
-  work_options.progress = &progress;
-  work_options.progress_get = &progress_get;
-  work_options.num_threads = num_threads;
   work_options.enable_fast_process = vm.count("enable_fast_process");
   if (format == "plain") {
     work_options.format_type = FormatType::Plain;
@@ -469,39 +430,23 @@ int main(int argc, char **argv) {
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
-  std::atomic<bool> should_stop(false);
-  std::thread stat_printer(bg_stat_printer, &work_options, &should_stop);
-
   Tester tester(work_options);
 
-  auto period_print_stat = [&]() {
+  std::atomic<bool> should_stop(false);
+  std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
+
+  std::thread period_print_thread([&]() {
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      print_other_stats(period_stats, options, tester);
+      tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-  };
+  });
 
-  std::thread period_print_thread(period_print_stat);
-
-  std::filesystem::path info_json_path = db_path / "info.json";
-  std::ofstream info_json_out;
-  if (work_options.load) {
-    info_json_out = std::ofstream(info_json_path);
-    info_json_out << "{" << std::endl;
-  } else {
-    info_json_out = std::ofstream(info_json_path, std::ios_base::app);
-  }
-  rusty::sync::Mutex<std::ofstream> info_json(std::move(info_json_out));
-  tester.Test(info_json);
-  if (work_options.run) {
-    *info_json.lock() << "}" << std::endl;
-  }
+  tester.Test();
+  tester.print_other_stats(std::cerr);
 
   should_stop.store(true, std::memory_order_relaxed);
-
-  print_other_stats(std::cerr, options, tester);
-
   stat_printer.join();
   period_print_thread.join();
   delete db;
