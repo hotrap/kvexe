@@ -134,6 +134,10 @@ static inline const char* to_string(YCSBGen::OpType type) {
   }
   rusty_panic();
 }
+static inline void print_latency(std::ofstream& out, YCSBGen::OpType op,
+                                 uint64_t nanos) {
+  out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
+}
 
 enum class TimerType : size_t {
   kPut,
@@ -299,13 +303,11 @@ struct WorkOptions {
   std::string run_trace;
   FormatType format_type;
   rocksdb::DB* db;
+  const rocksdb::Options* options;
   uint64_t switches;
   std::filesystem::path db_path;
-  std::atomic<uint64_t>* progress;
-  std::atomic<uint64_t>* progress_get;
   bool enable_fast_process{false};
   size_t num_threads{1};
-  size_t opblock_size{1024};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
@@ -313,56 +315,94 @@ struct WorkOptions {
   bool export_ans_xxh64{false};
 };
 
-void print_latency(std::ofstream& out, YCSBGen::OpType op, uint64_t nanos) {
-  out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
-}
-
-class Tester;
-
-void print_other_stats(std::ostream& log, const rocksdb::Options& options,
-                       Tester& tester);
-
 class Tester {
  public:
-  Tester(const WorkOptions& option) : options_(option) {}
-
-  void Test(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    perf_contexts_.resize(options_.num_threads);
-    iostats_contexts_.resize(options_.num_threads);
-
+  Tester(const WorkOptions& option)
+      : options_(option),
+        perf_contexts_(options_.num_threads),
+        iostats_contexts_(options_.num_threads) {
     for (size_t i = 0; i < options_.num_threads; ++i) {
       workers_.emplace_back(*this, i);
     }
+  }
+
+  const WorkOptions& work_options() const { return options_; }
+  uint64_t progress() const {
+    return progress_.load(std::memory_order_relaxed);
+  }
+  uint64_t progress_get() const {
+    return progress_get_.load(std::memory_order_relaxed);
+  }
+
+  void Test() {
+    std::filesystem::path info_json_path = options_.db_path / "info.json";
+    std::ofstream info_json;
+    if (options_.load) {
+      info_json = std::ofstream(info_json_path);
+      info_json << "{" << std::endl;
+    } else {
+      info_json = std::ofstream(info_json_path, std::ios_base::app);
+    }
+    rusty::sync::Mutex<std::ofstream> info_json_out(std::move(info_json));
+
     if (options_.enable_fast_generator) {
       GenerateAndExecute(info_json_out);
     } else {
       ReadAndExecute(info_json_out);
     }
 
+    uint64_t not_found = 0;
     uint64_t scanned = 0;
     for (const auto& worker : workers_) {
+      not_found += worker.not_found();
       scanned += worker.scanned();
     }
-    *info_json_out.lock() << "\t\"scanned-records\": " << scanned << ","
-                          << std::endl;
+    if (options_.run) {
+      *info_json_out.lock() << "\t\"not-found\": " << not_found << ",\n"
+                            << "\t\"scanned-records\": " << scanned << "\n}";
+    } else {
+      rusty_assert_eq(not_found, (uint64_t)0);
+      rusty_assert_eq(scanned, (uint64_t)0);
+    }
   }
 
-  uint64_t GetNotFoundCounts() const {
-    return notfound_counts_.load(std::memory_order_relaxed);
-  }
+  void print_other_stats(std::ostream& log) {
+    const std::shared_ptr<rocksdb::Statistics>& stats =
+        options_.options->statistics;
+    log << "Timestamp: " << timestamp_ns() << "\n";
+    log << "rocksdb.block.cache.data.miss: "
+        << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_MISS) << '\n';
+    log << "rocksdb.block.cache.data.hit: "
+        << stats->getTickerCount(rocksdb::BLOCK_CACHE_DATA_HIT) << '\n';
+    log << "rocksdb.bloom.filter.useful: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_USEFUL) << '\n';
+    log << "rocksdb.bloom.filter.full.positive: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_POSITIVE) << '\n';
+    log << "rocksdb.bloom.filter.full.true.positive: "
+        << stats->getTickerCount(rocksdb::BLOOM_FILTER_FULL_TRUE_POSITIVE)
+        << '\n';
+    log << "rocksdb.memtable.hit: "
+        << stats->getTickerCount(rocksdb::MEMTABLE_HIT) << '\n';
+    log << "rocksdb.l0.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L0)
+        << '\n';
+    log << "rocksdb.l1.hit: " << stats->getTickerCount(rocksdb::GET_HIT_L1)
+        << '\n';
+    log << "rocksdb.rocksdb.l2andup.hit: "
+        << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
 
-  std::string GetRocksdbPerf() {
-    std::unique_lock lck(thread_local_m_);
-    if (perf_contexts_.empty()) return "";
-    if (perf_contexts_[0] == nullptr) return "";
-    return perf_contexts_[0]->ToString();
-  }
+    print_timers(log);
 
-  std::string GetRocksdbIOStats() {
-    std::unique_lock lck(thread_local_m_);
-    if (iostats_contexts_.empty()) return "";
-    if (iostats_contexts_[0] == nullptr) return "";
-    return iostats_contexts_[0]->ToString();
+    {
+      std::unique_lock lck(thread_local_m_);
+      if (perf_contexts_[0]) {
+        log << "rocksdb Perf: " << perf_contexts_[0]->ToString() << '\n';
+      }
+      if (iostats_contexts_[0]) {
+        log << "rocksdb IOStats: " << iostats_contexts_[0]->ToString() << '\n';
+      }
+    }
+
+    log << "stat end===" << std::endl;
   }
 
  private:
@@ -372,7 +412,6 @@ class Tester {
         : tester_(tester),
           id_(id),
           options_(tester.options_),
-          notfound_counts_(tester.notfound_counts_),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -383,7 +422,7 @@ class Tester {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
         do_put(op);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
     }
     void prepare_run_phase() {
@@ -396,19 +435,6 @@ class Tester {
         rusty_assert(ans_xxhash_state_);
         XXH64_reset(ans_xxhash_state_, 0);
       }
-    }
-    void finish_run_phase() {
-      if (ans_xxhash_state_) {
-        std::ofstream(options_.db_path /
-                      ("ans-" + std::to_string(id_) + ".xxh64"))
-            << std::hex << std::setw(16) << std::setfill('0')
-            << XXH64_digest(ans_xxhash_state_) << std::endl;
-        XXH64_freeState(ans_xxhash_state_);
-        ans_xxhash_state_ = nullptr;
-      }
-    }
-    void run(YCSBGen::YCSBRunGenerator& runner) {
-      std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
       rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
       {
@@ -416,6 +442,30 @@ class Tester {
         tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
         tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
       }
+    }
+    void finish_run_phase() {
+      std::string id = std::to_string(id_);
+      if (ans_xxhash_state_) {
+        std::ofstream(options_.db_path / ("ans-" + id + ".xxh64"))
+            << std::hex << std::setw(16) << std::setfill('0')
+            << XXH64_digest(ans_xxhash_state_) << std::endl;
+        XXH64_freeState(ans_xxhash_state_);
+        ans_xxhash_state_ = nullptr;
+      }
+
+      std::ofstream(options_.db_path / ("run-phase-perf-context-" + id))
+          << tester_.perf_contexts_[id_]->ToString();
+      std::ofstream(options_.db_path / ("run-phase-iostats-contexts-" + id))
+          << tester_.iostats_contexts_[id_]->ToString();
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = nullptr;
+        tester_.iostats_contexts_[id_] = nullptr;
+      }
+    }
+    void run(YCSBGen::YCSBRunGenerator& runner) {
+      prepare_run_phase();
+      std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
       std::optional<std::ofstream> key_only_trace_out =
           options_.export_key_only_trace
@@ -430,15 +480,14 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         process_op(op, &value);
-        options_.progress->fetch_add(1, std::memory_order_relaxed);
+        tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
-      {
-        std::unique_lock lck(tester_.thread_local_m_);
-        tester_.perf_contexts_[id_] = nullptr;
-        tester_.iostats_contexts_[id_] = nullptr;
-      }
+      finish_run_phase();
     }
-    void work(BlockChannel<YCSBGen::Operation>& chan) {
+    void work(bool run, BlockChannel<YCSBGen::Operation>& chan) {
+      if (run) {
+        prepare_run_phase();
+      }
       std::string value;
       for (;;) {
         auto block = chan.GetBlock();
@@ -447,11 +496,15 @@ class Tester {
         }
         for (const YCSBGen::Operation& op : block) {
           process_op(op, &value);
-          options_.progress->fetch_add(1, std::memory_order_relaxed);
+          tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
+      }
+      if (run) {
+        finish_run_phase();
       }
     }
 
+    uint64_t not_found() const { return not_found_; }
     uint64_t scanned() const { return scanned_; }
 
    private:
@@ -487,7 +540,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -523,7 +576,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      options_.progress_get->fetch_add(1, std::memory_order_relaxed);
+      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation& op) {
@@ -593,13 +646,8 @@ class Tester {
             ans_out_.value() << ans << '\n';
           }
           if (!found) {
-            local_notfound_counts++;
-            if ((local_read_progress & 15) == 15) {
-              notfound_counts_ += local_notfound_counts;
-              local_notfound_counts = 0;
-            }
+            not_found_ += 1;
           }
-          local_read_progress++;
         } break;
         case YCSBGen::OpType::RMW:
           do_read_modify_write(op);
@@ -618,17 +666,15 @@ class Tester {
     const WorkOptions& options_;
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
-    std::atomic<uint64_t>& notfound_counts_;
 
-    uint64_t local_notfound_counts{0};
-    uint64_t local_read_progress{0};
+    uint64_t not_found_{0};
     uint64_t scanned_{0};
     XXH64_state_t* ans_xxhash_state_{nullptr};
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(const char* value_prefix, std::istream& trace) {
+  void parse(bool run, std::istream& trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
@@ -636,14 +682,14 @@ class Tester {
 
     std::vector<BlockChannelClient<YCSBGen::Operation>> opblocks;
     for (auto& channel : channel_for_workers) {
-      opblocks.emplace_back(&channel, options_.opblock_size);
+      opblocks.emplace_back(&channel, 1024);
     }
 
     std::vector<std::thread> threads;
     for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, &channel_for_workers, i]() {
+      threads.emplace_back([this, run, &channel_for_workers, i]() {
         size_t index = options_.enable_fast_process ? 0 : i;
-        workers_[i].work(channel_for_workers[index]);
+        workers_[i].work(run, channel_for_workers[index]);
       });
     }
 
@@ -686,7 +732,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               value_prefix, parse_counts + 1);
+                               run ? "load-" : "run-", parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
@@ -827,15 +873,11 @@ class Tester {
 
     std::ofstream other_stats_out(options_.db_path /
                                   "other-stats-load-finish.txt");
-    print_other_stats(other_stats_out, options_.db->GetOptions(), *this);
+    print_other_stats(other_stats_out);
   }
 
   void prepare_run_phase(
       const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    for (auto& worker : workers_) {
-      worker.prepare_run_phase();
-    }
-
     const auto& ts = timers.timers();
     for (const auto& timer : ts) {
       timer.reset();
@@ -868,10 +910,6 @@ class Tester {
                           << std::endl;
     rusty_assert(options_.db->GetProperty("rocksdb.stats", &rocksdb_stats));
     std::ofstream(options_.db_path / "rocksdb-stats.txt") << rocksdb_stats;
-
-    for (auto& worker : workers_) {
-      worker.finish_run_phase();
-    }
   }
 
   void GenerateAndExecute(
@@ -981,7 +1019,7 @@ class Tester {
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
-      parse("load-", trace);
+      parse(false, trace);
       finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
@@ -995,7 +1033,7 @@ class Tester {
 
       prepare_run_phase(info_json_out);
       auto start = rusty::time::Instant::now();
-      parse("run-", trace);
+      parse(true, trace);
       finish_run_phase(info_json_out, start);
     }
   }
@@ -1003,10 +1041,10 @@ class Tester {
   WorkOptions options_;
   std::vector<Worker> workers_;
 
-  std::atomic<uint64_t> notfound_counts_{0};
   std::vector<rocksdb::PerfContext*> perf_contexts_;
   std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
   std::mutex thread_local_m_;
 
-  friend class Worker;
+  std::atomic<uint64_t> progress_{0};
+  std::atomic<uint64_t> progress_get_{0};
 };
