@@ -390,8 +390,7 @@ class AutoTuner {
         wait_time_ns_(wait_time_ns),
         max_vc_hot_set_size_(max_vc_hot_set_size),
         min_vc_hot_set_size_(min_vc_hot_set_size),
-        ralt_(ralt),
-        log_(work_options_.db_path / "vc_log") {
+        ralt_(ralt) {
     th_ = std::thread([&]() { update_thread(); });
   }
 
@@ -504,7 +503,6 @@ class AutoTuner {
   uint64_t max_vc_hot_set_size_;
   uint64_t min_vc_hot_set_size_;
   RaltWrapper &ralt_;
-  std::ofstream log_;
 
   bool stop_signal_{false};
   std::thread th_;
