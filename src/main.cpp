@@ -124,11 +124,11 @@ void calc_fd_size_ratio(rocksdb::Options &options, size_t first_level_in_sd,
         ratio / options.max_bytes_for_level_multiplier);
   }
 }
-void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB *db,
+void calc_sd_size_ratio(rocksdb::Options &options, rocksdb::DB &db,
                         size_t last_level_in_fd, uint64_t last_level_in_fd_size,
                         uint64_t hot_set_size) {
   std::string str;
-  db->GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
+  db.GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
   std::istringstream in(str);
   // The first two lines are headers.
   size_t lines_to_skip = 2 + last_level_in_fd + 1;
@@ -380,10 +380,10 @@ class RaltWrapper : public RALT {
 
 class AutoTuner {
  public:
-  AutoTuner(const WorkOptions &work_options, rocksdb::Options &options,
+  AutoTuner(rocksdb::DB &db, rocksdb::Options &options,
             size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
             uint64_t min_vc_hot_set_size, size_t wait_time_ns, RALT &ralt)
-      : work_options_(work_options),
+      : db_(db),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
         wait_time_ns_(wait_time_ns),
@@ -470,8 +470,8 @@ class AutoTuner {
         hot_set_size = ralt_.GetHotSetSizeLimit();
         std::cerr << "hot set size limit: " << hot_set_size << std::endl;
       }
-      calc_sd_size_ratio(options_, work_options_.db, last_level_in_fd,
-                         last_level_in_fd_size, hot_set_size);
+      calc_sd_size_ratio(options_, db_, last_level_in_fd, last_level_in_fd_size,
+                         hot_set_size);
       if (should_update_max_bytes_for_level_multiplier_additional(
               ori_multiplier_additional,
               options_.max_bytes_for_level_multiplier_additional)) {
@@ -488,13 +488,12 @@ class AutoTuner {
         std::string str = out.str();
         std::cerr << "Update max_bytes_for_level_multiplier_additional: " << str
                   << std::endl;
-        work_options_.db->SetOptions(
-            {{"max_bytes_for_level_multiplier_additional", str}});
+        db_.SetOptions({{"max_bytes_for_level_multiplier_additional", str}});
       }
     }
   }
 
-  const WorkOptions &work_options_;
+  rocksdb::DB &db_;
   rocksdb::Options &options_;
   const size_t first_level_in_sd_;
 
@@ -1011,10 +1010,9 @@ int main(int argc, char **argv) {
 
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
-    autotuner =
-        new AutoTuner(work_options, options, first_level_in_sd,
-                      options.db_paths[0].target_size * 0.7,
-                      options.db_paths[0].target_size * 0.05, 20e9, *ralt);
+    autotuner = new AutoTuner(
+        *db, options, first_level_in_sd, options.db_paths[0].target_size * 0.7,
+        options.db_paths[0].target_size * 0.05, 20e9, *ralt);
   }
 
   Tester tester(work_options);
