@@ -381,14 +381,14 @@ class RaltWrapper : public RALT {
 class AutoTuner {
  public:
   AutoTuner(rocksdb::DB &db, rocksdb::Options &options,
-            size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
-            uint64_t min_vc_hot_set_size, size_t wait_time_ns, RALT &ralt)
+            size_t first_level_in_sd, uint64_t min_hot_set_size,
+            uint64_t max_hot_set_size, size_t wait_time_ns, RALT &ralt)
       : db_(db),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
         wait_time_ns_(wait_time_ns),
-        max_vc_hot_set_size_(max_vc_hot_set_size),
-        min_vc_hot_set_size_(min_vc_hot_set_size),
+        min_hot_set_size_(min_hot_set_size),
+        max_hot_set_size_(max_hot_set_size),
         ralt_(ralt) {
     th_ = std::thread([&]() { update_thread(); });
   }
@@ -429,9 +429,9 @@ class AutoTuner {
         if (first) {
           first = false;
           warming_up = false;
-          ralt_.SetMinHotSetSizeLimit(min_vc_hot_set_size_);
+          ralt_.SetMinHotSetSizeLimit(min_hot_set_size_);
         }
-        double hs_step = max_vc_hot_set_size_ / 20.0;
+        double hs_step = max_hot_set_size_ / 20.0;
         uint64_t real_phy_size = ralt_.GetRealPhySize();
         std::cerr << "real_phy_size " << real_phy_size << '\n';
         auto rate = real_phy_size / (double)real_hot_set_size;
@@ -455,7 +455,7 @@ class AutoTuner {
       if (warming_up) {
         max_hot_set_size = std::min(max_hot_set_size, initial_max_hot_set_size);
       } else {
-        max_hot_set_size = std::min(max_hot_set_size, max_vc_hot_set_size_);
+        max_hot_set_size = std::min(max_hot_set_size, max_hot_set_size_);
       }
       if (ralt_.GetMaxHotSetSizeLimit() != max_hot_set_size) {
         std::cerr << "Update max hot set size limit: " << max_hot_set_size
@@ -498,8 +498,8 @@ class AutoTuner {
   const size_t first_level_in_sd_;
 
   ssize_t wait_time_ns_;
-  uint64_t max_vc_hot_set_size_;
-  uint64_t min_vc_hot_set_size_;
+  uint64_t min_hot_set_size_;
+  uint64_t max_hot_set_size_;
   RALT &ralt_;
 
   bool stop_signal_{false};
@@ -1011,8 +1011,8 @@ int main(int argc, char **argv) {
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
     autotuner = new AutoTuner(
-        *db, options, first_level_in_sd, options.db_paths[0].target_size * 0.7,
-        options.db_paths[0].target_size * 0.05, 20e9, *ralt);
+        *db, options, first_level_in_sd, options.db_paths[0].target_size * 0.05,
+        options.db_paths[0].target_size * 0.7, 20e9, *ralt);
   }
 
   Tester tester(work_options);
