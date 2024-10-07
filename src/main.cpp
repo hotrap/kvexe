@@ -48,20 +48,6 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-size_t calc_first_level_in_sd(const rocksdb::Options &options) {
-  uint64_t fd_size = options.db_paths[0].target_size;
-  size_t level = 0;
-  uint64_t level_size = options.max_bytes_for_level_base;
-  while (level_size <= fd_size) {
-    fd_size -= level_size;
-    if (level > 0) {
-      level_size *= options.max_bytes_for_level_multiplier;
-    }
-    level += 1;
-  }
-  return level;
-}
-
 class RaltWrapper : public RALT {
  public:
   RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
