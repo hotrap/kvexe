@@ -652,9 +652,9 @@ int main(int argc, char **argv) {
 
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
-    autotuner = new AutoTuner(
-        *db, first_level_in_sd, options.db_paths[0].target_size * 0.05,
-        options.db_paths[0].target_size * 0.7, 20e9);
+    autotuner = new AutoTuner(*db, first_level_in_sd,
+                              options.db_paths[0].target_size * 0.05,
+                              options.db_paths[0].target_size * 0.7);
   }
 
   Tester tester(work_options);
