@@ -382,8 +382,7 @@ class AutoTuner {
  public:
   AutoTuner(const WorkOptions &work_options, rocksdb::Options &options,
             size_t first_level_in_sd, uint64_t max_vc_hot_set_size,
-            uint64_t min_vc_hot_set_size, size_t wait_time_ns,
-            RaltWrapper &ralt)
+            uint64_t min_vc_hot_set_size, size_t wait_time_ns, RALT &ralt)
       : work_options_(work_options),
         options_(options),
         first_level_in_sd_(first_level_in_sd),
@@ -502,7 +501,7 @@ class AutoTuner {
   ssize_t wait_time_ns_;
   uint64_t max_vc_hot_set_size_;
   uint64_t min_vc_hot_set_size_;
-  RaltWrapper &ralt_;
+  RALT &ralt_;
 
   bool stop_signal_{false};
   std::thread th_;
