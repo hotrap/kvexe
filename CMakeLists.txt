@@ -16,11 +16,11 @@ aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
 include_directories(
-    ${ROCKSDB_INCLUDE}
-    ${VISCNTS_INCLUDE}
+    ${ROCKSDB_INCLUDE_DIR}
+    ${RALT_INCLUDE_DIR}
 )
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB_DIR})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		dl
@@ -32,8 +32,8 @@ target_link_libraries(${PROJECT_NAME}
 		boost_program_options
 		autotuner
 )
-IF (DEFINED VISCNTS_LIB)
-    target_link_directories(${PROJECT_NAME} PUBLIC ${VISCNTS_LIB})
+IF (DEFINED RALT_LIB_DIR)
+    target_link_directories(${PROJECT_NAME} PUBLIC ${RALT_LIB_DIR})
     target_link_libraries(${PROJECT_NAME} PUBLIC viscnts)
 ENDIF()
 
