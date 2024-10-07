@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(rocksdb-kvexe CXX)
 
-include_directories(${ROCKSDB_INCLUDE})
-link_directories(${ROCKSDB_LIB})
-
 add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
 
@@ -15,7 +12,11 @@ ENDIF()
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
+include_directories(
+    ${ROCKSDB_INCLUDE_DIR}
+)
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB_DIR})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		xxhash
