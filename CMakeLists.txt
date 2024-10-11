@@ -5,6 +5,7 @@ add_subdirectory(3rdparty/rusty-cpp)
 add_subdirectory(3rdparty/counter-timer)
 add_subdirectory(3rdparty/rcu-vector)
 add_subdirectory(3rdparty/counter-timer-vec)
+add_subdirectory(3rdparty/AutoTuner)
 
 add_compile_options(-fno-omit-frame-pointer -Wall -Wextra -fexceptions)
 IF (CMAKE_BUILD_TYPE STREQUAL Debug)
@@ -15,11 +16,11 @@ aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
 include_directories(
-    ${ROCKSDB_INCLUDE}
-    ${VISCNTS_INCLUDE}
+    ${ROCKSDB_INCLUDE_DIR}
+    ${RALT_INCLUDE_DIR}
 )
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB_DIR})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		dl
@@ -29,9 +30,10 @@ target_link_libraries(${PROJECT_NAME}
 	PRIVATE
 		counter-timer-vec
 		boost_program_options
+		autotuner
 )
-IF (DEFINED VISCNTS_LIB)
-    target_link_directories(${PROJECT_NAME} PUBLIC ${VISCNTS_LIB})
+IF (DEFINED RALT_LIB_DIR)
+    target_link_directories(${PROJECT_NAME} PUBLIC ${RALT_LIB_DIR})
     target_link_libraries(${PROJECT_NAME} PUBLIC viscnts)
 ENDIF()
 

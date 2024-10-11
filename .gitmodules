@@ -13,3 +13,6 @@
 [submodule "3rdparty/ycsbgen"]
 	path = 3rdparty/ycsbgen
 	url = https://github.com/hotrap/YCSBGenerator.git
+[submodule "3rdparty/AutoTuner"]
+	path = 3rdparty/AutoTuner
+	url = https://github.com/hotrap/AutoTuner.git
