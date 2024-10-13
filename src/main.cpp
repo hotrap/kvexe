@@ -467,6 +467,9 @@ int main(int argc, char **argv) {
   options.compression = rocksdb::CompressionType::kNoCompression;
   // Doesn't make sense for tiered storage
   options.level_compaction_dynamic_level_bytes = false;
+  // The ttl feature will try to compact old data into the last level, which is
+  // not compatible with the retention of HotRAP. So we disable the ttl feature.
+  options.ttl = 0;
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
