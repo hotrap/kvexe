@@ -34,7 +34,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 IF (DEFINED RALT_LIB_DIR)
     target_link_directories(${PROJECT_NAME} PUBLIC ${RALT_LIB_DIR})
-    target_link_libraries(${PROJECT_NAME} PUBLIC viscnts)
+    target_link_libraries(${PROJECT_NAME} PUBLIC ralt)
 ENDIF()
 
 # target_compile_features can omit -std flag in compile_commands.json
