@@ -681,7 +681,7 @@ class Tester {
             options_.db->NewIterator(read_options_));
         it->Seek(op.key);
         ++scanned_records_;
-        bool whole_range_is_hot = seek_key_in_hot_range_;
+        bool whole_range_is_hot = !last_promoted.empty();
         for (size_t i = 1; i < op.scan_len && it->Valid(); ++i) {
           if (whole_range_is_hot &&
               ucmp->Compare(it->key().ToString(), last_promoted) > 0) {
