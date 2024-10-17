@@ -401,7 +401,7 @@ class Tester {
           << ",\n"
           << "\t\"pc-insert\": "
           << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << ",\n"
-          << "\t\"not-found\": " << not_found << ",\n}";
+          << "\t\"not-found\": " << not_found << "\n}";
     } else {
       rusty_assert_eq(not_found, (uint64_t)0);
       rusty_assert_eq(scanned_records, (uint64_t)0);
