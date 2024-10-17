@@ -4,9 +4,9 @@
 #include <atomic>
 #include <counter_timer_vec.hpp>
 
+#include "ralt.h"
 #include "rocksdb/ralt.h"
 #include "test.hpp"
-#include "viscnts.h"
 
 static inline void empty_directory(std::filesystem::path dir_path) {
   for (auto &path : std::filesystem::directory_iterator(dir_path)) {
@@ -52,11 +52,10 @@ class RaltWrapper : public RALT {
  public:
   RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
               int tier0_last_level, size_t init_hot_set_size,
-              size_t max_viscnts_size, uint64_t switches,
-              size_t max_hot_set_size, size_t min_hot_set_size,
-              size_t bloom_bfk)
+              size_t max_ralt_size, uint64_t switches, size_t max_hot_set_size,
+              size_t min_hot_set_size, size_t bloom_bfk)
       : RALT(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-             min_hot_set_size, max_viscnts_size, bloom_bfk),
+             min_hot_set_size, max_ralt_size, bloom_bfk),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
@@ -193,40 +192,40 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   timers_out << "Timestamp(ns) compaction-cpu-micros put-cpu-nanos "
                 "get-cpu-nanos delete-cpu-nanos";
   uint64_t value;
-  bool has_viscnts_compaction_thread_cpu_nanos =
-      ralt.GetIntProperty("viscnts.compaction.thread.cpu.nanos", &value);
-  if (has_viscnts_compaction_thread_cpu_nanos) {
-    timers_out << " viscnts.compaction.thread.cpu.nanos";
+  bool has_ralt_compaction_thread_cpu_nanos =
+      ralt.GetIntProperty("ralt.compaction.thread.cpu.nanos", &value);
+  if (has_ralt_compaction_thread_cpu_nanos) {
+    timers_out << " ralt.compaction.thread.cpu.nanos";
   }
-  bool has_viscnts_flush_thread_cpu_nanos =
-      ralt.GetIntProperty("viscnts.flush.thread.cpu.nanos", &value);
-  if (has_viscnts_flush_thread_cpu_nanos) {
-    timers_out << " viscnts.flush.thread.cpu.nanos";
+  bool has_ralt_flush_thread_cpu_nanos =
+      ralt.GetIntProperty("ralt.flush.thread.cpu.nanos", &value);
+  if (has_ralt_flush_thread_cpu_nanos) {
+    timers_out << " ralt.flush.thread.cpu.nanos";
   }
-  bool has_viscnts_decay_thread_cpu_nanos =
-      ralt.GetIntProperty("viscnts.decay.thread.cpu.nanos", &value);
-  if (has_viscnts_decay_thread_cpu_nanos) {
-    timers_out << " viscnts.decay.thread.cpu.nanos";
+  bool has_ralt_decay_thread_cpu_nanos =
+      ralt.GetIntProperty("ralt.decay.thread.cpu.nanos", &value);
+  if (has_ralt_decay_thread_cpu_nanos) {
+    timers_out << " ralt.decay.thread.cpu.nanos";
   }
-  bool has_viscnts_compaction_cpu_nanos =
-      ralt.GetIntProperty("viscnts.compaction.cpu.nanos", &value);
-  if (has_viscnts_compaction_cpu_nanos) {
-    timers_out << " viscnts.compaction.cpu.nanos";
+  bool has_ralt_compaction_cpu_nanos =
+      ralt.GetIntProperty("ralt.compaction.cpu.nanos", &value);
+  if (has_ralt_compaction_cpu_nanos) {
+    timers_out << " ralt.compaction.cpu.nanos";
   }
-  bool has_viscnts_flush_cpu_nanos =
-      ralt.GetIntProperty("viscnts.flush.cpu.nanos", &value);
-  if (has_viscnts_flush_cpu_nanos) {
-    timers_out << " viscnts.flush.cpu.nanos";
+  bool has_ralt_flush_cpu_nanos =
+      ralt.GetIntProperty("ralt.flush.cpu.nanos", &value);
+  if (has_ralt_flush_cpu_nanos) {
+    timers_out << " ralt.flush.cpu.nanos";
   }
-  bool has_viscnts_decay_scan_cpu_nanos =
-      ralt.GetIntProperty("viscnts.decay.scan.cpu.nanos", &value);
-  if (has_viscnts_decay_scan_cpu_nanos) {
-    timers_out << " viscnts.decay.scan.cpu.nanos";
+  bool has_ralt_decay_scan_cpu_nanos =
+      ralt.GetIntProperty("ralt.decay.scan.cpu.nanos", &value);
+  if (has_ralt_decay_scan_cpu_nanos) {
+    timers_out << " ralt.decay.scan.cpu.nanos";
   }
-  bool has_viscnts_decay_write_cpu_nanos =
-      ralt.GetIntProperty("viscnts.decay.write.cpu.nanos", &value);
-  if (has_viscnts_decay_write_cpu_nanos) {
-    timers_out << " viscnts.decay.write.cpu.nanos";
+  bool has_ralt_decay_write_cpu_nanos =
+      ralt.GetIntProperty("ralt.decay.write.cpu.nanos", &value);
+  if (has_ralt_decay_write_cpu_nanos) {
+    timers_out << " ralt.decay.write.cpu.nanos";
   }
   timers_out << std::endl;
 
@@ -249,11 +248,11 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   // Stats of RALT
 
-  std::ofstream viscnts_io_out(db_path / "viscnts-io");
-  viscnts_io_out << "Timestamp(ns) read write\n";
+  std::ofstream ralt_io_out(db_path / "ralt-io");
+  ralt_io_out << "Timestamp(ns) read write\n";
 
-  std::ofstream viscnts_sizes(db_path / "viscnts-sizes");
-  viscnts_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
+  std::ofstream ralt_sizes(db_path / "ralt-sizes");
+  ralt_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
 
   std::ofstream vc_param_out(db_path / "vc_param");
   vc_param_out << "Timestamp(ns) hot-set-size-limit phy-size-limit\n";
@@ -303,36 +302,33 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << delete_cpu_nanos.load(std::memory_order_relaxed);
-    if (has_viscnts_compaction_thread_cpu_nanos) {
+    if (has_ralt_compaction_thread_cpu_nanos) {
       rusty_assert(
-          ralt.GetIntProperty("viscnts.compaction.thread.cpu.nanos", &value));
+          ralt.GetIntProperty("ralt.compaction.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_flush_thread_cpu_nanos) {
-      rusty_assert(
-          ralt.GetIntProperty("viscnts.flush.thread.cpu.nanos", &value));
+    if (has_ralt_flush_thread_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.flush.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_decay_thread_cpu_nanos) {
-      rusty_assert(
-          ralt.GetIntProperty("viscnts.decay.thread.cpu.nanos", &value));
+    if (has_ralt_decay_thread_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.decay.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_compaction_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("viscnts.compaction.cpu.nanos", &value));
+    if (has_ralt_compaction_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.compaction.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_flush_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("viscnts.flush.cpu.nanos", &value));
+    if (has_ralt_flush_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.flush.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_decay_scan_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("viscnts.decay.scan.cpu.nanos", &value));
+    if (has_ralt_decay_scan_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.decay.scan.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
-    if (has_viscnts_decay_write_cpu_nanos) {
-      rusty_assert(
-          ralt.GetIntProperty("viscnts.decay.write.cpu.nanos", &value));
+    if (has_ralt_decay_write_cpu_nanos) {
+      rusty_assert(ralt.GetIntProperty("ralt.decay.write.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     timers_out << std::endl;
@@ -364,17 +360,16 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     num_scans_out << timestamp << ' ' << ralt.num_scans() << ' '
                   << ralt.num_scan_only_fd() << std::endl;
 
-    uint64_t viscnts_read;
+    uint64_t ralt_read;
+    rusty_assert(ralt.GetIntProperty(RALT::Properties::kReadBytes, &ralt_read));
+    uint64_t ralt_write;
     rusty_assert(
-        ralt.GetIntProperty(RALT::Properties::kReadBytes, &viscnts_read));
-    uint64_t viscnts_write;
-    rusty_assert(
-        ralt.GetIntProperty(RALT::Properties::kWriteBytes, &viscnts_write));
-    viscnts_io_out << timestamp << ' ' << viscnts_read << ' ' << viscnts_write
-                   << std::endl;
+        ralt.GetIntProperty(RALT::Properties::kWriteBytes, &ralt_write));
+    ralt_io_out << timestamp << ' ' << ralt_read << ' ' << ralt_write
+                << std::endl;
 
-    viscnts_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
-                  << ralt.GetRealHotSetSize() << std::endl;
+    ralt_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
+               << ralt.GetRealHotSetSize() << std::endl;
 
     vc_param_out << timestamp << ' ' << ralt.GetHotSetSizeLimit() << ' '
                  << ralt.GetPhySizeLimit() << std::endl;
@@ -405,12 +400,12 @@ int main(int argc, char **argv) {
 
   std::string arg_db_path;
   std::string arg_db_paths;
-  std::string viscnts_path_str;
+  std::string ralt_path_str;
   size_t cache_size;
   int64_t load_phase_rate_limit;
 
   double arg_max_hot_set_size;
-  double arg_max_viscnts_size;
+  double arg_max_ralt_size;
   int compaction_pri;
   int ralt_bloom_bpk;
 
@@ -500,12 +495,12 @@ int main(int argc, char **argv) {
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
                      "Max hot set size in bytes");
-  desc.add_options()("max_viscnts_size",
-                     po::value<double>(&arg_max_viscnts_size)->required(),
-                     "Max physical size of viscnts in bytes");
-  desc.add_options()("viscnts_path",
-                     po::value<std::string>(&viscnts_path_str)->required(),
-                     "Path to VisCnts");
+  desc.add_options()("max_ralt_size",
+                     po::value<double>(&arg_max_ralt_size)->required(),
+                     "Max physical size of ralt in bytes");
+  desc.add_options()("ralt_path",
+                     po::value<std::string>(&ralt_path_str)->required(),
+                     "Path to RALT");
   desc.add_options()("compaction_pri,p",
                      po::value<int>(&compaction_pri)->required(),
                      "Method to pick SST to compact (rocksdb::CompactionPri)");
@@ -525,7 +520,7 @@ int main(int argc, char **argv) {
   po::notify(vm);
 
   uint64_t hot_set_size_limit = arg_max_hot_set_size;
-  uint64_t max_viscnts_size = arg_max_viscnts_size;
+  uint64_t max_ralt_size = arg_max_ralt_size;
 
   if (vm.count("load")) {
     work_options.load = true;
@@ -551,7 +546,7 @@ int main(int argc, char **argv) {
   }
 
   std::filesystem::path db_path(arg_db_path);
-  std::filesystem::path viscnts_path(viscnts_path_str);
+  std::filesystem::path ralt_path(ralt_path_str);
   options.db_paths = decode_db_paths(arg_db_paths);
   options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
@@ -580,16 +575,16 @@ int main(int argc, char **argv) {
   }
 
   size_t first_level_in_sd = calc_first_level_in_sd(options);
-  calc_fd_size_ratio(options, first_level_in_sd, max_viscnts_size);
+  calc_fd_size_ratio(options, first_level_in_sd, max_ralt_size);
 
   auto ret = predict_level_assignment(options);
   rusty_assert_eq(ret.size() - 1, first_level_in_sd);
 
   RaltWrapper *ralt = nullptr;
   if (first_level_in_sd != 0) {
-    ralt = new RaltWrapper(options.comparator, viscnts_path_str,
+    ralt = new RaltWrapper(options.comparator, ralt_path_str,
                            first_level_in_sd - 1, hot_set_size_limit,
-                           max_viscnts_size, switches, hot_set_size_limit,
+                           max_ralt_size, switches, hot_set_size_limit,
                            hot_set_size_limit, ralt_bloom_bpk);
 
     options.ralt = ralt;
