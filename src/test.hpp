@@ -374,11 +374,21 @@ class Tester {
     }
 
     uint64_t not_found = 0;
-    uint64_t scanned = 0;
+    uint64_t scanned_records = 0;
+    uint64_t num_scans = 0;
+    uint64_t seek_key_in_hot_range = 0;
+    uint64_t whole_range_is_hot = 0;
     for (const auto& worker : workers_) {
       not_found += worker.not_found();
-      scanned += worker.scanned();
+      scanned_records += worker.scanned_records();
+      num_scans += worker.num_scans();
+      seek_key_in_hot_range += worker.seek_key_in_hot_range();
+      whole_range_is_hot += worker.whole_range_is_hot();
     }
+    std::cerr << "Number of scans: " << num_scans
+              << "\nScanned records: " << scanned_records
+              << "\nSeek key in hot range: " << seek_key_in_hot_range
+              << "\nWhole range is hot: " << whole_range_is_hot << std::endl;
     if (options_.run) {
       const rocksdb::Statistics& stats = *options_.options->statistics;
       *info_json_out.lock()
@@ -391,11 +401,10 @@ class Tester {
           << ",\n"
           << "\t\"pc-insert\": "
           << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << ",\n"
-          << "\t\"not-found\": " << not_found << ",\n"
-          << "\t\"scanned-records\": " << scanned << "\n}";
+          << "\t\"not-found\": " << not_found << ",\n}";
     } else {
       rusty_assert_eq(not_found, (uint64_t)0);
-      rusty_assert_eq(scanned, (uint64_t)0);
+      rusty_assert_eq(scanned_records, (uint64_t)0);
     }
   }
 
@@ -562,7 +571,10 @@ class Tester {
     }
 
     uint64_t not_found() const { return not_found_; }
-    uint64_t scanned() const { return scanned_; }
+    uint64_t scanned_records() const { return scanned_records_; }
+    uint64_t num_scans() const { return num_scans_; }
+    uint64_t seek_key_in_hot_range() const { return seek_key_in_hot_range_; }
+    uint64_t whole_range_is_hot() const { return whole_range_is_hot_; }
 
    private:
     void do_put(const YCSBGen::Operation& put) {
@@ -655,16 +667,30 @@ class Tester {
     }
 
     void do_scan(const YCSBGen::Operation& op) {
+      const rocksdb::Comparator* ucmp = options_.options->comparator;
+      ++num_scans_;
+      std::string last_promoted =
+          options_.options->ralt->LastPromoted(op.key, (0x1ull << 56) - 1);
+      if (!last_promoted.empty()) {
+        seek_key_in_hot_range_ += 1;
+      }
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       {
         std::unique_ptr<rocksdb::Iterator> it(
             options_.db->NewIterator(read_options_));
         it->Seek(op.key);
-        ++scanned_;
+        ++scanned_records_;
+        bool whole_range_is_hot = true;
         for (size_t i = 1; i < op.scan_len && it->Valid(); ++i) {
-          ++scanned_;
+          if (ucmp->Compare(it->key().ToString(), last_promoted) > 0) {
+            whole_range_is_hot = false;
+          }
+          ++scanned_records_;
           it->Next();
+        }
+        if (whole_range_is_hot) {
+          whole_range_is_hot_ += 1;
         }
       }
       auto time = start.elapsed();
@@ -736,11 +762,15 @@ class Tester {
     rocksdb::WriteOptions write_options_;
 
     uint64_t not_found_{0};
-    uint64_t scanned_{0};
+    uint64_t scanned_records_{0};
     XXH64_state_t* ans_xxhash_state_{nullptr};
     std::optional<std::ifstream> std_ans_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
+
+    uint64_t num_scans_{0};
+    uint64_t seek_key_in_hot_range_{0};
+    uint64_t whole_range_is_hot_{0};
   };
 
   void parse(bool run, std::istream& trace) {
