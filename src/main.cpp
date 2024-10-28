@@ -90,12 +90,6 @@ class RaltWrapper : public RALT {
       }
     }
   }
-  void ScanResult(bool only_fd) override {
-    num_scans_.fetch_add(1, std::memory_order_relaxed);
-    if (only_fd) {
-      num_scan_only_fd_.fetch_add(1, std::memory_order_relaxed);
-    }
-  }
 
   std::vector<size_t> hit_tier_count() {
     std::vector<size_t> ret(2, 0);
@@ -142,13 +136,6 @@ class RaltWrapper : public RALT {
     return count_access_fd_cold_.load(std::memory_order_relaxed);
   }
 
-  uint64_t num_scans() const {
-    return num_scans_.load(std::memory_order_relaxed);
-  }
-  uint64_t num_scan_only_fd() const {
-    return num_scan_only_fd_.load(std::memory_order_relaxed);
-  }
-
  private:
   const uint64_t switches_;
   int tier0_last_level_;
@@ -157,8 +144,6 @@ class RaltWrapper : public RALT {
   std::atomic<uint64_t> count_access_hot_per_tier_[2];
   std::atomic<uint64_t> count_access_fd_hot_;
   std::atomic<uint64_t> count_access_fd_cold_;
-  std::atomic<uint64_t> num_scans_;
-  std::atomic<uint64_t> num_scan_only_fd_;
 };
 
 void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
@@ -357,8 +342,10 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     }
     num_accesses_out << std::endl;
 
-    num_scans_out << timestamp << ' ' << ralt.num_scans() << ' '
-                  << ralt.num_scan_only_fd() << std::endl;
+    uint64_t scan_hit_t0 = stats->getTickerCount(rocksdb::SCAN_HIT_T0);
+    uint64_t scan_hit_t1 = stats->getTickerCount(rocksdb::SCAN_HIT_T1);
+    num_scans_out << timestamp << ' ' << scan_hit_t0 + scan_hit_t1 << ' '
+                  << scan_hit_t0 << std::endl;
 
     uint64_t ralt_read;
     rusty_assert(ralt.GetIntProperty(RALT::Properties::kReadBytes, &ralt_read));
