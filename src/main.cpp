@@ -457,17 +457,17 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
-  auto ret = predict_level_assignment(options);
-  rusty_assert(ret.size() > 0);
-  size_t first_level_in_sd = ret.size() - 1;
+  auto level_size_path_id = predict_level_assignment(options);
+  rusty_assert(level_size_path_id.size() > 0);
+  size_t first_level_in_sd = level_size_path_id.size() - 1;
   for (size_t level = 0; level < first_level_in_sd; ++level) {
-    auto p = ret[level].second;
+    auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
-              << ret[level].first << std::endl;
+              << level_size_path_id[level].first << std::endl;
   }
-  auto p = ret[first_level_in_sd].second;
+  auto p = level_size_path_id[first_level_in_sd].second;
   std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << ret[first_level_in_sd].first << std::endl;
+            << level_size_path_id[first_level_in_sd].first << std::endl;
   if (options.db_paths.size() == 1) {
     first_level_in_sd = 100;
   }
