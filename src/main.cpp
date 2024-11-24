@@ -495,17 +495,17 @@ int main(int argc, char **argv) {
   }
   std::cerr << "]\n";
 
-  auto ret = predict_level_assignment(options);
-  rusty_assert_eq(ret.size() - 1, first_level_in_sd);
+  auto level_size_path_id = predict_level_assignment(options);
+  rusty_assert_eq(level_size_path_id.size() - 1, first_level_in_sd);
 
   for (size_t level = 0; level < first_level_in_sd; ++level) {
-    auto p = ret[level].second;
+    auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
-              << ret[level].first << std::endl;
+              << level_size_path_id[level].first << std::endl;
   }
-  auto p = ret[first_level_in_sd].second;
+  auto p = level_size_path_id[first_level_in_sd].second;
   std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << ret[first_level_in_sd].first << std::endl;
+            << level_size_path_id[first_level_in_sd].first << std::endl;
   if (options.db_paths.size() == 1) {
     first_level_in_sd = 100;
   }
@@ -528,7 +528,8 @@ int main(int argc, char **argv) {
     last_calculated_level_size = 0;
   } else {
     last_calculated_level = first_level_in_sd - 1;
-    last_calculated_level_size = ret[last_calculated_level].first;
+    last_calculated_level_size =
+        level_size_path_id[last_calculated_level].first;
   }
 
   rocksdb::DB *db;
