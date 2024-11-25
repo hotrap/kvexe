@@ -660,11 +660,9 @@ int main(int argc, char **argv) {
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
     assert(first_level_in_sd > 0);
-    size_t last_level_in_fd = first_level_in_sd - 1;
-    uint64_t last_level_in_fd_size = level_size_path_id[last_level_in_fd].first;
     uint64_t fd_size = options.db_paths[0].target_size;
-    autotuner = new AutoTuner(*db, first_level_in_sd, fd_size / 20,
-                              last_level_in_fd_size * 0.8, fd_size / 20);
+    autotuner =
+        new AutoTuner(*db, first_level_in_sd, fd_size / 20, 0.8, fd_size / 20);
   }
 
   Tester tester(work_options);
