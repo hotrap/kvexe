@@ -553,6 +553,16 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
+  if (work_options.load) {
+    std::cerr << "Emptying directories\n";
+    empty_directory(db_path);
+    for (auto path : options.db_paths) {
+      empty_directory(path.path);
+    }
+    std::cerr << "Creating database\n";
+    options.create_if_missing = true;
+  }
+
   size_t first_level_in_sd = calc_first_level_in_sd(options);
   calc_fd_size_ratio(options, first_level_in_sd, max_ralt_size);
 
@@ -593,16 +603,6 @@ int main(int argc, char **argv) {
   }
 
   rocksdb::DB *db;
-  if (work_options.load) {
-    std::cerr << "Emptying directories\n";
-    empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
-    std::cerr << "Creating database\n";
-    options.create_if_missing = true;
-  }
-
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
