@@ -364,33 +364,43 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
-  rocksdb::DB *db;
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
     for (auto path : options.db_paths) {
       empty_directory(path.path);
     }
-    auto ret = predict_level_assignment(options);
-    rusty_assert(ret.size() > 0);
-    size_t first_level_in_sd = ret.size() - 1;
-    for (size_t level = 0; level < first_level_in_sd; ++level) {
-      auto p = ret[level].second;
-      std::cerr << level << ' ' << options.db_paths[p].path << ' '
-                << ret[level].first << std::endl;
-    }
-    auto p = ret[first_level_in_sd].second;
-    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-              << ret[first_level_in_sd].first << std::endl;
-    if (options.db_paths.size() == 1) {
-      first_level_in_sd = 100;
-    }
-    std::ofstream(db_path / "first-level-in-sd")
-        << first_level_in_sd << std::endl;
-
     std::cerr << "Creating database\n";
     options.create_if_missing = true;
   }
+
+  auto level_size_path_id = predict_level_assignment(options);
+  rusty_assert(level_size_path_id.size() > 0);
+  size_t first_level_in_sd = level_size_path_id.size() - 1;
+  for (size_t level = 0; level < first_level_in_sd; ++level) {
+    auto p = level_size_path_id[level].second;
+    std::cerr << level << ' ' << options.db_paths[p].path << ' '
+              << level_size_path_id[level].first << std::endl;
+  }
+  auto p = level_size_path_id[first_level_in_sd].second;
+  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+            << level_size_path_id[first_level_in_sd].first << std::endl;
+  if (options.db_paths.size() == 1) {
+    first_level_in_sd = 100;
+  }
+  auto first_level_in_sd_path = db_path / "first-level-in-sd";
+  if (std::filesystem::exists(first_level_in_sd_path)) {
+    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
+    rusty_assert(first_level_in_sd_in);
+    std::string first_level_in_sd_stored;
+    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
+                    first_level_in_sd);
+  } else {
+    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+  }
+
+  rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
