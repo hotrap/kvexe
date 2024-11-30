@@ -561,11 +561,44 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
+  if (work_options.load) {
+    std::cerr << "Emptying directories\n";
+    empty_directory(db_path);
+    for (auto path : options.db_paths) {
+      empty_directory(path.path);
+    }
+    std::cerr << "Creating database\n";
+    options.create_if_missing = true;
+  }
+
   size_t first_level_in_sd = calc_first_level_in_sd(options);
   calc_fd_size_ratio(options, first_level_in_sd, max_ralt_size);
 
-  auto ret = predict_level_assignment(options);
-  rusty_assert_eq(ret.size() - 1, first_level_in_sd);
+  auto level_size_path_id = predict_level_assignment(options);
+  rusty_assert_eq(level_size_path_id.size() - 1, first_level_in_sd);
+
+  for (size_t level = 0; level < first_level_in_sd; ++level) {
+    auto p = level_size_path_id[level].second;
+    std::cerr << level << ' ' << options.db_paths[p].path << ' '
+              << level_size_path_id[level].first << std::endl;
+  }
+  auto p = level_size_path_id[first_level_in_sd].second;
+  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
+            << level_size_path_id[first_level_in_sd].first << std::endl;
+  if (options.db_paths.size() == 1) {
+    first_level_in_sd = 100;
+  }
+  auto first_level_in_sd_path = db_path / "first-level-in-sd";
+  if (std::filesystem::exists(first_level_in_sd_path)) {
+    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
+    rusty_assert(first_level_in_sd_in);
+    std::string first_level_in_sd_stored;
+    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
+                    first_level_in_sd);
+  } else {
+    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+  }
 
   RaltWrapper *ralt = nullptr;
   if (first_level_in_sd != 0) {
@@ -578,30 +611,6 @@ int main(int argc, char **argv) {
   }
 
   rocksdb::DB *db;
-  if (work_options.load) {
-    std::cerr << "Emptying directories\n";
-    empty_directory(db_path);
-    for (auto path : options.db_paths) {
-      empty_directory(path.path);
-    }
-    for (size_t level = 0; level < first_level_in_sd; ++level) {
-      auto p = ret[level].second;
-      std::cerr << level << ' ' << options.db_paths[p].path << ' '
-                << ret[level].first << std::endl;
-    }
-    auto p = ret[first_level_in_sd].second;
-    std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-              << ret[first_level_in_sd].first << std::endl;
-    if (options.db_paths.size() == 1) {
-      first_level_in_sd = 100;
-    }
-    std::ofstream(db_path / "first-level-in-sd")
-        << first_level_in_sd << std::endl;
-
-    std::cerr << "Creating database\n";
-    options.create_if_missing = true;
-  }
-
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
@@ -658,9 +667,10 @@ int main(int argc, char **argv) {
 
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
-    autotuner = new AutoTuner(*db, first_level_in_sd,
-                              options.db_paths[0].target_size * 0.05,
-                              options.db_paths[0].target_size * 0.7);
+    assert(first_level_in_sd > 0);
+    uint64_t fd_size = options.db_paths[0].target_size;
+    autotuner =
+        new AutoTuner(*db, first_level_in_sd, fd_size / 20, 0.85, fd_size / 20);
   }
 
   Tester tester(work_options);

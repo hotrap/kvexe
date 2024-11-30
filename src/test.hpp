@@ -1149,7 +1149,7 @@ class Tester {
     }
   }
   void u24685531(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    const uint64_t offset = 0.05 * num_load_keys;
+    const uint64_t offset = 0.08 * num_load_keys;
     load_phase(info_json_out);
     if (options_.run) {
       prepare_run_phase(info_json_out);
