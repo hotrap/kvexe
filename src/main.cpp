@@ -303,6 +303,7 @@ int main(int argc, char **argv) {
     for (auto &[path, size] : db_paths) {
       empty_directory(path);
     }
+    std::cerr << "Creating database\n";
     options.create_if_missing = true;
   }
   auto s = leveldb::DB::Open(options, db_path.string(), &db);
