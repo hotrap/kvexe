@@ -42,6 +42,7 @@
 #include <thread>
 #include <vector>
 
+#include "rocksdb/advanced_cache.h"
 #include "ycsbgen/ycsbgen.hpp"
 
 static inline auto timestamp_ns() {
@@ -315,6 +316,9 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
+
+  // For stats
+  std::shared_ptr<rocksdb::Cache> block_cache;
 };
 
 class Tester {
@@ -397,6 +401,10 @@ class Tester {
         << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
 
     print_timers(log);
+
+    rocksdb::Cache &block_cache = *work_options().block_cache;
+    log << "Block cache usage: " << block_cache.GetUsage()
+        << ", pinned usage: " << block_cache.GetPinnedUsage() << '\n';
 
     {
       std::unique_lock lck(thread_local_m_);
@@ -1644,6 +1652,8 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+
+  work_options.block_cache = table_options.block_cache;
 
   Tester tester(work_options);
 
