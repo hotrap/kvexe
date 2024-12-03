@@ -45,6 +45,7 @@
 #include <vector>
 
 #include "ralt.h"
+#include "rocksdb/advanced_cache.h"
 #include "rocksdb/ralt.h"
 #include "ycsbgen/ycsbgen.hpp"
 
@@ -334,6 +335,9 @@ struct WorkOptions {
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
   std::string std_ans_prefix;
+
+  // For stats
+  std::shared_ptr<rocksdb::Cache> block_cache;
 };
 
 class Tester {
@@ -439,6 +443,10 @@ class Tester {
         << stats->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT) << '\n';
 
     print_timers(log);
+
+    rocksdb::Cache &block_cache = *work_options().block_cache;
+    log << "Block cache usage: " << block_cache.GetUsage()
+        << ", pinned usage: " << block_cache.GetPinnedUsage() << '\n';
 
     {
       std::unique_lock lck(thread_local_m_);
@@ -1845,6 +1853,8 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+
+  work_options.block_cache = table_options.block_cache;
 
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
