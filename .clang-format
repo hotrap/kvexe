@@ -2,4 +2,6 @@
 # http://clang.llvm.org/docs/ClangFormatStyleOptions.html
 ---
 BasedOnStyle: Google
+DerivePointerAlignment: false
+PointerAlignment: Right
 ...
