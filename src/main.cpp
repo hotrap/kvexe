@@ -49,7 +49,7 @@
 #include "ycsbgen/ycsbgen.hpp"
 
 thread_local std::optional<std::ofstream> key_hit_level_out;
-std::optional<std::ofstream>& get_key_hit_level_out() {
+std::optional<std::ofstream> &get_key_hit_level_out() {
   return key_hit_level_out;
 }
 
@@ -70,7 +70,7 @@ static inline time_t cpu_timestamp_ns(
 }
 
 template <typename T>
-void print_vector(const std::vector<T>& v) {
+void print_vector(const std::vector<T> &v) {
   std::cerr << '[';
   for (double x : v) {
     std::cerr << x << ',';
@@ -78,7 +78,7 @@ void print_vector(const std::vector<T>& v) {
   std::cerr << "]";
 }
 
-static bool has_background_work(rocksdb::DB* db) {
+static bool has_background_work(rocksdb::DB *db) {
   uint64_t flush_pending;
   uint64_t compaction_pending;
   uint64_t flush_running;
@@ -99,7 +99,7 @@ static bool has_background_work(rocksdb::DB* db) {
          compaction_running;
 }
 
-static void wait_for_background_work(rocksdb::DB* db) {
+static void wait_for_background_work(rocksdb::DB *db) {
   while (1) {
     if (has_background_work(db)) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -133,7 +133,7 @@ enum class WorkloadType {
   hotspot_2_4_6_8,
 };
 
-static inline const char* to_string(YCSBGen::OpType type) {
+static inline const char *to_string(YCSBGen::OpType type) {
   switch (type) {
     case YCSBGen::OpType::INSERT:
       return "INSERT";
@@ -150,7 +150,7 @@ static inline const char* to_string(YCSBGen::OpType type) {
   }
   rusty_panic();
 }
-static inline void print_latency(std::ofstream& out, YCSBGen::OpType op,
+static inline void print_latency(std::ofstream &out, YCSBGen::OpType op,
                                  uint64_t nanos) {
   out << timestamp_ns() << ' ' << to_string(op) << ' ' << nanos << '\n';
 }
@@ -171,19 +171,19 @@ enum class TimerType : size_t {
 };
 
 constexpr size_t TIMER_NUM = static_cast<size_t>(TimerType::kEnd);
-static const char* timer_names[] = {
+static const char *timer_names[] = {
     "Put",         "Get",       "Delete",      "Scan",   "InputOperation",
     "InputInsert", "InputRead", "InputUpdate", "Output", "Serialize",
     "Deserialize",
 };
-static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char*));
+static_assert(sizeof(timer_names) == TIMER_NUM * sizeof(const char *));
 static counter_timer::TypedTimers<TimerType> timers(TIMER_NUM);
 
-static inline void print_timers(std::ostream& out) {
-  const auto& ts = timers.timers();
+static inline void print_timers(std::ostream &out) {
+  const auto &ts = timers.timers();
   size_t num_types = ts.size();
   for (size_t i = 0; i < num_types; ++i) {
-    const auto& timer = ts[i];
+    const auto &timer = ts[i];
     uint64_t count = timer.count();
     rusty::time::Duration time = timer.time();
     out << timer_names[i] << ": count " << count << ", total "
@@ -247,7 +247,7 @@ class BlockChannel {
     return ret;
   }
 
-  void PutBlock(std::vector<T>&& block) {
+  void PutBlock(std::vector<T> &&block) {
     std::unique_lock lck(m_);
     q_.push(std::move(block));
     if (reader_waiting_) {
@@ -255,7 +255,7 @@ class BlockChannel {
     }
   }
 
-  void PutBlock(const std::vector<T>& block) {
+  void PutBlock(const std::vector<T> &block) {
     std::unique_lock lck(m_);
     if (q_.empty()) {
       queue_empty_when_put_ += 1;
@@ -289,15 +289,15 @@ class BlockChannel {
 
 template <typename T>
 class BlockChannelClient {
-  BlockChannel<T>* channel_;
+  BlockChannel<T> *channel_;
   std::vector<T> opblock_;
   size_t opnum_{0};
 
  public:
-  BlockChannelClient(BlockChannel<T>* channel, size_t block_size)
+  BlockChannelClient(BlockChannel<T> *channel, size_t block_size)
       : channel_(channel), opblock_(block_size) {}
 
-  void Push(T&& data) {
+  void Push(T &&data) {
     opblock_[opnum_++] = std::move(data);
     if (opnum_ == opblock_.size()) {
       channel_->PutBlock(opblock_);
@@ -320,8 +320,8 @@ struct WorkOptions {
   std::string load_trace;
   std::string run_trace;
   FormatType format_type;
-  rocksdb::DB* db;
-  const rocksdb::Options* options;
+  rocksdb::DB *db;
+  const rocksdb::Options *options;
   uint64_t switches;
   std::filesystem::path db_path;
   bool enable_fast_process{false};
@@ -338,7 +338,7 @@ struct WorkOptions {
 
 class Tester {
  public:
-  Tester(const WorkOptions& option)
+  Tester(const WorkOptions &option)
       : options_(option),
         perf_contexts_(options_.num_threads),
         iostats_contexts_(options_.num_threads) {
@@ -347,7 +347,7 @@ class Tester {
     }
   }
 
-  const WorkOptions& work_options() const { return options_; }
+  const WorkOptions &work_options() const { return options_; }
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
@@ -383,12 +383,12 @@ class Tester {
 
     uint64_t not_found = 0;
     uint64_t scanned = 0;
-    for (const auto& worker : workers_) {
+    for (const auto &worker : workers_) {
       not_found += worker.not_found();
       scanned += worker.scanned();
     }
     if (options_.run) {
-      const rocksdb::Statistics& stats = *options_.options->statistics;
+      const rocksdb::Statistics &stats = *options_.options->statistics;
       *info_json_out.lock()
           << "\t\"pc-insert-fail-lock\": "
           << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
@@ -407,8 +407,8 @@ class Tester {
     }
   }
 
-  void print_other_stats(std::ostream& log) {
-    const std::shared_ptr<rocksdb::Statistics>& stats =
+  void print_other_stats(std::ostream &log) {
+    const std::shared_ptr<rocksdb::Statistics> &stats =
         options_.options->statistics;
     log << "Timestamp: " << timestamp_ns() << "\n";
     log << "rocksdb.block.cache.data.miss: "
@@ -456,7 +456,7 @@ class Tester {
  private:
   class Worker {
    public:
-    Worker(Tester& tester, size_t id)
+    Worker(Tester &tester, size_t id)
         : tester_(tester),
           id_(id),
           options_(tester.options_),
@@ -474,7 +474,7 @@ class Tester {
       }
     }
 
-    void load(YCSBGen::YCSBLoadGenerator& loader) {
+    void load(YCSBGen::YCSBLoadGenerator &loader) {
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
@@ -526,7 +526,7 @@ class Tester {
             options_.db_path / ("key-hit-level-" + std::to_string(id_)));
       }
     }
-    void run(YCSBGen::YCSBRunGenerator& runner) {
+    void run(YCSBGen::YCSBRunGenerator &runner) {
       prepare_run_phase();
       std::mt19937_64 rndgen(id_ + options_.ycsb_gen_options.base_seed);
 
@@ -548,7 +548,7 @@ class Tester {
       }
       finish_run_phase();
     }
-    void work(bool run, BlockChannel<YCSBGen::Operation>& chan) {
+    void work(bool run, BlockChannel<YCSBGen::Operation> &chan) {
       if (run) {
         prepare_run_phase();
       }
@@ -559,7 +559,7 @@ class Tester {
         if (block.empty()) {
           break;
         }
-        for (const YCSBGen::Operation& op : block) {
+        for (const YCSBGen::Operation &op : block) {
           process_op(op, &value);
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -573,7 +573,7 @@ class Tester {
     uint64_t scanned() const { return scanned_; }
 
    private:
-    void do_put(const YCSBGen::Operation& put) {
+    void do_put(const YCSBGen::Operation &put) {
       time_t put_cpu_start = cpu_timestamp_ns();
       auto put_start = rusty::time::Instant::now();
       auto s =
@@ -593,7 +593,7 @@ class Tester {
     }
 
     // Return found or not
-    bool do_read(const YCSBGen::Operation& read, std::string* value) {
+    bool do_read(const YCSBGen::Operation &read, std::string *value) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
       auto s = options_.db->Get(read_options_, read.key, value);
@@ -617,7 +617,7 @@ class Tester {
       return true;
     }
 
-    void do_read_modify_write(const YCSBGen::Operation& op) {
+    void do_read_modify_write(const YCSBGen::Operation &op) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       std::string value;
@@ -644,7 +644,7 @@ class Tester {
       tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void do_delete(const YCSBGen::Operation& op) {
+    void do_delete(const YCSBGen::Operation &op) {
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       auto s = options_.db->Delete(write_options_, op.key);
@@ -662,7 +662,7 @@ class Tester {
       }
     }
 
-    void do_scan(const YCSBGen::Operation& op) {
+    void do_scan(const YCSBGen::Operation &op) {
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
       {
@@ -684,7 +684,7 @@ class Tester {
       }
     }
 
-    void process_op(const YCSBGen::Operation& op, std::string* value) {
+    void process_op(const YCSBGen::Operation &op, std::string *value) {
       switch (op.type) {
         case YCSBGen::OpType::INSERT:
         case YCSBGen::OpType::UPDATE:
@@ -736,28 +736,28 @@ class Tester {
       }
     }
 
-    Tester& tester_;
+    Tester &tester_;
     size_t id_;
-    const WorkOptions& options_;
+    const WorkOptions &options_;
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
 
     uint64_t not_found_{0};
     uint64_t scanned_{0};
-    XXH64_state_t* ans_xxhash_state_{nullptr};
+    XXH64_state_t *ans_xxhash_state_{nullptr};
     std::optional<std::ifstream> std_ans_;
     std::optional<std::ofstream> ans_out_;
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(bool run, std::istream& trace) {
+  void parse(bool run, std::istream &trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
         num_channels);
 
     std::vector<BlockChannelClient<YCSBGen::Operation>> opblocks;
-    for (auto& channel : channel_for_workers) {
+    for (auto &channel : channel_for_workers) {
       opblocks.emplace_back(&channel, 1024);
     }
 
@@ -850,18 +850,18 @@ class Tester {
       parse_counts += 1;
     }
 
-    for (auto& o : opblocks) {
+    for (auto &o : opblocks) {
       o.Flush();
       o.Finish();
     }
 
-    for (auto& t : threads) t.join();
+    for (auto &t : threads) t.join();
 
     uint64_t queue_empty_when_put = 0;
     uint64_t queue_non_empty_when_put = 0;
     uint64_t reader_blocked = 0;
     uint64_t reader_not_blocked = 0;
-    for (const auto& channel : channel_for_workers) {
+    for (const auto &channel : channel_for_workers) {
       queue_empty_when_put += channel.queue_empty_when_put();
       queue_non_empty_when_put += channel.queue_non_empty_when_put();
       reader_blocked += channel.reader_blocked();
@@ -874,13 +874,13 @@ class Tester {
     std::cerr << "Reader not blocked: " << reader_not_blocked << std::endl;
   }
 
-  void handle_table_name(std::istream& in) {
+  void handle_table_name(std::istream &in) {
     std::string table;
     in >> table;
     rusty_assert(table == "usertable", "Column families not supported yet.");
   }
 
-  std::vector<std::pair<int, std::vector<char>>> read_fields(std::istream& in) {
+  std::vector<std::pair<int, std::vector<char>>> read_fields(std::istream &in) {
     std::vector<std::pair<int, std::vector<char>>> ret;
     char c;
     do {
@@ -906,7 +906,7 @@ class Tester {
     return ret;
   }
 
-  std::vector<char> read_value(std::istream& in) {
+  std::vector<char> read_value(std::istream &in) {
     auto fields = read_fields(in);
     std::sort(fields.begin(), fields.end());
     std::vector<char> ret;
@@ -917,7 +917,7 @@ class Tester {
     return ret;
   }
 
-  void read_fields_read(std::istream& in) {
+  void read_fields_read(std::istream &in) {
     char c;
     do {
       c = static_cast<char>(in.get());
@@ -929,7 +929,7 @@ class Tester {
                  "Reading specific fields is not supported yet.");
   }
 
-  void finish_load_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
+  void finish_load_phase(const rusty::sync::Mutex<std::ofstream> &info_json_out,
                          rusty::time::Instant load_start) {
     std::string rocksdb_stats;
     *info_json_out.lock() << "\t\"load-time(secs)\": "
@@ -953,9 +953,9 @@ class Tester {
   }
 
   void prepare_run_phase(
-      const rusty::sync::Mutex<std::ofstream>& info_json_out) {
-    const auto& ts = timers.timers();
-    for (const auto& timer : ts) {
+      const rusty::sync::Mutex<std::ofstream> &info_json_out) {
+    const auto &ts = timers.timers();
+    for (const auto &timer : ts) {
       timer.reset();
     }
 
@@ -975,7 +975,7 @@ class Tester {
                           << ',' << std::endl;
   }
 
-  void finish_run_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
+  void finish_run_phase(const rusty::sync::Mutex<std::ofstream> &info_json_out,
                         rusty::time::Instant run_start) {
     std::string rocksdb_stats;
     *info_json_out.lock() << "\t\"run-end-timestamp(ns)\": " << timestamp_ns()
@@ -995,8 +995,8 @@ class Tester {
     std::ofstream(options_.db_path / "rocksdb-stats.txt") << rocksdb_stats;
   }
 
-  void LoadPhase(const rusty::sync::Mutex<std::ofstream>& info_json_out,
-                 const YCSBGen::YCSBGeneratorOptions& options) {
+  void LoadPhase(const rusty::sync::Mutex<std::ofstream> &info_json_out,
+                 const YCSBGen::YCSBGeneratorOptions &options) {
     std::vector<std::thread> threads;
     YCSBGen::YCSBLoadGenerator loader(options);
     std::cerr << "Load phase YCSB Options: " << options.ToString() << std::endl;
@@ -1008,12 +1008,12 @@ class Tester {
     for (size_t i = 0; i < options_.num_threads; ++i) {
       threads.emplace_back([this, &loader, i]() { workers_[i].load(loader); });
     }
-    for (auto& t : threads) t.join();
+    for (auto &t : threads) t.join();
     finish_load_phase(info_json_out, load_start);
   }
 
   void GenerateAndExecute(
-      const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+      const rusty::sync::Mutex<std::ofstream> &info_json_out) {
     if (options_.load) {
       LoadPhase(info_json_out, options_.ycsb_gen_options);
     }
@@ -1087,12 +1087,12 @@ class Tester {
         permit_join = true;
       }
       cv.notify_all();
-      for (auto& t : threads) t.join();
+      for (auto &t : threads) t.join();
       finish_run_phase(info_json_out, run_start);
     }
   }
 
-  void RunPhase(const YCSBGen::YCSBGeneratorOptions& options,
+  void RunPhase(const YCSBGen::YCSBGeneratorOptions &options,
                 std::unique_ptr<YCSBGen::KeyGenerator> key_generator) {
     std::vector<std::thread> threads;
     YCSBGen::YCSBRunGenerator runner(options, options.record_count,
@@ -1100,7 +1100,7 @@ class Tester {
     for (size_t i = 0; i < options_.num_threads; ++i) {
       threads.emplace_back([this, &runner, i]() { workers_[i].run(runner); });
     }
-    for (auto& t : threads) t.join();
+    for (auto &t : threads) t.join();
   }
   const uint64_t num_load_keys = 110000000;
   const uint64_t num_run_op = 220000000;
@@ -1114,7 +1114,7 @@ class Tester {
                                                     hotspot_set_fraction,
                                                     1 - hotspot_set_fraction));
   }
-  void load_phase(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void load_phase(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
     if (options_.load) {
       LoadPhase(info_json_out, YCSBGen::YCSBGeneratorOptions{
                                    .record_count = num_load_keys,
@@ -1124,7 +1124,7 @@ class Tester {
                                });
     }
   }
-  void u24685531(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void u24685531(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
     const uint64_t offset = 0.08 * num_load_keys;
     load_phase(info_json_out);
     if (options_.run) {
@@ -1148,7 +1148,7 @@ class Tester {
       finish_run_phase(info_json_out, run_start);
     }
   }
-  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
     load_phase(info_json_out);
     if (options_.run) {
       prepare_run_phase(info_json_out);
@@ -1161,14 +1161,14 @@ class Tester {
     }
   }
 
-  void ReadAndExecute(const rusty::sync::Mutex<std::ofstream>& info_json_out) {
+  void ReadAndExecute(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
     if (options_.load) {
       std::optional<std::ifstream> trace_file;
       if (!options_.load_trace.empty()) {
         trace_file = std::ifstream(options_.load_trace);
         rusty_assert(trace_file.value());
       }
-      std::istream& trace =
+      std::istream &trace =
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
@@ -1181,7 +1181,7 @@ class Tester {
         trace_file = std::ifstream(options_.run_trace);
         rusty_assert(trace_file.value());
       }
-      std::istream& trace =
+      std::istream &trace =
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       prepare_run_phase(info_json_out);
@@ -1194,8 +1194,8 @@ class Tester {
   WorkOptions options_;
   std::vector<Worker> workers_;
 
-  std::vector<rocksdb::PerfContext*> perf_contexts_;
-  std::vector<rocksdb::IOStatsContext*> iostats_contexts_;
+  std::vector<rocksdb::PerfContext *> perf_contexts_;
+  std::vector<rocksdb::IOStatsContext *> iostats_contexts_;
   std::mutex thread_local_m_;
 
   std::atomic<uint64_t> progress_{0};
@@ -1203,7 +1203,7 @@ class Tester {
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
-  for (auto& path : std::filesystem::directory_iterator(dir_path)) {
+  for (auto &path : std::filesystem::directory_iterator(dir_path)) {
     std::filesystem::remove_all(path);
   }
 }
@@ -1239,7 +1239,7 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
 
 class RaltWrapper : public RALT {
  public:
-  RaltWrapper(const rocksdb::Comparator* ucmp, std::filesystem::path dir,
+  RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
               int tier0_last_level, size_t init_hot_set_size,
               size_t max_ralt_size, uint64_t switches, size_t max_hot_set_size,
               size_t min_hot_set_size, size_t bloom_bfk)
@@ -1254,7 +1254,7 @@ class RaltWrapper : public RALT {
       level_hits_[i].store(0, std::memory_order_relaxed);
     }
   }
-  const char* Name() const override { return "RALT-wrapper"; }
+  const char *Name() const override { return "RALT-wrapper"; }
   void HitLevel(int level, rocksdb::Slice key) override {
     if (get_key_hit_level_out().has_value()) {
       get_key_hit_level_out().value()
@@ -1335,12 +1335,12 @@ class RaltWrapper : public RALT {
   std::atomic<uint64_t> count_access_fd_cold_;
 };
 
-void bg_stat_printer(Tester* tester, std::atomic<bool>* should_stop) {
-  const WorkOptions& work_options = tester->work_options();
-  rocksdb::DB* db = work_options.db;
-  const std::filesystem::path& db_path = work_options.db_path;
-  const rocksdb::Options* options = work_options.options;
-  auto& ralt = *static_cast<RaltWrapper*>(options->ralt);
+void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
+  const WorkOptions &work_options = tester->work_options();
+  rocksdb::DB *db = work_options.db;
+  const std::filesystem::path &db_path = work_options.db_path;
+  const rocksdb::Options *options = work_options.options;
+  auto &ralt = *static_cast<RaltWrapper *>(options->ralt);
 
   char buf[16];
 
@@ -1437,7 +1437,7 @@ void bg_stat_printer(Tester* tester, std::atomic<bool>* should_stop) {
     progress_out << timestamp << ' ' << tester->progress() << ' '
                  << tester->progress_get() << std::endl;
 
-    FILE* pipe = popen(mem_command.c_str(), "r");
+    FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
       perror("popen");
       rusty_panic();
@@ -1552,7 +1552,7 @@ void bg_stat_printer(Tester* tester, std::atomic<bool>* should_stop) {
   }
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
   std::ios::sync_with_stdio(false);
   std::cin.tie(0);
   std::cout.tie(0);
@@ -1735,7 +1735,7 @@ int main(int argc, char** argv) {
   }
 
   if (load_phase_rate_limit) {
-    rocksdb::RateLimiter* rate_limiter =
+    rocksdb::RateLimiter *rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10,
                                        rocksdb::RateLimiter::Mode::kAllIo);
     options.rate_limiter.reset(rate_limiter);
@@ -1781,7 +1781,7 @@ int main(int argc, char** argv) {
     std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
   }
 
-  RaltWrapper* ralt = nullptr;
+  RaltWrapper *ralt = nullptr;
   if (first_level_in_sd != 0) {
     ralt = new RaltWrapper(options.comparator, ralt_path_str,
                            first_level_in_sd - 1, hot_set_size_limit,
@@ -1791,7 +1791,7 @@ int main(int argc, char** argv) {
     options.ralt = ralt;
   }
 
-  rocksdb::DB* db;
+  rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
   if (!s.ok()) {
     std::cerr << s.ToString() << std::endl;
@@ -1846,7 +1846,7 @@ int main(int argc, char** argv) {
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
-  AutoTuner* autotuner = nullptr;
+  AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning") && ralt) {
     assert(first_level_in_sd > 0);
     uint64_t fd_size = options.db_paths[0].target_size;
