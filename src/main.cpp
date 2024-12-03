@@ -435,7 +435,11 @@ class Tester {
       }
 
       rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
-      { std::unique_lock lck(tester_.thread_local_m_); }
+      {
+        std::unique_lock lck(tester_.thread_local_m_);
+        tester_.perf_contexts_[id_] = &rocksdb::perf_context;
+        tester_.iostats_contexts_[id_] = &rocksdb::iostats_context;
+      }
     }
     void finish_run_phase() {
       std::string id = std::to_string(id_);
