@@ -504,11 +504,6 @@ class Tester {
           next_begin += interval;
         }
       }
-      {
-        std::unique_lock lck(tester_.thread_local_m_);
-        tester_.perf_contexts_[id_] = nullptr;
-        tester_.iostats_contexts_[id_] = nullptr;
-      }
       finish_run_phase();
     }
     void work(bool run, BlockChannel<YCSBGen::Operation> &chan) {
