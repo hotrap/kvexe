@@ -1349,7 +1349,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options.db;
   const std::filesystem::path &db_path = work_options.db_path;
   const rocksdb::Options *options = work_options.options;
-  auto &ralt = *static_cast<RaltWrapper *>(options->ralt);
+  auto &ralt = *static_cast<RaltWrapper *>(options->ralt.get());
 
   char buf[16];
 
@@ -1790,13 +1790,12 @@ int main(int argc, char **argv) {
     std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
   }
 
-  RaltWrapper *ralt = nullptr;
+  std::shared_ptr<RaltWrapper> ralt = nullptr;
   if (first_level_in_sd != 0) {
-    ralt = new RaltWrapper(options.comparator, ralt_path_str,
-                           first_level_in_sd - 1, hot_set_size_limit,
-                           max_ralt_size, switches, hot_set_size_limit,
-                           hot_set_size_limit, ralt_bloom_bpk);
-
+    ralt = std::make_shared<RaltWrapper>(
+        options.comparator, ralt_path_str, first_level_in_sd - 1,
+        hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
+        hot_set_size_limit, ralt_bloom_bpk);
     options.ralt = ralt;
   }
 
@@ -1897,7 +1896,6 @@ int main(int argc, char **argv) {
   period_print_thread.join();
   delete autotuner;
   delete db;
-  delete ralt;
 
   return 0;
 }
