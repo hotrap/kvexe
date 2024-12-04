@@ -554,13 +554,12 @@ class Tester {
                     options_.db_path /
                     (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
-      std::string value;
       while (!runner.IsEOF()) {
         auto op = runner.GetNextOp(rndgen);
         if (key_only_trace_out.has_value())
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
-        process_op(op, &value);
+        process_op(op);
         tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
       finish_run_phase();
@@ -570,14 +569,13 @@ class Tester {
         prepare_run_phase();
       }
       maybe_enable_key_hit_level();
-      std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
         }
         for (const YCSBGen::Operation &op : block) {
-          process_op(op, &value);
+          process_op(op);
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -613,10 +611,12 @@ class Tester {
     }
 
     // Return found or not
-    bool do_read(const YCSBGen::Operation &read, std::string *value) {
+    bool do_read(const YCSBGen::Operation &read,
+                 rocksdb::PinnableSlice *value) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
-      auto s = options_.db->Get(read_options_, read.key, value);
+      auto s = options_.db->Get(
+          read_options_, options_.db->DefaultColumnFamily(), read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       timers.timer(TimerType::kGet).add(get_time);
@@ -720,17 +720,18 @@ class Tester {
       }
     }
 
-    void process_op(const YCSBGen::Operation &op, std::string *value) {
+    void process_op(const YCSBGen::Operation &op) {
       switch (op.type) {
         case YCSBGen::OpType::INSERT:
         case YCSBGen::OpType::UPDATE:
           do_put(op);
           break;
         case YCSBGen::OpType::READ: {
-          bool found = do_read(op, value);
+          rocksdb::PinnableSlice value;
+          bool found = do_read(op, &value);
           std::string_view ans;
           if (found) {
-            ans = std::string_view(value->data(), value->size());
+            ans = std::string_view(value.data(), value.size());
           } else {
             ans = std::string_view(nullptr, 0);
           };
