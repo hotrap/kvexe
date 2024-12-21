@@ -1251,9 +1251,11 @@ class RaltWrapper : public RALT {
   RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
               int tier0_last_level, size_t init_hot_set_size,
               size_t max_ralt_size, uint64_t switches, size_t max_hot_set_size,
-              size_t min_hot_set_size, size_t bloom_bfk)
+              size_t min_hot_set_size, uint64_t accessed_size_to_decr_tick,
+              size_t bloom_bfk)
       : RALT(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-             min_hot_set_size, max_ralt_size, bloom_bfk),
+             min_hot_set_size, max_ralt_size, accessed_size_to_decr_tick,
+             bloom_bfk),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
@@ -1792,10 +1794,11 @@ int main(int argc, char **argv) {
 
   std::shared_ptr<RaltWrapper> ralt = nullptr;
   if (first_level_in_sd != 0) {
+    uint64_t fd_size = options.db_paths[0].target_size;
     ralt = std::make_shared<RaltWrapper>(
         options.comparator, ralt_path_str, first_level_in_sd - 1,
         hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
-        hot_set_size_limit, ralt_bloom_bpk);
+        hot_set_size_limit, 0.001 * fd_size, ralt_bloom_bpk);
     options.ralt = ralt;
   }
 
