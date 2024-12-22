@@ -132,6 +132,7 @@ enum class WorkloadType {
   ConfigFile,
   u24685531,
   hotspot_2_4_6_8,
+  hotspot_5_shift_5,
 };
 
 static inline const char *to_string(YCSBGen::OpType type) {
@@ -371,15 +372,28 @@ class Tester {
     rusty::sync::Mutex<std::ofstream> info_json_out(std::move(info_json));
 
     if (options_.enable_fast_generator) {
-      switch (options_.workload_type) {
-        case WorkloadType::ConfigFile:
-          GenerateAndExecute(info_json_out);
-          break;
-        case WorkloadType::u24685531:
-          u24685531(info_json_out);
-          break;
-        case WorkloadType::hotspot_2_4_6_8:
-          hotspot_2_4_6_8(info_json_out);
+      if (options_.workload_type == WorkloadType::ConfigFile) {
+        GenerateAndExecute(info_json_out);
+      } else {
+        load_phase(info_json_out);
+        if (options_.run) {
+          prepare_run_phase(info_json_out);
+          auto run_start = rusty::time::Instant::now();
+          switch (options_.workload_type) {
+            case WorkloadType::u24685531:
+              u24685531();
+              break;
+            case WorkloadType::hotspot_2_4_6_8:
+              hotspot_2_4_6_8();
+              break;
+            case WorkloadType::hotspot_5_shift_5:
+              hotspot_5_shift_5();
+              break;
+            default:
+              rusty_panic();
+          }
+          finish_run_phase(info_json_out, run_start);
+        }
       }
     } else {
       ReadAndExecute(info_json_out);
@@ -1133,41 +1147,33 @@ class Tester {
                                });
     }
   }
-  void u24685531(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
+  void u24685531() {
     const uint64_t offset = 0.08 * num_load_keys;
-    load_phase(info_json_out);
-    if (options_.run) {
-      prepare_run_phase(info_json_out);
-      auto run_start = rusty::time::Instant::now();
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-              .request_distribution = "uniform",
-          },
-          std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
-      run_hotspot(0, 0.02);
-      run_hotspot(0, 0.04);
-      run_hotspot(0, 0.06);
-      run_hotspot(0, 0.08);
-      run_hotspot(0, 0.05);
-      run_hotspot(offset, 0.05);
-      run_hotspot(offset, 0.03);
-      run_hotspot(offset, 0.01);
-      finish_run_phase(info_json_out, run_start);
-    }
+    RunPhase(
+        YCSBGen::YCSBGeneratorOptions{
+            .record_count = num_load_keys,
+            .operation_count = num_run_op,
+            .request_distribution = "uniform",
+        },
+        std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
+    run_hotspot(0, 0.02);
+    run_hotspot(0, 0.04);
+    run_hotspot(0, 0.06);
+    run_hotspot(0, 0.08);
+    run_hotspot(0, 0.05);
+    run_hotspot(offset, 0.05);
+    run_hotspot(offset, 0.03);
+    run_hotspot(offset, 0.01);
   }
-  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
-    load_phase(info_json_out);
-    if (options_.run) {
-      prepare_run_phase(info_json_out);
-      auto run_start = rusty::time::Instant::now();
-      run_hotspot(0, 0.02);
-      run_hotspot(0, 0.04);
-      run_hotspot(0, 0.06);
-      run_hotspot(0, 0.08);
-      finish_run_phase(info_json_out, run_start);
-    }
+  void hotspot_2_4_6_8() {
+    run_hotspot(0, 0.02);
+    run_hotspot(0, 0.04);
+    run_hotspot(0, 0.06);
+    run_hotspot(0, 0.08);
+  }
+  void hotspot_5_shift_5() {
+    run_hotspot(0, 0.05);
+    run_hotspot(0.05 * num_load_keys, 0.05);
   }
 
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
@@ -1838,6 +1844,8 @@ int main(int argc, char **argv) {
     work_options.workload_type = WorkloadType::u24685531;
   } else if (workload == "2-4-6-8") {
     work_options.workload_type = WorkloadType::hotspot_2_4_6_8;
+  } else if (workload == "5-shift-5") {
+    work_options.workload_type = WorkloadType::hotspot_5_shift_5;
   } else {
     rusty_panic("Unknown workload %s", workload.c_str());
   }
