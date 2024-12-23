@@ -1427,7 +1427,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
   promoted_or_retained_out
-      << "Timestamp(ns) by-flush 2fdlast 2sdfront retained\n";
+      << "Timestamp(ns) by-flush 2fdlast 2sdfront retained.fd retained.sd\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-hot has-newer-version\n";
@@ -1531,7 +1531,8 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
         << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES) << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_2FDLAST_BYTES) << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_2SDFRONT_BYTES) << ' '
-        << stats->getTickerCount(rocksdb::RETAINED_BYTES) << std::endl;
+        << stats->getTickerCount(rocksdb::RETAINED_FD_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::RETAINED_SD_BYTES) << std::endl;
 
     not_promoted_bytes_out
         << timestamp << ' '
