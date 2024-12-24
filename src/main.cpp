@@ -1252,16 +1252,16 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-class RaltWrapper : public RALT {
+class RaltWrapper : public ralt::RALT {
  public:
-  RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-              int tier0_last_level, size_t init_hot_set_size,
-              size_t max_ralt_size, uint64_t switches, size_t max_hot_set_size,
-              size_t min_hot_set_size, uint64_t accessed_size_to_decr_tick,
-              size_t bloom_bfk)
-      : RALT(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-             min_hot_set_size, max_ralt_size, accessed_size_to_decr_tick,
-             bloom_bfk),
+  RaltWrapper(const ralt::Options &options, const rocksdb::Comparator *ucmp,
+              std::filesystem::path dir, int tier0_last_level,
+              size_t init_hot_set_size, size_t max_ralt_size, uint64_t switches,
+              size_t max_hot_set_size, size_t min_hot_set_size,
+              uint64_t accessed_size_to_decr_tick)
+      : ralt::RALT(options, ucmp, dir.c_str(), init_hot_set_size,
+                   max_hot_set_size, min_hot_set_size, max_ralt_size,
+                   accessed_size_to_decr_tick),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
@@ -1547,10 +1547,11 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     num_accesses_out << std::endl;
 
     uint64_t ralt_read;
-    rusty_assert(ralt.GetIntProperty(RALT::Properties::kReadBytes, &ralt_read));
+    rusty_assert(
+        ralt.GetIntProperty(ralt::RALT::Properties::kReadBytes, &ralt_read));
     uint64_t ralt_write;
     rusty_assert(
-        ralt.GetIntProperty(RALT::Properties::kWriteBytes, &ralt_write));
+        ralt.GetIntProperty(ralt::RALT::Properties::kWriteBytes, &ralt_write));
     ralt_io_out << timestamp << ' ' << ralt_read << ' ' << ralt_write
                 << std::endl;
 
@@ -1577,6 +1578,7 @@ int main(int argc, char **argv) {
 
   rocksdb::BlockBasedTableOptions table_options;
   rocksdb::Options options;
+  ralt::Options ralt_options;
   WorkOptions work_options;
 
   namespace po = boost::program_options;
@@ -1593,7 +1595,6 @@ int main(int argc, char **argv) {
   double arg_max_hot_set_size;
   double arg_max_ralt_size;
   int compaction_pri;
-  int ralt_bloom_bpk;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1693,9 +1694,10 @@ int main(int argc, char **argv) {
 
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
-  desc.add_options()("ralt_bloom_bpk",
-                     po::value<int>(&ralt_bloom_bpk)->default_value(14),
+  desc.add_options()("ralt_bloom_bits", po::value<>(&ralt_options.bloom_bits),
                      "The number of bits per key in RALT bloom filter.");
+  desc.add_options()("ralt_exp_smoothing_factor",
+                     po::value<>(&ralt_options.exp_smoothing_factor));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -1803,9 +1805,9 @@ int main(int argc, char **argv) {
   if (first_level_in_sd != 0) {
     uint64_t fd_size = options.db_paths[0].target_size;
     ralt = std::make_shared<RaltWrapper>(
-        options.comparator, ralt_path_str, first_level_in_sd - 1,
+        ralt_options, options.comparator, ralt_path_str, first_level_in_sd - 1,
         hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
-        hot_set_size_limit, 0.001 * fd_size, ralt_bloom_bpk);
+        hot_set_size_limit, 0.001 * fd_size);
     options.ralt = ralt;
   }
 
