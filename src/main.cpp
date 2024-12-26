@@ -1546,9 +1546,6 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  options.max_bytes_for_level_multiplier_additional.clear();
-  options.max_bytes_for_level_multiplier_additional.push_back(1);
-
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10,
