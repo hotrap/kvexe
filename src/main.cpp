@@ -1207,14 +1207,17 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-// Return the first level in SD
+// Return the first level in the last tier
 size_t initial_multiplier_addtional(rocksdb::Options &options) {
-  rusty_assert_eq(options.db_paths.size(), 2.0);
-  size_t fd_size = options.db_paths[0].target_size;
   for (double x : options.max_bytes_for_level_multiplier_additional) {
     rusty_assert(x - 1 < 1e-6);
   }
   options.max_bytes_for_level_multiplier_additional.clear();
+  if (options.db_paths.size() < 2) {
+    options.max_bytes_for_level_multiplier_additional.push_back(1);
+    return 0;
+  }
+  size_t fd_size = options.db_paths[0].target_size;
   size_t level = 0;
   uint64_t level_size = options.max_bytes_for_level_base;
   while (level_size <= fd_size) {
@@ -1700,7 +1703,7 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
-  size_t first_level_in_sd = initial_multiplier_addtional(options);
+  size_t first_level_in_last_tier = initial_multiplier_addtional(options);
   std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
   for (double x : options.max_bytes_for_level_multiplier_additional) {
     std::cerr << x << ',';
@@ -1708,38 +1711,36 @@ int main(int argc, char **argv) {
   std::cerr << "]\n";
 
   auto level_size_path_id = predict_level_assignment(options);
-  rusty_assert_eq(level_size_path_id.size() - 1, first_level_in_sd);
-
-  for (size_t level = 0; level < first_level_in_sd; ++level) {
+  rusty_assert_eq(level_size_path_id.size(), first_level_in_last_tier + 1);
+  for (size_t level = 0; level < level_size_path_id.size() - 1; ++level) {
     auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
               << level_size_path_id[level].first << std::endl;
   }
-  auto p = level_size_path_id[first_level_in_sd].second;
-  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << level_size_path_id[first_level_in_sd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_sd = 100;
-  }
-  auto first_level_in_sd_path = db_path / "first-level-in-sd";
-  if (std::filesystem::exists(first_level_in_sd_path)) {
-    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
-    rusty_assert(first_level_in_sd_in);
-    std::string first_level_in_sd_stored;
-    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
-    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
-                    first_level_in_sd);
+  auto p = level_size_path_id[first_level_in_last_tier].second;
+  std::cerr << level_size_path_id.size() - 1 << "+ " << options.db_paths[p].path
+            << ' ' << level_size_path_id[first_level_in_last_tier].first
+            << std::endl;
+  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
+  if (std::filesystem::exists(first_level_in_last_tier_path)) {
+    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
+    rusty_assert(first_level_in_last_tier_in);
+    std::string first_level_in_last_tier_stored;
+    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
+                    first_level_in_last_tier);
   } else {
-    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+    std::ofstream(first_level_in_last_tier_path)
+        << first_level_in_last_tier << std::endl;
   }
 
   size_t last_calculated_level;
   uint64_t last_calculated_level_size;
-  if (first_level_in_sd == 0) {
+  if (first_level_in_last_tier == 0) {
     last_calculated_level = 1;
-    last_calculated_level_size = 0;
+    last_calculated_level_size = options.max_bytes_for_level_base;
   } else {
-    last_calculated_level = first_level_in_sd - 1;
+    last_calculated_level = first_level_in_last_tier - 1;
     last_calculated_level_size =
         level_size_path_id[last_calculated_level].first;
   }
@@ -1801,11 +1802,9 @@ int main(int argc, char **argv) {
     double ori_size_ratio = 0;
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
-      if (last_calculated_level_size > 0) {
-        update_multiplier_additional(db, options, last_calculated_level,
-                                     last_calculated_level_size, ori_last_level,
-                                     ori_size_ratio);
-      }
+      update_multiplier_additional(db, options, last_calculated_level,
+                                   last_calculated_level_size, ori_last_level,
+                                   ori_size_ratio);
       tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
