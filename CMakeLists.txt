@@ -15,10 +15,10 @@ add_executable(${PROJECT_NAME} ${SRCS})
 find_package(cachelib REQUIRED)
 
 include_directories(
-    ${ROCKSDB_INCLUDE}
+    ${ROCKSDB_INCLUDE_DIR}
 )
 target_include_directories(${PROJECT_NAME} PUBLIC include 3rdparty/ycsbgen)
-target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB})
+target_link_directories(${PROJECT_NAME} PUBLIC ${ROCKSDB_LIB_DIR})
 target_link_libraries(${PROJECT_NAME}
 	PUBLIC
 		rocksdb
