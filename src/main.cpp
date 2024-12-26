@@ -1258,11 +1258,10 @@ class RaltWrapper : public ralt::RALT {
               std::filesystem::path dir, int tier0_last_level,
               size_t init_hot_set_size, size_t max_ralt_size, uint64_t switches,
               size_t max_hot_set_size, size_t min_hot_set_size,
-              uint64_t accessed_size_to_decr_counter,
-              uint64_t accessed_size_to_decr_tick)
+              uint64_t accessed_size_to_decr_counter)
       : ralt::RALT(options, ucmp, dir.c_str(), init_hot_set_size,
                    max_hot_set_size, min_hot_set_size, max_ralt_size,
-                   accessed_size_to_decr_counter, accessed_size_to_decr_tick),
+                   accessed_size_to_decr_counter),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
@@ -1808,7 +1807,7 @@ int main(int argc, char **argv) {
     ralt = std::make_shared<RaltWrapper>(
         ralt_options, options.comparator, ralt_path_str, first_level_in_sd - 1,
         hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
-        hot_set_size_limit, fd_size, 0.001 * fd_size);
+        hot_set_size_limit, fd_size);
     options.ralt = ralt;
   }
 
