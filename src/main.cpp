@@ -1772,42 +1772,40 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
-  size_t first_level_in_sd = calc_first_level_in_sd(options);
-  calc_fd_size_ratio(options, first_level_in_sd, max_ralt_size);
+  size_t first_level_in_last_tier = calc_first_level_in_sd(options);
+  calc_fd_size_ratio(options, first_level_in_last_tier, max_ralt_size);
 
   auto level_size_path_id = predict_level_assignment(options);
-  rusty_assert_eq(level_size_path_id.size() - 1, first_level_in_sd);
-
-  for (size_t level = 0; level < first_level_in_sd; ++level) {
+  rusty_assert_eq(level_size_path_id.size(), first_level_in_last_tier + 1);
+  for (size_t level = 0; level < level_size_path_id.size() - 1; ++level) {
     auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
               << level_size_path_id[level].first << std::endl;
   }
-  auto p = level_size_path_id[first_level_in_sd].second;
-  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << level_size_path_id[first_level_in_sd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_sd = 100;
-  }
-  auto first_level_in_sd_path = db_path / "first-level-in-sd";
-  if (std::filesystem::exists(first_level_in_sd_path)) {
-    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
-    rusty_assert(first_level_in_sd_in);
-    std::string first_level_in_sd_stored;
-    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
-    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
-                    first_level_in_sd);
+  auto p = level_size_path_id[first_level_in_last_tier].second;
+  std::cerr << level_size_path_id.size() - 1 << "+ " << options.db_paths[p].path
+            << ' ' << level_size_path_id[first_level_in_last_tier].first
+            << std::endl;
+  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
+  if (std::filesystem::exists(first_level_in_last_tier_path)) {
+    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
+    rusty_assert(first_level_in_last_tier_in);
+    std::string first_level_in_last_tier_stored;
+    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
+                    first_level_in_last_tier);
   } else {
-    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+    std::ofstream(first_level_in_last_tier_path)
+        << first_level_in_last_tier << std::endl;
   }
 
   std::shared_ptr<RaltWrapper> ralt = nullptr;
-  if (first_level_in_sd != 0) {
+  if (first_level_in_last_tier != 0) {
     uint64_t fd_size = options.db_paths[0].target_size;
     ralt = std::make_shared<RaltWrapper>(
-        ralt_options, options.comparator, ralt_path_str, first_level_in_sd - 1,
-        hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
-        hot_set_size_limit, fd_size);
+        ralt_options, options.comparator, ralt_path_str,
+        first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
+        switches, hot_set_size_limit, hot_set_size_limit, fd_size);
     options.ralt = ralt;
   }
 
@@ -1874,8 +1872,8 @@ int main(int argc, char **argv) {
   if (vm.count("enable_auto_tuning") && ralt) {
     assert(first_level_in_sd > 0);
     uint64_t fd_size = options.db_paths[0].target_size;
-    autotuner =
-        new AutoTuner(*db, first_level_in_sd, fd_size / 20, 0.85, fd_size / 20);
+    autotuner = new AutoTuner(*db, first_level_in_last_tier, fd_size / 20, 0.85,
+                              fd_size / 20);
   }
 
   Tester tester(work_options);
