@@ -331,7 +331,6 @@ struct WorkOptions {
   bool enable_fast_generator{false};
   WorkloadType workload_type;
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
-  double db_paths_soft_size_limit_multiplier;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
@@ -356,8 +355,8 @@ class Tester {
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
-  uint64_t progress_get() const {
-    return progress_get_.load(std::memory_order_relaxed);
+  uint64_t num_reads() const {
+    return num_reads_.load(std::memory_order_relaxed);
   }
 
   void Test() {
@@ -627,7 +626,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -663,7 +662,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation &op) {
@@ -987,13 +986,6 @@ class Tester {
           std::numeric_limits<int64_t>::max());
     }
 
-    options_.db->SetOptions(
-        {{"db_paths_soft_size_limit_multiplier",
-          std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
-    std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
-    print_vector(options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
-    std::cerr << std::endl;
-
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
   }
@@ -1214,7 +1206,7 @@ class Tester {
   std::mutex thread_local_m_;
 
   std::atomic<uint64_t> progress_{0};
-  std::atomic<uint64_t> progress_get_{0};
+  std::atomic<uint64_t> num_reads_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1364,7 +1356,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed get\n";
+  progress_out << "Timestamp(ns) operations-executed\n";
 
   std::ofstream mem_out(db_path / "mem");
   std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
@@ -1422,6 +1414,10 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
+  std::ofstream report(db_path / "report.csv");
+  report << "Timestamp(ns),num-reads\n";
+  uint64_t num_reads = 0;
+
   // Stats of hotrap
 
   std::ofstream promoted_or_retained_out(db_path /
@@ -1451,8 +1447,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' ' << tester->progress() << ' '
-                 << tester->progress_get() << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -1526,6 +1521,14 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                                  &rand_read_bytes));
     rand_read_bytes_out << timestamp << ' ' << rand_read_bytes << std::endl;
 
+    report << timestamp;
+
+    uint64_t value = tester->num_reads();
+    report << ',' << value - num_reads;
+    num_reads = value;
+
+    report << std::endl;
+
     promoted_or_retained_out
         << timestamp << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES) << ' '
@@ -1591,6 +1594,7 @@ int main(int argc, char **argv) {
   std::string ralt_path_str;
   size_t cache_size;
   int64_t load_phase_rate_limit;
+  double db_paths_soft_size_limit_multiplier;
 
   double arg_max_hot_set_size;
   double arg_max_ralt_size;
@@ -1673,10 +1677,9 @@ int main(int argc, char **argv) {
   desc.add_options()("load_phase_rate_limit",
                      po::value(&load_phase_rate_limit)->default_value(0),
                      "0 means not limited.");
-  desc.add_options()(
-      "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
-          ->default_value(1.1));
+  desc.add_options()("db_paths_soft_size_limit_multiplier",
+                     po::value<double>(&db_paths_soft_size_limit_multiplier)
+                         ->default_value(1.1));
 
   // Options for hotrap
   desc.add_options()("max_hot_set_size",
@@ -1761,6 +1764,10 @@ int main(int argc, char **argv) {
     options.rate_limiter.reset(rate_limiter);
     work_options.rate_limiter = options.rate_limiter;
   }
+
+  rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
+  options.db_paths_soft_size_limit_multiplier.push_back(
+      db_paths_soft_size_limit_multiplier);
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
