@@ -312,7 +312,6 @@ struct WorkOptions {
   size_t num_threads{1};
   bool enable_fast_generator{false};
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
-  double db_paths_soft_size_limit_multiplier;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
@@ -903,13 +902,6 @@ class Tester {
           std::numeric_limits<int64_t>::max());
     }
 
-    options_.db->SetOptions(
-        {{"db_paths_soft_size_limit_multiplier",
-          std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
-    std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
-    print_vector(options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
-    std::cerr << std::endl;
-
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
   }
@@ -1435,6 +1427,7 @@ int main(int argc, char **argv) {
   std::string arg_db_paths;
   size_t cache_size;
   int64_t load_phase_rate_limit;
+  double db_paths_soft_size_limit_multiplier;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1505,10 +1498,9 @@ int main(int argc, char **argv) {
   desc.add_options()("load_phase_rate_limit",
                      po::value(&load_phase_rate_limit)->default_value(0),
                      "0 means not limited.");
-  desc.add_options()(
-      "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
-          ->default_value(1.1));
+  desc.add_options()("db_paths_soft_size_limit_multiplier",
+                     po::value<double>(&db_paths_soft_size_limit_multiplier)
+                         ->default_value(1.1));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -1567,6 +1559,10 @@ int main(int argc, char **argv) {
     options.rate_limiter.reset(rate_limiter);
     work_options.rate_limiter = options.rate_limiter;
   }
+
+  rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
+  options.db_paths_soft_size_limit_multiplier.push_back(
+      db_paths_soft_size_limit_multiplier);
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
