@@ -358,8 +358,8 @@ class Tester {
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
-  uint64_t progress_get() const {
-    return progress_get_.load(std::memory_order_relaxed);
+  uint64_t num_reads() const {
+    return num_reads_.load(std::memory_order_relaxed);
   }
 
   void Test() {
@@ -650,7 +650,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -687,7 +687,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation &op) {
@@ -1171,7 +1171,7 @@ class Tester {
   std::mutex thread_local_m_;
 
   std::atomic<uint64_t> progress_{0};
-  std::atomic<uint64_t> progress_get_{0};
+  std::atomic<uint64_t> num_reads_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1429,7 +1429,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed get\n";
+  progress_out << "Timestamp(ns) operations-executed\n";
 
   std::ofstream mem_out(db_path / "mem");
   std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
@@ -1450,12 +1450,15 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
+  std::ofstream report(db_path / "report.csv");
+  report << "Timestamp(ns),num-reads\n";
+  uint64_t num_reads = 0;
+
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' ' << tester->progress() << ' '
-                 << tester->progress_get() << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -1498,6 +1501,14 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     rusty_assert(db->GetProperty(rocksdb::DB::Properties::kRandReadBytes,
                                  &rand_read_bytes));
     rand_read_bytes_out << timestamp << ' ' << rand_read_bytes << std::endl;
+
+    report << timestamp;
+
+    uint64_t value = tester->num_reads();
+    report << ',' << value - num_reads;
+    num_reads = value;
+
+    report << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
