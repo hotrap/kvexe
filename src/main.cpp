@@ -43,7 +43,6 @@
 #include <thread>
 #include <vector>
 
-#include "rocksdb/advanced_cache.h"
 #include "ycsbgen/ycsbgen.hpp"
 
 static inline auto timestamp_ns() {
@@ -1583,10 +1582,6 @@ int main(int argc, char **argv) {
     options.rate_limiter.reset(rate_limiter);
     work_options.rate_limiter = options.rate_limiter;
   }
-
-  rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
-  options.db_paths_soft_size_limit_multiplier.push_back(
-      db_paths_soft_size_limit_multiplier);
 
   size_t first_level_in_last_tier = initial_multiplier_addtional(options);
   std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
