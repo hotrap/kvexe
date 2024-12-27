@@ -361,6 +361,9 @@ class Tester {
   uint64_t num_reads() const {
     return num_reads_.load(std::memory_order_relaxed);
   }
+  uint64_t num_hits() const {
+    return num_hits_.load(std::memory_order_relaxed);
+  }
 
   void Test() {
     std::filesystem::path info_json_path = options_.db_path / "info.json";
@@ -631,6 +634,7 @@ class Tester {
           size_t s = handle->getSize();
           value->resize(s);
           value->assign(d, d + s);
+          tester_.num_hits_.fetch_add(1, std::memory_order_relaxed);
         } else {
           s = options_.db->Get(read_options_, read.key, value);
           auto cache_insert_start =
@@ -1172,6 +1176,7 @@ class Tester {
 
   std::atomic<uint64_t> progress_{0};
   std::atomic<uint64_t> num_reads_{0};
+  std::atomic<uint64_t> num_hits_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1451,8 +1456,9 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
   std::ofstream report(db_path / "report.csv");
-  report << "Timestamp(ns),num-reads\n";
+  report << "Timestamp(ns),num-reads,num-hits\n";
   uint64_t num_reads = 0;
+  uint64_t num_hits = 0;
 
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
@@ -1507,6 +1513,10 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     uint64_t value = tester->num_reads();
     report << ',' << value - num_reads;
     num_reads = value;
+
+    value = tester->num_hits();
+    report << ',' << value - num_hits;
+    num_hits = value;
 
     report << std::endl;
 
