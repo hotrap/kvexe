@@ -291,8 +291,8 @@ class Tester {
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
-  uint64_t progress_get() const {
-    return progress_get_.load(std::memory_order_relaxed);
+  uint64_t num_reads() const {
+    return num_reads_.load(std::memory_order_relaxed);
   }
 
   void Test() {
@@ -401,7 +401,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         std::string value(4096, 0);
-        process_op(op, &value);
+        process_op(op);
         tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
       finish_run_phase();
@@ -410,7 +410,6 @@ class Tester {
       if (run) {
         prepare_run_phase();
       }
-      std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
@@ -418,7 +417,7 @@ class Tester {
         }
         for (const YCSBGen::Operation &op : block) {
           std::string value(4096, 0);
-          process_op(op, &value);
+          process_op(op);
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -465,7 +464,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -504,7 +503,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation &op) {
@@ -547,17 +546,18 @@ class Tester {
       }
     }
 
-    void process_op(const YCSBGen::Operation &op, std::string *value) {
+    void process_op(const YCSBGen::Operation &op) {
       switch (op.type) {
         case YCSBGen::OpType::INSERT:
         case YCSBGen::OpType::UPDATE:
           do_put(op);
           break;
         case YCSBGen::OpType::READ: {
-          bool found = do_read(op, value);
+          std::string value;
+          bool found = do_read(op, &value);
           std::string_view ans;
           if (found) {
-            ans = std::string_view(value->data(), value->size());
+            ans = std::string_view(value.data(), value.size());
           } else {
             ans = std::string_view(nullptr, 0);
           };
@@ -955,7 +955,7 @@ class Tester {
   std::vector<Worker> workers_;
 
   std::atomic<uint64_t> progress_{0};
-  std::atomic<uint64_t> progress_get_{0};
+  std::atomic<uint64_t> num_reads_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1001,7 +1001,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed get\n";
+  progress_out << "Timestamp(ns) operations-executed\n";
 
   std::ofstream mem_out(db_path / "mem");
   std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
@@ -1018,12 +1018,15 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   timers_out << "Timestamp(ns) put-cpu-nanos "
                 "get-cpu-nanos delete-cpu-nanos\n";
 
+  std::ofstream report(db_path / "report.csv");
+  report << "Timestamp(ns),num-reads\n";
+  uint64_t num_reads = 0;
+
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' ' << tester->progress() << ' '
-                 << tester->progress_get() << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -1052,6 +1055,14 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                << put_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << get_cpu_nanos.load(std::memory_order_relaxed) << ' '
                << delete_cpu_nanos.load(std::memory_order_relaxed) << std::endl;
+
+    report << timestamp;
+
+    uint64_t value = tester->num_reads();
+    report << ',' << value - num_reads;
+    num_reads = value;
+
+    report << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
