@@ -316,6 +316,9 @@ struct WorkOptions {
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
   uint64_t run_90p_ops{0};
+
+  // For stats
+  std::shared_ptr<rocksdb::Cache> block_cache;
 };
 
 class Tester {
@@ -333,8 +336,8 @@ class Tester {
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
-  uint64_t progress_get() const {
-    return progress_get_.load(std::memory_order_relaxed);
+  uint64_t num_reads() const {
+    return num_reads_.load(std::memory_order_relaxed);
   }
 
   void Test() {
@@ -389,6 +392,10 @@ class Tester {
         << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n';
 
     print_timers(log);
+
+    rocksdb::Cache &block_cache = *work_options().block_cache;
+    log << "Block cache usage: " << block_cache.GetUsage()
+        << ", pinned usage: " << block_cache.GetPinnedUsage() << '\n';
 
     {
       std::unique_lock lck(thread_local_m_);
@@ -480,13 +487,12 @@ class Tester {
                     options_.db_path /
                     (std::to_string(id_) + "_key_only_trace"))
               : std::nullopt;
-      std::string value;
       while (!runner.IsEOF()) {
         auto op = runner.GetNextOp(rndgen);
         if (key_only_trace_out.has_value())
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
-        process_op(op, &value);
+        process_op(op);
         size_t progress =
             tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         if (progress >= last_op_in_current_stage) {
@@ -510,14 +516,13 @@ class Tester {
       if (run) {
         prepare_run_phase();
       }
-      std::string value;
       for (;;) {
         auto block = chan.GetBlock();
         if (block.empty()) {
           break;
         }
         for (const YCSBGen::Operation &op : block) {
-          process_op(op, &value);
+          process_op(op);
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -553,7 +558,8 @@ class Tester {
     bool do_read(const YCSBGen::Operation &read, std::string *value) {
       time_t get_cpu_start = cpu_timestamp_ns();
       auto get_start = rusty::time::Instant::now();
-      auto s = options_.db->Get(read_options_, read.key, value);
+      auto s = options_.db->Get(
+          read_options_, options_.db->DefaultColumnFamily(), read.key, value);
       auto get_time = get_start.elapsed();
       time_t get_cpu_ns = cpu_timestamp_ns() - get_cpu_start;
       timers.timer(TimerType::kGet).add(get_time);
@@ -562,7 +568,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -598,7 +604,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation &op) {
@@ -641,17 +647,18 @@ class Tester {
       }
     }
 
-    void process_op(const YCSBGen::Operation &op, std::string *value) {
+    void process_op(const YCSBGen::Operation &op) {
       switch (op.type) {
         case YCSBGen::OpType::INSERT:
         case YCSBGen::OpType::UPDATE:
           do_put(op);
           break;
         case YCSBGen::OpType::READ: {
-          bool found = do_read(op, value);
+          std::string value;
+          bool found = do_read(op, &value);
           std::string_view ans;
           if (found) {
-            ans = std::string_view(value->data(), value->size());
+            ans = std::string_view(value.data(), value.size());
           } else {
             ans = std::string_view(nullptr, 0);
           };
@@ -1070,7 +1077,7 @@ class Tester {
   std::mutex thread_local_m_;
 
   std::atomic<uint64_t> progress_{0};
-  std::atomic<uint64_t> progress_get_{0};
+  std::atomic<uint64_t> num_reads_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1104,6 +1111,155 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   }
   rusty_assert_eq(c, '}', "Invalid db_paths");
   return ret;
+}
+
+// Return the first level in the last tier
+size_t initial_multiplier_addtional(rocksdb::Options &options) {
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    rusty_assert(x - 1 < 1e-6);
+  }
+  options.max_bytes_for_level_multiplier_additional.clear();
+  if (options.db_paths.size() < 2) {
+    options.max_bytes_for_level_multiplier_additional.push_back(1);
+    return 0;
+  }
+  size_t fd_size = options.db_paths[0].target_size;
+  size_t level = 0;
+  uint64_t level_size = options.max_bytes_for_level_base;
+  while (level_size <= fd_size) {
+    fd_size -= level_size;
+    if (level > 0) {
+      level_size *= options.max_bytes_for_level_multiplier;
+    }
+    level += 1;
+  }
+  level_size /= options.max_bytes_for_level_multiplier;
+  // It seems that L0 and L1 are not affected by
+  // options.max_bytes_for_level_multiplier_additional
+  if (level <= 2) return level;
+  size_t last_level_in_fd = level - 1;
+  for (size_t i = 1; i < last_level_in_fd; ++i) {
+    options.max_bytes_for_level_multiplier_additional.push_back(1.0);
+  }
+  // Multiply 0.99 to make room for floating point error
+  options.max_bytes_for_level_multiplier_additional.push_back(
+      1 + (double)fd_size / level_size * 0.99);
+  return level;
+}
+
+double calc_size_ratio(size_t last_calculated_level,
+                       uint64_t last_calculated_level_size, size_t last_level,
+                       uint64_t size_to_distribute) {
+  size_t a = last_level - last_calculated_level;
+  rusty_assert(a > 0);
+  double inv_a = 1 / (double)a;
+  rusty_assert(size_to_distribute >= last_calculated_level_size);
+  double b = (double)size_to_distribute / last_calculated_level_size;
+  // Solve the equation: f(x) = x^a + x^{a-1} + ... + x - b = 0
+  // x^a + x^{a-1} + ... + 1 = (x^{a+1} - 1) / (x - 1)
+  // x^a + x^{a-1} + ... + x = (x^{a+1} - 1) / (x - 1) - 1
+  // (x^{a+1} - 1) / (x - 1) - 1 = b
+  // x^{a+1} - 1 = (x - 1) * (b + 1)
+  // x^{a+1} - 1 = (b + 1) x - b - 1
+  // x^{a+1} - (b + 1) x + b = 0
+  // Let g(u) = u^{a+1} - (b + 1) u + maxb
+  // g'(u) = (a + 1) u^a - b - 1
+  // Let g'(u_min) = 0, then u_min = ((b + 1) / (a + 1)) ^ (1 / a)
+  // So x >= ((b + 1) / (a + 1)) ^ (1 / a)
+  // x^a + x^{a-1} + ... + x = b > x^a
+  // So x < b ^ (1 / a)
+  // In conclusion, ((b + 1) / (a + 1)) ^ (1 / a) <= x < b ^ (1 / a)
+  double min = pow((b + 1) / (a + 1), inv_a);
+  double max = pow(b, inv_a);
+  auto f = [a, b](double x) {
+    double sum = 0;
+    double xa = x;
+    for (size_t i = 1; i <= a; ++i) {
+      sum += xa;
+      xa *= x;
+    }
+    return sum - b;
+  };
+  while (max - min >= 0.001) {
+    double x = (max + min) / 2;
+    if (f(x) > 0) {
+      max = x;
+    } else {
+      min = x;
+    }
+  }
+  return (max + min) / 2;
+}
+void update_multiplier_additional(rocksdb::DB *db,
+                                  const rocksdb::Options &options,
+                                  size_t last_calculated_level,
+                                  uint64_t last_calculated_level_size,
+                                  size_t &ori_last_level,
+                                  double &ori_size_ratio) {
+  std::string str;
+  db->GetProperty(rocksdb::DB::Properties::kLevelStats, &str);
+  std::istringstream in(str);
+  // The first two lines are headers.
+  size_t lines_to_skip = 2 + last_calculated_level + 1;
+  while (in && lines_to_skip) {
+    --lines_to_skip;
+    while (in && in.get() != '\n')
+      ;
+  }
+  if (!in) return;
+
+  size_t last_level = last_calculated_level;
+  uint64_t size_to_distribute = 0;
+  while (in) {
+    size_t level;
+    size_t num_files;
+    size_t size;
+    in >> level >> num_files >> size;
+    if (size == 0) break;
+    last_level = level;
+    size_to_distribute += size;
+  }
+  size_to_distribute *= 1048576;
+  if (last_level <= last_calculated_level + 1) return;
+  // unlikely
+  if (size_to_distribute <= last_calculated_level_size) return;
+
+  double size_ratio =
+      calc_size_ratio(last_calculated_level, last_calculated_level_size,
+                      last_level, size_to_distribute);
+  if (last_level > ori_last_level) {
+    std::cerr << "Last level: " << ori_last_level << " -> " << last_level
+              << std::endl;
+    ori_last_level = last_level;
+  } else if (size_ratio > 10) {
+    do {
+      last_level += 1;
+      ori_last_level = last_level;
+      std::cerr << "Increase num_levels to " << last_level + 1 << std::endl;
+      size_ratio =
+          calc_size_ratio(last_calculated_level, last_calculated_level_size,
+                          last_level, size_to_distribute);
+    } while (size_ratio > 10);
+  } else {
+    // When applying the new size ratio configuration, sd_ratio < ori_sd_ratio.
+    // At this time we don't change the size ratio configuration.
+    if (size_ratio - ori_size_ratio <= 0.01) return;
+  }
+  ori_size_ratio = size_ratio;
+  size_ratio /= 10;
+  std::ostringstream out;
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    out << x << ':';
+  }
+  for (size_t level = last_calculated_level + 1; level < last_level; ++level) {
+    out << size_ratio << ':';
+  }
+  out << "100";
+  str = out.str();
+  std::cerr << "Update max_bytes_for_level_multiplier_additional: " << str
+            << std::endl;
+  db->SetOptions(
+      {{"max_bytes_for_level_multiplier_additional", std::move(str)}});
 }
 
 std::vector<double> decode_mutant_cost(std::string costs) {
@@ -1196,7 +1352,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed get\n";
+  progress_out << "Timestamp(ns) operations-executed\n";
 
   std::ofstream mem_out(db_path / "mem");
   std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
@@ -1217,12 +1373,15 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
+  std::ofstream report(db_path / "report.csv");
+  report << "Timestamp(ns),num-reads\n";
+  uint64_t num_reads = 0;
+
   auto interval = rusty::time::Duration::from_secs(1);
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' ' << tester->progress() << ' '
-                 << tester->progress_get() << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -1246,6 +1405,14 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
     std::ofstream(cputimes_path, std::ios_base::app) << timestamp << ' ';
     std::system(cputimes_command.c_str());
+
+    report << timestamp;
+
+    uint64_t value = tester->num_reads();
+    report << ',' << value - num_reads;
+    num_reads = value;
+
+    report << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -1421,9 +1588,6 @@ int main(int argc, char **argv) {
     options.optimize_filters_for_hits = true;
   }
 
-  options.max_bytes_for_level_multiplier_additional.clear();
-  options.max_bytes_for_level_multiplier_additional.push_back(1);
-
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
         rocksdb::NewGenericRateLimiter(load_phase_rate_limit, 100 * 1000, 10);
@@ -1441,30 +1605,46 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
+  size_t first_level_in_last_tier = initial_multiplier_addtional(options);
+  std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]\n";
+
   auto level_size_path_id = predict_level_assignment(options);
-  rusty_assert(level_size_path_id.size() > 0);
-  size_t first_level_in_sd = level_size_path_id.size() - 1;
-  for (size_t level = 0; level < first_level_in_sd; ++level) {
+  rusty_assert_eq(level_size_path_id.size(), first_level_in_last_tier + 1);
+  for (size_t level = 0; level < level_size_path_id.size() - 1; ++level) {
     auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
               << level_size_path_id[level].first << std::endl;
   }
-  auto p = level_size_path_id[first_level_in_sd].second;
-  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << level_size_path_id[first_level_in_sd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_sd = 100;
-  }
-  auto first_level_in_sd_path = db_path / "first-level-in-sd";
-  if (std::filesystem::exists(first_level_in_sd_path)) {
-    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
-    rusty_assert(first_level_in_sd_in);
-    std::string first_level_in_sd_stored;
-    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
-    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
-                    first_level_in_sd);
+  auto p = level_size_path_id[first_level_in_last_tier].second;
+  std::cerr << level_size_path_id.size() - 1 << "+ " << options.db_paths[p].path
+            << ' ' << level_size_path_id[first_level_in_last_tier].first
+            << std::endl;
+  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
+  if (std::filesystem::exists(first_level_in_last_tier_path)) {
+    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
+    rusty_assert(first_level_in_last_tier_in);
+    std::string first_level_in_last_tier_stored;
+    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
+                    first_level_in_last_tier);
   } else {
-    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+    std::ofstream(first_level_in_last_tier_path)
+        << first_level_in_last_tier << std::endl;
+  }
+
+  size_t last_calculated_level;
+  uint64_t last_calculated_level_size;
+  if (first_level_in_last_tier == 0) {
+    last_calculated_level = 1;
+    last_calculated_level_size = options.max_bytes_for_level_base;
+  } else {
+    last_calculated_level = first_level_in_last_tier - 1;
+    last_calculated_level_size =
+        level_size_path_id[last_calculated_level].first;
   }
 
   rocksdb::DB *db;
@@ -1510,14 +1690,21 @@ int main(int argc, char **argv) {
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
 
+  work_options.block_cache = table_options.block_cache;
+
   Tester tester(work_options);
 
   std::atomic<bool> should_stop(false);
   std::thread stat_printer(bg_stat_printer, &tester, &should_stop);
 
   std::thread period_print_thread([&]() {
+    size_t ori_last_level = last_calculated_level;
+    double ori_size_ratio = 0;
     std::ofstream period_stats(db_path / "period_stats");
     while (!should_stop.load()) {
+      update_multiplier_additional(db, options, last_calculated_level,
+                                   last_calculated_level_size, ori_last_level,
+                                   ori_size_ratio);
       tester.print_other_stats(period_stats);
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
