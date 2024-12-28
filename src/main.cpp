@@ -1693,8 +1693,6 @@ int main(int argc, char **argv) {
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
   desc.add_options()("ralt_bloom_bits", po::value<>(&ralt_options.bloom_bits),
                      "The number of bits per key in RALT bloom filter.");
-  desc.add_options()("ralt_exp_smoothing_factor",
-                     po::value<>(&ralt_options.exp_smoothing_factor));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
