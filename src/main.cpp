@@ -50,9 +50,6 @@
 #include "ycsbgen/ycsbgen.hpp"
 
 thread_local std::optional<std::ofstream> key_hit_level_out;
-std::optional<std::ofstream> &get_key_hit_level_out() {
-  return key_hit_level_out;
-}
 
 static inline auto timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -201,7 +198,6 @@ static std::atomic<time_t> scan_cpu_nanos(0);
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
 static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x4;
-static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
 
 template <typename T>
 class BlockChannel {
@@ -335,6 +331,7 @@ struct WorkOptions {
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
   std::string std_ans_prefix;
+  bool export_key_hit_level{false};
 
   // For stats
   std::shared_ptr<rocksdb::Cache> block_cache;
@@ -542,8 +539,8 @@ class Tester {
       }
     }
     void maybe_enable_key_hit_level() {
-      if (options_.switches & MASK_KEY_HIT_LEVEL) {
-        get_key_hit_level_out() = std::make_optional<std::ofstream>(
+      if (options_.export_key_hit_level) {
+        key_hit_level_out = std::make_optional<std::ofstream>(
             options_.db_path / ("key-hit-level-" + std::to_string(id_)));
       }
     }
@@ -1265,8 +1262,8 @@ class RaltWrapper : public ralt::RALT {
   }
   const char *Name() const override { return "RALT-wrapper"; }
   void HitLevel(int level, rocksdb::Slice key) override {
-    if (get_key_hit_level_out().has_value()) {
-      get_key_hit_level_out().value()
+    if (key_hit_level_out.has_value()) {
+      key_hit_level_out.value()
           << timestamp_ns() << ' ' << key.ToString() << ' ' << level << '\n';
     }
     if (level < 0) level = 0;
@@ -1682,6 +1679,7 @@ int main(int argc, char **argv) {
                          ->default_value(1.1));
 
   // Options for hotrap
+  desc.add_options()("export_key_hit_level", "Export the hit level of keys.");
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
                      "Max hot set size in bytes");
@@ -1872,6 +1870,7 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+  work_options.export_key_hit_level = vm.count("export_key_hit_level");
 
   work_options.block_cache = table_options.block_cache;
 
