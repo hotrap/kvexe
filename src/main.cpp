@@ -640,9 +640,11 @@ class Tester {
               timers.timer(TimerType::kCacheInsert).start();
           auto handle = options_.cache->allocate(options_.poolId, read.key,
                                                  value->size());
-          rusty_assert_eq(handle->getSize(), value->size());
-          memcpy(handle->getMemory(), value->data(), value->size());
-          options_.cache->insertOrReplace(handle);
+          if (handle) {
+            rusty_assert_eq(handle->getSize(), value->size());
+            memcpy(handle->getMemory(), value->data(), value->size());
+            options_.cache->insertOrReplace(handle);
+          }
         }
       }
       auto get_time = start.elapsed();
