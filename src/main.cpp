@@ -50,9 +50,6 @@
 #include "ycsbgen/ycsbgen.hpp"
 
 thread_local std::optional<std::ofstream> key_hit_level_out;
-std::optional<std::ofstream> &get_key_hit_level_out() {
-  return key_hit_level_out;
-}
 
 static inline auto timestamp_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -132,6 +129,7 @@ enum class WorkloadType {
   ConfigFile,
   u24685531,
   hotspot_2_4_6_8,
+  hotspot_5_shift_5,
 };
 
 static inline const char *to_string(YCSBGen::OpType type) {
@@ -200,7 +198,6 @@ static std::atomic<time_t> scan_cpu_nanos(0);
 constexpr uint64_t MASK_LATENCY = 0x1;
 constexpr uint64_t MASK_OUTPUT_ANS = 0x2;
 static constexpr uint64_t MASK_COUNT_ACCESS_HOT_PER_TIER = 0x4;
-static constexpr uint64_t MASK_KEY_HIT_LEVEL = 0x8;
 
 template <typename T>
 class BlockChannel {
@@ -330,11 +327,11 @@ struct WorkOptions {
   bool enable_fast_generator{false};
   WorkloadType workload_type;
   YCSBGen::YCSBGeneratorOptions ycsb_gen_options;
-  double db_paths_soft_size_limit_multiplier;
   std::shared_ptr<rocksdb::RateLimiter> rate_limiter;
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
   std::string std_ans_prefix;
+  bool export_key_hit_level{false};
 
   // For stats
   std::shared_ptr<rocksdb::Cache> block_cache;
@@ -355,8 +352,8 @@ class Tester {
   uint64_t progress() const {
     return progress_.load(std::memory_order_relaxed);
   }
-  uint64_t progress_get() const {
-    return progress_get_.load(std::memory_order_relaxed);
+  uint64_t num_reads() const {
+    return num_reads_.load(std::memory_order_relaxed);
   }
 
   void Test() {
@@ -371,15 +368,28 @@ class Tester {
     rusty::sync::Mutex<std::ofstream> info_json_out(std::move(info_json));
 
     if (options_.enable_fast_generator) {
-      switch (options_.workload_type) {
-        case WorkloadType::ConfigFile:
-          GenerateAndExecute(info_json_out);
-          break;
-        case WorkloadType::u24685531:
-          u24685531(info_json_out);
-          break;
-        case WorkloadType::hotspot_2_4_6_8:
-          hotspot_2_4_6_8(info_json_out);
+      if (options_.workload_type == WorkloadType::ConfigFile) {
+        GenerateAndExecute(info_json_out);
+      } else {
+        load_phase(info_json_out);
+        if (options_.run) {
+          prepare_run_phase(info_json_out);
+          auto run_start = rusty::time::Instant::now();
+          switch (options_.workload_type) {
+            case WorkloadType::u24685531:
+              u24685531();
+              break;
+            case WorkloadType::hotspot_2_4_6_8:
+              hotspot_2_4_6_8();
+              break;
+            case WorkloadType::hotspot_5_shift_5:
+              hotspot_5_shift_5();
+              break;
+            default:
+              rusty_panic();
+          }
+          finish_run_phase(info_json_out, run_start);
+        }
       }
     } else {
       ReadAndExecute(info_json_out);
@@ -538,8 +548,8 @@ class Tester {
       }
     }
     void maybe_enable_key_hit_level() {
-      if (options_.switches & MASK_KEY_HIT_LEVEL) {
-        get_key_hit_level_out() = std::make_optional<std::ofstream>(
+      if (options_.export_key_hit_level) {
+        key_hit_level_out = std::make_optional<std::ofstream>(
             options_.db_path / ("key-hit-level-" + std::to_string(id_)));
       }
     }
@@ -625,7 +635,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::READ,
                       get_time.as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
       if (!s.ok()) {
         if (s.IsNotFound()) {
           return false;
@@ -661,7 +671,7 @@ class Tester {
         print_latency(latency_out_.value(), YCSBGen::OpType::RMW,
                       start.elapsed().as_nanos());
       }
-      tester_.progress_get_.fetch_add(1, std::memory_order_relaxed);
+      tester_.num_reads_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void do_delete(const YCSBGen::Operation &op) {
@@ -1005,13 +1015,6 @@ class Tester {
           std::numeric_limits<int64_t>::max());
     }
 
-    options_.db->SetOptions(
-        {{"db_paths_soft_size_limit_multiplier",
-          std::to_string(options_.db_paths_soft_size_limit_multiplier)}});
-    std::cerr << "options.db_paths_soft_size_limit_multiplier: ";
-    print_vector(options_.db->GetOptions().db_paths_soft_size_limit_multiplier);
-    std::cerr << std::endl;
-
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
   }
@@ -1165,41 +1168,33 @@ class Tester {
                                });
     }
   }
-  void u24685531(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
+  void u24685531() {
     const uint64_t offset = 0.08 * num_load_keys;
-    load_phase(info_json_out);
-    if (options_.run) {
-      prepare_run_phase(info_json_out);
-      auto run_start = rusty::time::Instant::now();
-      RunPhase(
-          YCSBGen::YCSBGeneratorOptions{
-              .record_count = num_load_keys,
-              .operation_count = num_run_op,
-              .request_distribution = "uniform",
-          },
-          std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
-      run_hotspot(0, 0.02);
-      run_hotspot(0, 0.04);
-      run_hotspot(0, 0.06);
-      run_hotspot(0, 0.08);
-      run_hotspot(0, 0.05);
-      run_hotspot(offset, 0.05);
-      run_hotspot(offset, 0.03);
-      run_hotspot(offset, 0.01);
-      finish_run_phase(info_json_out, run_start);
-    }
+    RunPhase(
+        YCSBGen::YCSBGeneratorOptions{
+            .record_count = num_load_keys,
+            .operation_count = num_run_op,
+            .request_distribution = "uniform",
+        },
+        std::make_unique<YCSBGen::UniformGenerator>(0, num_load_keys));
+    run_hotspot(0, 0.02);
+    run_hotspot(0, 0.04);
+    run_hotspot(0, 0.06);
+    run_hotspot(0, 0.08);
+    run_hotspot(0, 0.05);
+    run_hotspot(offset, 0.05);
+    run_hotspot(offset, 0.03);
+    run_hotspot(offset, 0.01);
   }
-  void hotspot_2_4_6_8(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
-    load_phase(info_json_out);
-    if (options_.run) {
-      prepare_run_phase(info_json_out);
-      auto run_start = rusty::time::Instant::now();
-      run_hotspot(0, 0.02);
-      run_hotspot(0, 0.04);
-      run_hotspot(0, 0.06);
-      run_hotspot(0, 0.08);
-      finish_run_phase(info_json_out, run_start);
-    }
+  void hotspot_2_4_6_8() {
+    run_hotspot(0, 0.02);
+    run_hotspot(0, 0.04);
+    run_hotspot(0, 0.06);
+    run_hotspot(0, 0.08);
+  }
+  void hotspot_5_shift_5() {
+    run_hotspot(0, 0.05);
+    run_hotspot(0.05 * num_load_keys, 0.05);
   }
 
   void ReadAndExecute(const rusty::sync::Mutex<std::ofstream> &info_json_out) {
@@ -1240,7 +1235,7 @@ class Tester {
   std::mutex thread_local_m_;
 
   std::atomic<uint64_t> progress_{0};
-  std::atomic<uint64_t> progress_get_{0};
+  std::atomic<uint64_t> num_reads_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1278,14 +1273,16 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
   return ret;
 }
 
-class RaltWrapper : public RALT {
+class RaltWrapper : public ralt::RALT {
  public:
-  RaltWrapper(const rocksdb::Comparator *ucmp, std::filesystem::path dir,
-              int tier0_last_level, size_t init_hot_set_size,
-              size_t max_ralt_size, uint64_t switches, size_t max_hot_set_size,
-              size_t min_hot_set_size, size_t bloom_bfk)
-      : RALT(ucmp, dir.c_str(), init_hot_set_size, max_hot_set_size,
-             min_hot_set_size, max_ralt_size, bloom_bfk),
+  RaltWrapper(const ralt::Options &options, const rocksdb::Comparator *ucmp,
+              std::filesystem::path dir, int tier0_last_level,
+              size_t init_hot_set_size, size_t max_ralt_size, uint64_t switches,
+              size_t max_hot_set_size, size_t min_hot_set_size,
+              uint64_t accessed_size_to_decr_counter)
+      : ralt::RALT(options, ucmp, dir.c_str(), init_hot_set_size,
+                   max_hot_set_size, min_hot_set_size, max_ralt_size,
+                   accessed_size_to_decr_counter),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
         count_access_hot_per_tier_{0, 0},
@@ -1297,8 +1294,8 @@ class RaltWrapper : public RALT {
   }
   const char *Name() const override { return "RALT-wrapper"; }
   void HitLevel(int level, rocksdb::Slice key) override {
-    if (get_key_hit_level_out().has_value()) {
-      get_key_hit_level_out().value()
+    if (key_hit_level_out.has_value()) {
+      key_hit_level_out.value()
           << timestamp_ns() << ' ' << key.ToString() << ' ' << level << '\n';
     }
     if (level < 0) level = 0;
@@ -1388,7 +1385,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::string pid = std::to_string(getpid());
 
   std::ofstream progress_out(db_path / "progress");
-  progress_out << "Timestamp(ns) operations-executed get\n";
+  progress_out << "Timestamp(ns) operations-executed\n";
 
   std::ofstream mem_out(db_path / "mem");
   std::string mem_command = "ps -q " + pid + " -o rss | tail -n 1";
@@ -1446,12 +1443,16 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
+  std::ofstream report(db_path / "report.csv");
+  report << "Timestamp(ns),num-reads\n";
+  uint64_t num_reads = 0;
+
   // Stats of hotrap
 
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
   promoted_or_retained_out
-      << "Timestamp(ns) by-flush 2fdlast 2sdfront retained\n";
+      << "Timestamp(ns) by-flush 2fdlast 2sdfront retained.fd retained.sd\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-hot has-newer-version\n";
@@ -1478,8 +1479,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   auto next_begin = rusty::time::Instant::now() + interval;
   while (!should_stop->load(std::memory_order_relaxed)) {
     auto timestamp = timestamp_ns();
-    progress_out << timestamp << ' ' << tester->progress() << ' '
-                 << tester->progress_get() << std::endl;
+    progress_out << timestamp << ' ' << tester->progress() << std::endl;
 
     FILE *pipe = popen(mem_command.c_str(), "r");
     if (pipe == NULL) {
@@ -1553,12 +1553,21 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                                  &rand_read_bytes));
     rand_read_bytes_out << timestamp << ' ' << rand_read_bytes << std::endl;
 
+    report << timestamp;
+
+    uint64_t value = tester->num_reads();
+    report << ',' << value - num_reads;
+    num_reads = value;
+
+    report << std::endl;
+
     promoted_or_retained_out
         << timestamp << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES) << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_2FDLAST_BYTES) << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_2SDFRONT_BYTES) << ' '
-        << stats->getTickerCount(rocksdb::RETAINED_BYTES) << std::endl;
+        << stats->getTickerCount(rocksdb::RETAINED_FD_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::RETAINED_SD_BYTES) << std::endl;
 
     not_promoted_bytes_out
         << timestamp << ' '
@@ -1578,10 +1587,11 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                   << scan_hit_t0 << std::endl;
 
     uint64_t ralt_read;
-    rusty_assert(ralt.GetIntProperty(RALT::Properties::kReadBytes, &ralt_read));
+    rusty_assert(
+        ralt.GetIntProperty(ralt::RALT::Properties::kReadBytes, &ralt_read));
     uint64_t ralt_write;
     rusty_assert(
-        ralt.GetIntProperty(RALT::Properties::kWriteBytes, &ralt_write));
+        ralt.GetIntProperty(ralt::RALT::Properties::kWriteBytes, &ralt_write));
     ralt_io_out << timestamp << ' ' << ralt_read << ' ' << ralt_write
                 << std::endl;
 
@@ -1608,6 +1618,7 @@ int main(int argc, char **argv) {
 
   rocksdb::BlockBasedTableOptions table_options;
   rocksdb::Options options;
+  ralt::Options ralt_options;
   WorkOptions work_options;
 
   namespace po = boost::program_options;
@@ -1620,11 +1631,10 @@ int main(int argc, char **argv) {
   std::string ralt_path_str;
   size_t cache_size;
   int64_t load_phase_rate_limit;
+  double db_paths_soft_size_limit_multiplier;
 
   double arg_max_hot_set_size;
   double arg_max_ralt_size;
-  int compaction_pri;
-  int ralt_bloom_bpk;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1703,12 +1713,12 @@ int main(int argc, char **argv) {
   desc.add_options()("load_phase_rate_limit",
                      po::value(&load_phase_rate_limit)->default_value(0),
                      "0 means not limited.");
-  desc.add_options()(
-      "db_paths_soft_size_limit_multiplier",
-      po::value<double>(&work_options.db_paths_soft_size_limit_multiplier)
-          ->default_value(1.1));
+  desc.add_options()("db_paths_soft_size_limit_multiplier",
+                     po::value<double>(&db_paths_soft_size_limit_multiplier)
+                         ->default_value(1.1));
 
   // Options for hotrap
+  desc.add_options()("export_key_hit_level", "Export the hit level of keys.");
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
                      "Max hot set size in bytes");
@@ -1718,15 +1728,13 @@ int main(int argc, char **argv) {
   desc.add_options()("ralt_path",
                      po::value<std::string>(&ralt_path_str)->required(),
                      "Path to RALT");
-  desc.add_options()("compaction_pri,p",
-                     po::value<int>(&compaction_pri)->required(),
-                     "Method to pick SST to compact (rocksdb::CompactionPri)");
 
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
-  desc.add_options()("ralt_bloom_bpk",
-                     po::value<int>(&ralt_bloom_bpk)->default_value(14),
+  desc.add_options()("ralt_bloom_bits", po::value<>(&ralt_options.bloom_bits),
                      "The number of bits per key in RALT bloom filter.");
+  desc.add_options()("ralt_exp_smoothing_factor",
+                     po::value<>(&ralt_options.exp_smoothing_factor));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -1765,7 +1773,6 @@ int main(int argc, char **argv) {
   std::filesystem::path db_path(arg_db_path);
   std::filesystem::path ralt_path(ralt_path_str);
   options.db_paths = decode_db_paths(arg_db_paths);
-  options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
   options.compression = rocksdb::CompressionType::kNoCompression;
   // Doesn't make sense for tiered storage
@@ -1791,6 +1798,10 @@ int main(int argc, char **argv) {
     work_options.rate_limiter = options.rate_limiter;
   }
 
+  rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
+  options.db_paths_soft_size_limit_multiplier.push_back(
+      db_paths_soft_size_limit_multiplier);
+
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
     empty_directory(db_path);
@@ -1801,41 +1812,40 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
-  size_t first_level_in_sd = calc_first_level_in_sd(options);
-  calc_fd_size_ratio(options, first_level_in_sd, max_ralt_size);
+  size_t first_level_in_last_tier = calc_first_level_in_sd(options);
+  calc_fd_size_ratio(options, first_level_in_last_tier, max_ralt_size);
 
   auto level_size_path_id = predict_level_assignment(options);
-  rusty_assert_eq(level_size_path_id.size() - 1, first_level_in_sd);
-
-  for (size_t level = 0; level < first_level_in_sd; ++level) {
+  rusty_assert_eq(level_size_path_id.size(), first_level_in_last_tier + 1);
+  for (size_t level = 0; level < level_size_path_id.size() - 1; ++level) {
     auto p = level_size_path_id[level].second;
     std::cerr << level << ' ' << options.db_paths[p].path << ' '
               << level_size_path_id[level].first << std::endl;
   }
-  auto p = level_size_path_id[first_level_in_sd].second;
-  std::cerr << first_level_in_sd << "+ " << options.db_paths[p].path << ' '
-            << level_size_path_id[first_level_in_sd].first << std::endl;
-  if (options.db_paths.size() == 1) {
-    first_level_in_sd = 100;
-  }
-  auto first_level_in_sd_path = db_path / "first-level-in-sd";
-  if (std::filesystem::exists(first_level_in_sd_path)) {
-    std::ifstream first_level_in_sd_in(first_level_in_sd_path);
-    rusty_assert(first_level_in_sd_in);
-    std::string first_level_in_sd_stored;
-    std::getline(first_level_in_sd_in, first_level_in_sd_stored);
-    rusty_assert_eq((size_t)std::atoi(first_level_in_sd_stored.c_str()),
-                    first_level_in_sd);
+  auto p = level_size_path_id[first_level_in_last_tier].second;
+  std::cerr << level_size_path_id.size() - 1 << "+ " << options.db_paths[p].path
+            << ' ' << level_size_path_id[first_level_in_last_tier].first
+            << std::endl;
+  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
+  if (std::filesystem::exists(first_level_in_last_tier_path)) {
+    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
+    rusty_assert(first_level_in_last_tier_in);
+    std::string first_level_in_last_tier_stored;
+    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
+                    first_level_in_last_tier);
   } else {
-    std::ofstream(first_level_in_sd_path) << first_level_in_sd << std::endl;
+    std::ofstream(first_level_in_last_tier_path)
+        << first_level_in_last_tier << std::endl;
   }
 
   std::shared_ptr<RaltWrapper> ralt = nullptr;
-  if (first_level_in_sd != 0) {
+  if (first_level_in_last_tier != 0) {
+    uint64_t fd_size = options.db_paths[0].target_size;
     ralt = std::make_shared<RaltWrapper>(
-        options.comparator, ralt_path_str, first_level_in_sd - 1,
-        hot_set_size_limit, max_ralt_size, switches, hot_set_size_limit,
-        hot_set_size_limit, ralt_bloom_bpk);
+        ralt_options, options.comparator, ralt_path_str,
+        first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
+        switches, hot_set_size_limit, hot_set_size_limit, fd_size);
     options.ralt = ralt;
   }
 
@@ -1875,6 +1885,8 @@ int main(int argc, char **argv) {
     work_options.workload_type = WorkloadType::u24685531;
   } else if (workload == "2-4-6-8") {
     work_options.workload_type = WorkloadType::hotspot_2_4_6_8;
+  } else if (workload == "5-shift-5") {
+    work_options.workload_type = WorkloadType::hotspot_5_shift_5;
   } else {
     rusty_panic("Unknown workload %s", workload.c_str());
   }
@@ -1893,6 +1905,7 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
+  work_options.export_key_hit_level = vm.count("export_key_hit_level");
 
   work_options.block_cache = table_options.block_cache;
 
@@ -1900,8 +1913,8 @@ int main(int argc, char **argv) {
   if (vm.count("enable_auto_tuning") && ralt) {
     assert(first_level_in_sd > 0);
     uint64_t fd_size = options.db_paths[0].target_size;
-    autotuner =
-        new AutoTuner(*db, first_level_in_sd, fd_size / 20, 0.85, fd_size / 20);
+    autotuner = new AutoTuner(*db, first_level_in_last_tier, fd_size / 20, 0.85,
+                              fd_size / 20);
   }
 
   Tester tester(work_options);
