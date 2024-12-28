@@ -1595,7 +1595,6 @@ int main(int argc, char **argv) {
 
   double arg_max_hot_set_size;
   double arg_max_ralt_size;
-  int compaction_pri;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1689,9 +1688,6 @@ int main(int argc, char **argv) {
   desc.add_options()("ralt_path",
                      po::value<std::string>(&ralt_path_str)->required(),
                      "Path to RALT");
-  desc.add_options()("compaction_pri,p",
-                     po::value<int>(&compaction_pri)->required(),
-                     "Method to pick SST to compact (rocksdb::CompactionPri)");
 
   // Options for RALT
   desc.add_options()("enable_auto_tuning", "enable auto-tuning");
@@ -1737,7 +1733,6 @@ int main(int argc, char **argv) {
   std::filesystem::path db_path(arg_db_path);
   std::filesystem::path ralt_path(ralt_path_str);
   options.db_paths = decode_db_paths(arg_db_paths);
-  options.compaction_pri = static_cast<rocksdb::CompactionPri>(compaction_pri);
   options.statistics = rocksdb::CreateDBStatistics();
   options.compression = rocksdb::CompressionType::kNoCompression;
   // Doesn't make sense for tiered storage
