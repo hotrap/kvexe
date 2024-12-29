@@ -401,7 +401,7 @@ class Tester {
           key_only_trace_out.value()
               << to_string(op.type) << ' ' << op.key << '\n';
         std::string value(4096, 0);
-        process_op(op);
+        process_op(op, value);
         tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
       finish_run_phase();
@@ -417,7 +417,7 @@ class Tester {
         }
         for (const YCSBGen::Operation &op : block) {
           std::string value(4096, 0);
-          process_op(op);
+          process_op(op, value);
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -546,14 +546,13 @@ class Tester {
       }
     }
 
-    void process_op(const YCSBGen::Operation &op) {
+    void process_op(const YCSBGen::Operation &op, std::string &value) {
       switch (op.type) {
         case YCSBGen::OpType::INSERT:
         case YCSBGen::OpType::UPDATE:
           do_put(op);
           break;
         case YCSBGen::OpType::READ: {
-          std::string value;
           bool found = do_read(op, &value);
           std::string_view ans;
           if (found) {
