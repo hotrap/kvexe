@@ -1880,8 +1880,7 @@ int main(int argc, char **argv) {
   work_options.block_cache = table_options.block_cache;
 
   AutoTuner *autotuner = nullptr;
-  if (vm.count("enable_auto_tuning") && ralt) {
-    assert(first_level_in_sd > 0);
+  if (vm.count("enable_auto_tuning")) {
     uint64_t fd_size = options.db_paths[0].target_size;
     autotuner = new AutoTuner(*db, first_level_in_last_tier, fd_size / 20, 0.85,
                               fd_size / 20);
