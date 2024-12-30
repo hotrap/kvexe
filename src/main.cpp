@@ -1214,9 +1214,6 @@ std::vector<rocksdb::DbPath> decode_db_paths(std::string db_paths) {
 
 // Return the first level in the last tier
 size_t initial_multiplier_addtional(rocksdb::Options &options) {
-  for (double x : options.max_bytes_for_level_multiplier_additional) {
-    rusty_assert(x - 1 < 1e-6);
-  }
   options.max_bytes_for_level_multiplier_additional.clear();
   if (options.db_paths.size() < 2) {
     options.max_bytes_for_level_multiplier_additional.push_back(1);
