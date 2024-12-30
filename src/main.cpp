@@ -1699,6 +1699,8 @@ int main(int argc, char **argv) {
   facebook::cachelib::LruAllocator cache(lruConfig);
   auto poolId =
       cache.addPool("default_pool", cache.getCacheMemoryStats().ramCacheSize);
+  std::cerr << "RAM cache size: " << cache.getCacheMemoryStats().ramCacheSize
+            << std::endl;
 
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
