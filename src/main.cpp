@@ -1346,7 +1346,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   rocksdb::DB *db = work_options.db;
   const std::filesystem::path &db_path = work_options.db_path;
   const rocksdb::Options *options = work_options.options;
-  auto &ralt = *static_cast<RaltWrapper *>(options->ralt.get());
+  RaltWrapper *ralt = static_cast<RaltWrapper *>(options->ralt.get());
 
   char buf[16];
 
@@ -1373,37 +1373,40 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                 "get-cpu-nanos delete-cpu-nanos";
   uint64_t value;
   bool has_ralt_compaction_thread_cpu_nanos =
-      ralt.GetIntProperty("ralt.compaction.thread.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.compaction.thread.cpu.nanos", &value)
+           : false;
   if (has_ralt_compaction_thread_cpu_nanos) {
     timers_out << " ralt.compaction.thread.cpu.nanos";
   }
   bool has_ralt_flush_thread_cpu_nanos =
-      ralt.GetIntProperty("ralt.flush.thread.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.flush.thread.cpu.nanos", &value)
+           : false;
   if (has_ralt_flush_thread_cpu_nanos) {
     timers_out << " ralt.flush.thread.cpu.nanos";
   }
   bool has_ralt_decay_thread_cpu_nanos =
-      ralt.GetIntProperty("ralt.decay.thread.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.decay.thread.cpu.nanos", &value)
+           : false;
   if (has_ralt_decay_thread_cpu_nanos) {
     timers_out << " ralt.decay.thread.cpu.nanos";
   }
   bool has_ralt_compaction_cpu_nanos =
-      ralt.GetIntProperty("ralt.compaction.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.compaction.cpu.nanos", &value) : false;
   if (has_ralt_compaction_cpu_nanos) {
     timers_out << " ralt.compaction.cpu.nanos";
   }
   bool has_ralt_flush_cpu_nanos =
-      ralt.GetIntProperty("ralt.flush.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.flush.cpu.nanos", &value) : false;
   if (has_ralt_flush_cpu_nanos) {
     timers_out << " ralt.flush.cpu.nanos";
   }
   bool has_ralt_decay_scan_cpu_nanos =
-      ralt.GetIntProperty("ralt.decay.scan.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.decay.scan.cpu.nanos", &value) : false;
   if (has_ralt_decay_scan_cpu_nanos) {
     timers_out << " ralt.decay.scan.cpu.nanos";
   }
   bool has_ralt_decay_write_cpu_nanos =
-      ralt.GetIntProperty("ralt.decay.write.cpu.nanos", &value);
+      ralt ? ralt->GetIntProperty("ralt.decay.write.cpu.nanos", &value) : false;
   if (has_ralt_decay_write_cpu_nanos) {
     timers_out << " ralt.decay.write.cpu.nanos";
   }
@@ -1425,18 +1428,23 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-hot has-newer-version\n";
 
-  std::ofstream num_accesses_out(db_path / "num-accesses");
-
   // Stats of RALT
+  std::ofstream num_accesses_out;
+  std::ofstream ralt_io_out;
+  std::ofstream ralt_sizes;
+  std::ofstream vc_param_out;
+  if (ralt) {
+    num_accesses_out.open(db_path / "num-accesses");
 
-  std::ofstream ralt_io_out(db_path / "ralt-io");
-  ralt_io_out << "Timestamp(ns) read write\n";
+    ralt_io_out.open(db_path / "ralt-io");
+    ralt_io_out << "Timestamp(ns) read write\n";
 
-  std::ofstream ralt_sizes(db_path / "ralt-sizes");
-  ralt_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
+    ralt_sizes.open(db_path / "ralt-sizes");
+    ralt_sizes << "Timestamp(ns) real-phy-size real-hot-size\n";
 
-  std::ofstream vc_param_out(db_path / "vc_param");
-  vc_param_out << "Timestamp(ns) hot-set-size-limit phy-size-limit\n";
+    vc_param_out.open(db_path / "vc_param");
+    vc_param_out << "Timestamp(ns) hot-set-size-limit phy-size-limit\n";
+  }
 
   auto stats = options->statistics;
 
@@ -1484,31 +1492,31 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
                << delete_cpu_nanos.load(std::memory_order_relaxed);
     if (has_ralt_compaction_thread_cpu_nanos) {
       rusty_assert(
-          ralt.GetIntProperty("ralt.compaction.thread.cpu.nanos", &value));
+          ralt->GetIntProperty("ralt.compaction.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_flush_thread_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.flush.thread.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.flush.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_decay_thread_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.decay.thread.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.decay.thread.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_compaction_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.compaction.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.compaction.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_flush_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.flush.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.flush.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_decay_scan_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.decay.scan.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.decay.scan.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     if (has_ralt_decay_write_cpu_nanos) {
-      rusty_assert(ralt.GetIntProperty("ralt.decay.write.cpu.nanos", &value));
+      rusty_assert(ralt->GetIntProperty("ralt.decay.write.cpu.nanos", &value));
       timers_out << ' ' << value;
     }
     timers_out << std::endl;
@@ -1539,27 +1547,29 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
         << stats->getTickerCount(rocksdb::ACCESSED_COLD_BYTES) << ' '
         << stats->getTickerCount(rocksdb::HAS_NEWER_VERSION_BYTES) << std::endl;
 
-    num_accesses_out << timestamp;
-    auto level_hits = ralt.level_hits();
-    for (size_t hits : level_hits) {
-      num_accesses_out << ' ' << hits;
+    if (ralt) {
+      num_accesses_out << timestamp;
+      auto level_hits = ralt->level_hits();
+      for (size_t hits : level_hits) {
+        num_accesses_out << ' ' << hits;
+      }
+      num_accesses_out << std::endl;
+
+      uint64_t ralt_read;
+      rusty_assert(
+          ralt->GetIntProperty(ralt::RALT::Properties::kReadBytes, &ralt_read));
+      uint64_t ralt_write;
+      rusty_assert(ralt->GetIntProperty(ralt::RALT::Properties::kWriteBytes,
+                                        &ralt_write));
+      ralt_io_out << timestamp << ' ' << ralt_read << ' ' << ralt_write
+                  << std::endl;
+
+      ralt_sizes << timestamp << ' ' << ralt->GetRealPhySize() << ' '
+                 << ralt->GetRealHotSetSize() << std::endl;
+
+      vc_param_out << timestamp << ' ' << ralt->GetHotSetSizeLimit() << ' '
+                   << ralt->GetPhySizeLimit() << std::endl;
     }
-    num_accesses_out << std::endl;
-
-    uint64_t ralt_read;
-    rusty_assert(
-        ralt.GetIntProperty(ralt::RALT::Properties::kReadBytes, &ralt_read));
-    uint64_t ralt_write;
-    rusty_assert(
-        ralt.GetIntProperty(ralt::RALT::Properties::kWriteBytes, &ralt_write));
-    ralt_io_out << timestamp << ' ' << ralt_read << ' ' << ralt_write
-                << std::endl;
-
-    ralt_sizes << timestamp << ' ' << ralt.GetRealPhySize() << ' '
-               << ralt.GetRealHotSetSize() << std::endl;
-
-    vc_param_out << timestamp << ' ' << ralt.GetHotSetSizeLimit() << ' '
-                 << ralt.GetPhySizeLimit() << std::endl;
 
     auto sleep_time =
         next_begin.checked_duration_since(rusty::time::Instant::now());
@@ -1681,7 +1691,7 @@ int main(int argc, char **argv) {
   desc.add_options()("export_key_hit_level", "Export the hit level of keys.");
   desc.add_options()("max_hot_set_size",
                      po::value<double>(&arg_max_hot_set_size)->required(),
-                     "Max hot set size in bytes");
+                     "Max hot set size in bytes. If zero, disable RALT.");
   desc.add_options()("max_ralt_size",
                      po::value<double>(&arg_max_ralt_size)->required(),
                      "Max physical size of ralt in bytes");
@@ -1798,13 +1808,15 @@ int main(int argc, char **argv) {
   }
 
   std::shared_ptr<RaltWrapper> ralt = nullptr;
-  if (first_level_in_last_tier != 0) {
+  if (first_level_in_last_tier != 0 && hot_set_size_limit > 0) {
     uint64_t fd_size = options.db_paths[0].target_size;
     ralt = std::make_shared<RaltWrapper>(
         ralt_options, options.comparator, ralt_path_str,
         first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
         switches, hot_set_size_limit, hot_set_size_limit, fd_size);
     options.ralt = ralt;
+  } else {
+    std::cerr << "RALT disabled" << std::endl;
   }
 
   rocksdb::DB *db;
