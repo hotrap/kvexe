@@ -601,6 +601,8 @@ class Tester {
               memcpy(new_handle->getMemory(), put.value.data(), put.value.size());
               options_.cache->insertOrReplace(new_handle);
             } else {
+              tester_.fail_to_update_cache_.fetch_add(
+                  1, std::memory_order_relaxed);
               rusty_assert(
                   options_.cache->remove(handle) ==
                   facebook::cachelib::LruAllocator::RemoveRes::kSuccess);
@@ -650,6 +652,9 @@ class Tester {
             rusty_assert_eq(handle->getSize(), value->size());
             memcpy(handle->getMemory(), value->data(), value->size());
             options_.cache->insertOrReplace(handle);
+          } else {
+            tester_.fail_to_insert_into_cache_.fetch_add(
+                1, std::memory_order_relaxed);
           }
         }
       }
@@ -704,7 +709,8 @@ class Tester {
     void do_delete(const YCSBGen::Operation &op) {
       {
         auto start = timers.timer(TimerType::kCacheDelete).start();
-        options_.cache->remove(op.key);
+        rusty_assert(options_.cache->remove(op.key) ==
+                     facebook::cachelib::LruAllocator::RemoveRes::kSuccess);
       }
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
@@ -1177,6 +1183,9 @@ class Tester {
   std::atomic<uint64_t> progress_{0};
   std::atomic<uint64_t> num_reads_{0};
   std::atomic<uint64_t> num_hits_{0};
+
+  std::atomic<uint64_t> fail_to_insert_into_cache_{0};
+  std::atomic<uint64_t> fail_to_update_cache_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
