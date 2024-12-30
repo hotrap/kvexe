@@ -595,10 +595,16 @@ class Tester {
           if (handle->getSize() == put.value.size()) {
             memcpy(handle->getMemory(), put.value.data(), put.value.size());
           } else {
-            handle = options_.cache->allocate(options_.poolId, put.key,
+            auto new_handle = options_.cache->allocate(options_.poolId, put.key,
                                               put.value.size());
-            memcpy(handle->getMemory(), put.value.data(), put.value.size());
-            options_.cache->insertOrReplace(handle);
+            if (new_handle) {
+              memcpy(new_handle->getMemory(), put.value.data(), put.value.size());
+              options_.cache->insertOrReplace(new_handle);
+            } else {
+              rusty_assert(
+                  options_.cache->remove(handle) ==
+                  facebook::cachelib::LruAllocator::RemoveRes::kSuccess);
+            }
           }
         }
       }
