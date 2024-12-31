@@ -1780,8 +1780,13 @@ int main(int argc, char **argv) {
     options.create_if_missing = true;
   }
 
-  size_t first_level_in_last_tier = calc_first_level_in_sd(options);
+  size_t first_level_in_last_tier = calc_first_level_in_last_tier(options);
   calc_fd_size_ratio(options, first_level_in_last_tier, max_ralt_size);
+  std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
+  for (double x : options.max_bytes_for_level_multiplier_additional) {
+    std::cerr << x << ',';
+  }
+  std::cerr << "]\n";
 
   auto level_size_path_id = predict_level_assignment(options);
   rusty_assert_eq(level_size_path_id.size(), first_level_in_last_tier + 1);
