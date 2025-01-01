@@ -445,7 +445,8 @@ class Tester {
         << "numCacheGetMiss: " << cache_stats.numCacheGetMiss << '\n'
         << "numNvmGets: " << cache_stats.numNvmGets << '\n'
         << "numNvmGetMiss: " << cache_stats.numNvmGetMiss << '\n'
-        << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n';
+        << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n'
+        << "numNvmPuts: " << cache_stats.numNvmPuts << '\n';
 
     log << "Fail to insert into cache: "
         << fail_to_insert_into_cache_.load(std::memory_order_relaxed) << '\n'
