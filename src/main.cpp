@@ -1581,7 +1581,7 @@ int main(int argc, char **argv) {
   // It seems that the argument enable_replacement is not used.
   auto secondary_cache =
       facebook::rocks_secondary_cache::NewRocksCachelibWrapper(
-          db_path.string(), secondary_cache_size_MiB, true, true, false);
+          db_path.string() + '/', secondary_cache_size_MiB, true, true, false);
 
   rocksdb::LRUCacheOptions lru_cache_opts;
   lru_cache_opts.capacity = cache_size;
