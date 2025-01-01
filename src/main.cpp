@@ -447,6 +447,13 @@ class Tester {
         << "numNvmGetMiss: " << cache_stats.numNvmGetMiss << '\n'
         << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n';
 
+    log << "Fail to insert into cache: "
+        << fail_to_insert_into_cache_.load(std::memory_order_relaxed) << '\n'
+        << "Fail to update cache: "
+        << fail_to_update_cache_.load(std::memory_order_relaxed) << '\n'
+        << "Fail to remove from cache: "
+        << fail_to_remove_from_cache_.load(std::memory_order_relaxed) << '\n';
+
     log << "stat end===" << std::endl;
   }
   void print_heavy_stats(std::ostream &out) {
@@ -603,9 +610,14 @@ class Tester {
             } else {
               tester_.fail_to_update_cache_.fetch_add(
                   1, std::memory_order_relaxed);
-              rusty_assert(
-                  options_.cache->remove(handle) ==
-                  facebook::cachelib::LruAllocator::RemoveRes::kSuccess);
+              auto res = options_.cache->remove(handle);
+              if (res !=
+                  facebook::cachelib::LruAllocator::RemoveRes::kSuccess) {
+                tester_.fail_to_remove_from_cache_.fetch_add(
+                    1, std::memory_order_relaxed);
+                // Retry here will cause infinite loop.
+                // Hope the key is not in the cache any more.
+              }
             }
           }
         }
@@ -709,8 +721,14 @@ class Tester {
     void do_delete(const YCSBGen::Operation &op) {
       {
         auto start = timers.timer(TimerType::kCacheDelete).start();
-        rusty_assert(options_.cache->remove(op.key) ==
-                     facebook::cachelib::LruAllocator::RemoveRes::kSuccess);
+        facebook::cachelib::LruAllocator::RemoveRes res;
+        res = options_.cache->remove(op.key);
+        if (res != facebook::cachelib::LruAllocator::RemoveRes::kSuccess) {
+          tester_.fail_to_remove_from_cache_.fetch_add(
+              1, std::memory_order_relaxed);
+          // Retry here will cause infinite loop.
+          // Hope the key is not in the cache any more.
+        }
       }
       time_t cpu_start = cpu_timestamp_ns();
       auto start = rusty::time::Instant::now();
@@ -1186,6 +1204,7 @@ class Tester {
 
   std::atomic<uint64_t> fail_to_insert_into_cache_{0};
   std::atomic<uint64_t> fail_to_update_cache_{0};
+  std::atomic<uint64_t> fail_to_remove_from_cache_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
