@@ -426,13 +426,32 @@ class Tester {
                              options_.db_path / ("ans_" + std::to_string(id)))
                        : std::nullopt) {}
 
+    void prepare_load_phase() {
+      rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
+      std::unique_lock lck(tester_.thread_local_m_);
+      tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
+      tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
+    }
+    void finish_load_phase() {
+      std::string id = std::to_string(id_);
+      std::ofstream(options_.db_path / ("load-phase-perf-context-" + id))
+          << tester_.perf_contexts_[id_]->ToString();
+      std::ofstream(options_.db_path / ("load-phase-iostats-contexts-" + id))
+          << tester_.iostats_contexts_[id_]->ToString();
+
+      std::unique_lock lck(tester_.thread_local_m_);
+      tester_.perf_contexts_[id_] = nullptr;
+      tester_.iostats_contexts_[id_] = nullptr;
+    }
     void load(YCSBGen::YCSBLoadGenerator &loader) {
+      prepare_load_phase();
       while (!loader.IsEOF()) {
         auto op = loader.GetNextOp();
         rusty_assert(op.type == YCSBGen::OpType::INSERT);
         do_put(op);
         tester_.progress_.fetch_add(1, std::memory_order_relaxed);
       }
+      finish_load_phase();
     }
     void prepare_run_phase() {
       if (options_.switches & MASK_LATENCY) {
@@ -492,8 +511,10 @@ class Tester {
       }
       finish_run_phase();
     }
-    void work(bool run, BlockChannel<YCSBGen::Operation> &chan) {
-      if (run) {
+    void work(bool load, BlockChannel<YCSBGen::Operation> &chan) {
+      if (load) {
+        prepare_load_phase();
+      } else {
         prepare_run_phase();
       }
       for (;;) {
@@ -506,7 +527,9 @@ class Tester {
           tester_.progress_.fetch_add(1, std::memory_order_relaxed);
         }
       }
-      if (run) {
+      if (load) {
+        finish_load_phase();
+      } else {
         finish_run_phase();
       }
     }
@@ -684,7 +707,7 @@ class Tester {
     std::optional<std::ofstream> latency_out_;
   };
 
-  void parse(bool run, std::istream &trace) {
+  void parse(bool load, std::istream &trace) {
     size_t num_channels =
         options_.enable_fast_process ? 1 : options_.num_threads;
     std::vector<BlockChannel<YCSBGen::Operation>> channel_for_workers(
@@ -697,9 +720,9 @@ class Tester {
 
     std::vector<std::thread> threads;
     for (size_t i = 0; i < options_.num_threads; i++) {
-      threads.emplace_back([this, run, &channel_for_workers, i]() {
+      threads.emplace_back([this, load, &channel_for_workers, i]() {
         size_t index = options_.enable_fast_process ? 0 : i;
-        workers_[i].work(run, channel_for_workers[index]);
+        workers_[i].work(load, channel_for_workers[index]);
       });
     }
 
@@ -742,7 +765,7 @@ class Tester {
             trace >> value_length;
             value.resize(value_length);
             int ret = snprintf(value.data(), value.size(), "%s%" PRIu64,
-                               run ? "load-" : "run-", parse_counts + 1);
+                               load ? "load-" : "run-", parse_counts + 1);
             rusty_assert(ret > 0);
             if ((size_t)ret < value_length) {
               memset(value.data() + ret, '-', value_length - ret);
@@ -1029,7 +1052,7 @@ class Tester {
           trace_file.has_value() ? trace_file.value() : std::cin;
 
       auto start = rusty::time::Instant::now();
-      parse(false, trace);
+      parse(true, trace);
       finish_load_phase(info_json_out, start);
     }
     if (options_.run) {
@@ -1043,7 +1066,7 @@ class Tester {
 
       prepare_run_phase(info_json_out);
       auto start = rusty::time::Instant::now();
-      parse(true, trace);
+      parse(false, trace);
       finish_run_phase(info_json_out, start);
     }
   }
