@@ -448,6 +448,8 @@ class Tester {
         << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n'
         << "numNvmPuts: " << cache_stats.numNvmPuts << '\n'
         << "numNvmRejectsByClean: " << cache_stats.numNvmRejectsByClean << '\n'
+        << "allocAttempts: " << cache_stats.allocAttempts << '\n'
+        << "allocFailures: " << cache_stats.allocFailures << '\n'
         << "evictionAttempts: " << cache_stats.evictionAttempts << '\n'
         << "numEvictions: " << cache_stats.numEvictions << '\n'
         << "numEvictionFailureFromAccessContainer: "
