@@ -447,7 +447,19 @@ class Tester {
         << "numNvmGetMiss: " << cache_stats.numNvmGetMiss << '\n'
         << "numNvmGetMissFast: " << cache_stats.numNvmGetMissFast << '\n'
         << "numNvmPuts: " << cache_stats.numNvmPuts << '\n'
-        << "numNvmRejectsByClean: " << cache_stats.numNvmRejectsByClean << '\n';
+        << "numNvmRejectsByClean: " << cache_stats.numNvmRejectsByClean << '\n'
+        << "evictionAttempts: " << cache_stats.evictionAttempts << '\n'
+        << "numEvictions: " << cache_stats.numEvictions << '\n'
+        << "numEvictionFailureFromAccessContainer: "
+        << cache_stats.numEvictionFailureFromAccessContainer << '\n'
+        << "numEvictionFailureFromConcurrentFill: "
+        << cache_stats.numEvictionFailureFromConcurrentFill << '\n'
+        << "numEvictionFailureFromParentAccessContainer: "
+        << cache_stats.numEvictionFailureFromParentAccessContainer << '\n'
+        << "numEvictionFailureFromMoving: "
+        << cache_stats.numEvictionFailureFromMoving << '\n'
+        << "numEvictionFailureFromParentMoving: "
+        << cache_stats.numEvictionFailureFromParentMoving << '\n';
 
     log << "Fail to insert into cache: "
         << fail_to_insert_into_cache_.load(std::memory_order_relaxed) << '\n'
