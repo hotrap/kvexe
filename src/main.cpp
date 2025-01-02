@@ -1587,6 +1587,9 @@ int main(int argc, char **argv) {
   // The ttl feature will try to compact old data into the last level, which is
   // not compatible with the retention of HotRAP. So we disable the ttl feature.
   options.ttl = 0;
+  // We don't need ordered writes here. In reality visibility is often managed
+  // by an additional transaction layer.
+  options.unordered_write = true;
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
