@@ -476,6 +476,10 @@ class Tester {
           << ", allocFailures: " << stats.allocFailures << '\n';
     }
 
+    auto nvmCacheStats = options_.cache->getNvmCacheStatsMap().toMap();
+    log << "navy_bh_items: " << nvmCacheStats["navy_bh_items"] << '\n'
+        << "navy_bc_items: " << nvmCacheStats["navy_bc_items"] << '\n';
+
     log << "Fail to insert into cache: "
         << fail_to_insert_into_cache_.load(std::memory_order_relaxed) << '\n'
         << "Fail to update cache: "
