@@ -464,6 +464,18 @@ class Tester {
         << "numEvictionFailureFromParentMoving: "
         << cache_stats.numEvictionFailureFromParentMoving << '\n';
 
+    auto poolStats = options_.cache->getPoolStats(options_.poolId);
+    for (const auto &class_stats : poolStats.cacheStats) {
+      auto cid = class_stats.first;
+      auto stats = class_stats.second;
+      log << "Class ID: " << (int)cid << ", allocSize: " << stats.allocSize
+          << ", numItems: " << stats.numItems()
+          << ", numEvictions: " << stats.numEvictions()
+          << ", allocAttempts: " << stats.allocAttempts
+          << ", evictionAttempts: " << stats.evictionAttempts
+          << ", allocFailures: " << stats.allocFailures << '\n';
+    }
+
     log << "Fail to insert into cache: "
         << fail_to_insert_into_cache_.load(std::memory_order_relaxed) << '\n'
         << "Fail to update cache: "
