@@ -481,7 +481,9 @@ class Tester {
         << "Fail to update cache: "
         << fail_to_update_cache_.load(std::memory_order_relaxed) << '\n'
         << "Fail to remove from cache: "
-        << fail_to_remove_from_cache_.load(std::memory_order_relaxed) << '\n';
+        << fail_to_remove_from_cache_.load(std::memory_order_relaxed) << '\n'
+        << "Too large key-value: "
+        << too_large_key_value_.load(std::memory_order_relaxed) << '\n';
 
     log << "stat end===" << std::endl;
   }
@@ -503,6 +505,8 @@ class Tester {
         : tester_(tester),
           id_(id),
           options_(tester.options_),
+          max_alloc_size_(
+              options_.cache->getPool(options_.poolId).getAllocSizes().back()),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -653,7 +657,8 @@ class Tester {
               timers.timer(TimerType::kCacheUpdateExisting).start();
           if (handle->getSize() == put.value.size()) {
             memcpy(handle->getMemory(), put.value.data(), put.value.size());
-          } else {
+          } else if (facebook::cachelib::LruAllocator::Item::getRequiredSize(
+                         put.key, put.value.size()) <= max_alloc_size_) {
             auto new_handle = options_.cache->allocate(options_.poolId, put.key,
                                               put.value.size());
             if (new_handle) {
@@ -671,6 +676,9 @@ class Tester {
                 // Hope the key is not in the cache any more.
               }
             }
+          } else {
+            tester_.too_large_key_value_.fetch_add(1,
+                                                   std::memory_order_relaxed);
           }
         }
       }
@@ -708,17 +716,23 @@ class Tester {
           tester_.num_hits_.fetch_add(1, std::memory_order_relaxed);
         } else {
           s = options_.db->Get(read_options_, read.key, value);
-          auto cache_insert_start =
-              timers.timer(TimerType::kCacheInsert).start();
-          auto handle = options_.cache->allocate(options_.poolId, read.key,
-                                                 value->size());
-          if (handle) {
-            rusty_assert_eq(handle->getSize(), value->size());
-            memcpy(handle->getMemory(), value->data(), value->size());
-            options_.cache->insertOrReplace(handle);
+          if (facebook::cachelib::LruAllocator::Item::getRequiredSize(
+                  read.key, value->size()) <= max_alloc_size_) {
+            auto cache_insert_start =
+                timers.timer(TimerType::kCacheInsert).start();
+            auto handle = options_.cache->allocate(options_.poolId, read.key,
+                                                   value->size());
+            if (handle) {
+              rusty_assert_eq(handle->getSize(), value->size());
+              memcpy(handle->getMemory(), value->data(), value->size());
+              options_.cache->insertOrReplace(handle);
+            } else {
+              tester_.fail_to_insert_into_cache_.fetch_add(
+                  1, std::memory_order_relaxed);
+            }
           } else {
-            tester_.fail_to_insert_into_cache_.fetch_add(
-                1, std::memory_order_relaxed);
+            tester_.too_large_key_value_.fetch_add(1,
+                                                   std::memory_order_relaxed);
           }
         }
       }
@@ -870,6 +884,8 @@ class Tester {
     const WorkOptions &options_;
     rocksdb::ReadOptions read_options_;
     rocksdb::WriteOptions write_options_;
+
+    size_t max_alloc_size_;
 
     uint64_t not_found_{0};
     uint64_t scanned_{0};
@@ -1257,6 +1273,7 @@ class Tester {
   std::atomic<uint64_t> fail_to_insert_into_cache_{0};
   std::atomic<uint64_t> fail_to_update_cache_{0};
   std::atomic<uint64_t> fail_to_remove_from_cache_{0};
+  std::atomic<uint64_t> too_large_key_value_{0};
 };
 
 static inline void empty_directory(std::filesystem::path dir_path) {
@@ -1809,7 +1826,8 @@ int main(int argc, char **argv) {
   auto poolId =
       cache.addPool("default_pool", cache.getCacheMemoryStats().ramCacheSize);
   std::cerr << "RAM cache size: " << cache.getCacheMemoryStats().ramCacheSize
-            << std::endl;
+            << "\nMax alloc size: "
+            << cache.getPool(poolId).getAllocSizes().back() << std::endl;
 
   if (load_phase_rate_limit) {
     rocksdb::RateLimiter *rate_limiter =
