@@ -452,6 +452,7 @@ class Tester {
         << "allocFailures: " << cache_stats.allocFailures << '\n'
         << "evictionAttempts: " << cache_stats.evictionAttempts << '\n'
         << "numEvictions: " << cache_stats.numEvictions << '\n'
+        << "numCacheEvictions: " << cache_stats.numCacheEvictions << '\n'
         << "numEvictionFailureFromAccessContainer: "
         << cache_stats.numEvictionFailureFromAccessContainer << '\n'
         << "numEvictionFailureFromConcurrentFill: "
