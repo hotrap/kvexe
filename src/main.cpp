@@ -1824,6 +1824,7 @@ int main(int argc, char **argv) {
   nvmConfig.navyConfig.setSimpleFile(db_path / "cachelib", cachelib_size,
                                      true /*truncateFile*/);
   nvmConfig.navyConfig.blockCache().setRegionSize(16 * 1024 * 1024);
+  nvmConfig.navyConfig.bigHash().setSizePctAndMaxItemSize(99, 2048);
   lruConfig.enableNvmCache(nvmConfig);
   lruConfig.setAccessConfig({/*bucketsPower*/ 25, /*locksPower*/ 10})
       .validate();
