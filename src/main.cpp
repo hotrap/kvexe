@@ -354,23 +354,8 @@ class Tester {
                              options_.db_path / ("ans_" + std::to_string(id)))
                        : std::nullopt) {}
 
-    void prepare_load_phase() {
-      rocksdb::SetPerfLevel(rocksdb::PerfLevel::kEnableTimeExceptForMutex);
-      std::unique_lock lck(tester_.thread_local_m_);
-      tester_.perf_contexts_[id_] = rocksdb::get_perf_context();
-      tester_.iostats_contexts_[id_] = rocksdb::get_iostats_context();
-    }
-    void finish_load_phase() {
-      std::string id = std::to_string(id_);
-      std::ofstream(options_.db_path / ("load-phase-perf-context-" + id))
-          << tester_.perf_contexts_[id_]->ToString();
-      std::ofstream(options_.db_path / ("load-phase-iostats-contexts-" + id))
-          << tester_.iostats_contexts_[id_]->ToString();
-
-      std::unique_lock lck(tester_.thread_local_m_);
-      tester_.perf_contexts_[id_] = nullptr;
-      tester_.iostats_contexts_[id_] = nullptr;
-    }
+    void prepare_load_phase() {}
+    void finish_load_phase() {}
     void load(YCSBGen::YCSBLoadGenerator &loader) {
       prepare_load_phase();
       while (!loader.IsEOF()) {
