@@ -1325,8 +1325,16 @@ void update_multiplier_additional(const std::atomic<bool> *should_stop,
       options.max_bytes_for_level_multiplier_additional;
   size_t last_calculated_level =
       options.max_bytes_for_level_multiplier_additional.size();
-  uint64_t last_calculated_level_size =
-      predict_level_assignment(options)[last_calculated_level].first;
+  rusty_assert(last_calculated_level > 0);
+  uint64_t last_calculated_level_size;
+  if (last_calculated_level == 1) {
+    last_calculated_level_size = options.max_bytes_for_level_base;
+  } else {
+    last_calculated_level_size =
+        predict_level_assignment(options).at(last_calculated_level).first;
+  }
+  std::cerr << "last_calculated_level: " << last_calculated_level << ", size "
+            << last_calculated_level_size << std::endl;
   while (!should_stop->load(std::memory_order_relaxed)) {
     calc_last_tier_size_ratio(options, *db, last_calculated_level,
                               last_calculated_level_size);
