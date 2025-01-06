@@ -1628,6 +1628,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
   int64_t load_phase_rate_limit;
   double db_paths_soft_size_limit_multiplier;
+  double db_paths_hard_size_limit_multiplier;
 
   double arg_max_hot_set_size;
   double arg_max_ralt_size;
@@ -1713,6 +1714,9 @@ int main(int argc, char **argv) {
   desc.add_options()("db_paths_soft_size_limit_multiplier",
                      po::value<double>(&db_paths_soft_size_limit_multiplier)
                          ->default_value(1.1));
+  desc.add_options()("db_paths_hard_size_limit_multiplier",
+                     po::value<double>(&db_paths_hard_size_limit_multiplier)
+                         ->default_value(1.2));
 
   // Options for hotrap
   desc.add_options()("export_key_hit_level", "Export the hit level of keys.");
@@ -1799,6 +1803,9 @@ int main(int argc, char **argv) {
   rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
   options.db_paths_soft_size_limit_multiplier.push_back(
       db_paths_soft_size_limit_multiplier);
+  rusty_assert(options.db_paths_hard_size_limit_multiplier.empty());
+  options.db_paths_hard_size_limit_multiplier.push_back(
+      db_paths_hard_size_limit_multiplier);
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
