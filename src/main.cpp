@@ -1478,6 +1478,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
   int64_t load_phase_rate_limit;
   double db_paths_soft_size_limit_multiplier;
+  double db_paths_hard_size_limit_multiplier;
   uint64_t secondary_cache_size_MiB;
 
   // Options of executor
@@ -1553,6 +1554,9 @@ int main(int argc, char **argv) {
   desc.add_options()("db_paths_soft_size_limit_multiplier",
                      po::value<double>(&db_paths_soft_size_limit_multiplier)
                          ->default_value(1.1));
+  desc.add_options()("db_paths_hard_size_limit_multiplier",
+                     po::value<double>(&db_paths_hard_size_limit_multiplier)
+                         ->default_value(1.2));
 
   desc.add_options()(
       "secondary_cache_size_MiB",
