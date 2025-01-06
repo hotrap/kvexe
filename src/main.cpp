@@ -1482,6 +1482,7 @@ int main(int argc, char **argv) {
   size_t cache_size;
   int64_t load_phase_rate_limit;
   double db_paths_soft_size_limit_multiplier;
+  double db_paths_hard_size_limit_multiplier;
 
   // Options of executor
   desc.add_options()("help", "Print help message");
@@ -1556,6 +1557,9 @@ int main(int argc, char **argv) {
   desc.add_options()("db_paths_soft_size_limit_multiplier",
                      po::value<double>(&db_paths_soft_size_limit_multiplier)
                          ->default_value(1.1));
+  desc.add_options()("db_paths_hard_size_limit_multiplier",
+                     po::value<double>(&db_paths_hard_size_limit_multiplier)
+                         ->default_value(1.2));
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -1621,6 +1625,9 @@ int main(int argc, char **argv) {
   rusty_assert(options.db_paths_soft_size_limit_multiplier.empty());
   options.db_paths_soft_size_limit_multiplier.push_back(
       db_paths_soft_size_limit_multiplier);
+  rusty_assert(options.db_paths_hard_size_limit_multiplier.empty());
+  options.db_paths_hard_size_limit_multiplier.push_back(
+      db_paths_hard_size_limit_multiplier);
 
   if (work_options.load) {
     std::cerr << "Emptying directories\n";
