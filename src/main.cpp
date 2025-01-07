@@ -343,6 +343,8 @@ struct WorkOptions {
   std::shared_ptr<rocksdb::Cache> block_cache;
 };
 
+constexpr size_t kSmallItemMaxSize = 4052;
+
 class Tester {
  public:
   Tester(const WorkOptions &option)
@@ -511,7 +513,10 @@ class Tester {
           id_(id),
           options_(tester.options_),
           max_alloc_size_(
-              options_.cache->getPool(options_.poolId).getAllocSizes().back()),
+              std::min(kSmallItemMaxSize,
+                       (size_t)options_.cache->getPool(options_.poolId)
+                           .getAllocSizes()
+                           .back())),
           ans_out_(options_.switches & MASK_OUTPUT_ANS
                        ? std::optional<std::ofstream>(
                              options_.db_path / ("ans_" + std::to_string(id)))
@@ -1836,7 +1841,8 @@ int main(int argc, char **argv) {
   nvmConfig.navyConfig.setSimpleFile(db_path / "cachelib", cachelib_size,
                                      true /*truncateFile*/);
   nvmConfig.navyConfig.blockCache().setRegionSize(16 * 1024 * 1024);
-  nvmConfig.navyConfig.bigHash().setSizePctAndMaxItemSize(99, 2048);
+  nvmConfig.navyConfig.bigHash().setSizePctAndMaxItemSize(99,
+                                                          kSmallItemMaxSize);
   lruConfig.enableNvmCache(nvmConfig);
   lruConfig.setAccessConfig({/*bucketsPower*/ 25, /*locksPower*/ 10})
       .validate();
