@@ -1272,10 +1272,9 @@ class RaltWrapper : public ralt::RALT {
   RaltWrapper(const ralt::Options &options, const rocksdb::Comparator *ucmp,
               std::filesystem::path dir, int tier0_last_level,
               size_t init_hot_set_size, size_t max_ralt_size, uint64_t switches,
-              size_t max_hot_set_size, size_t min_hot_set_size,
-              uint64_t accessed_size_to_decr_counter)
+              size_t max_hot_set_size, uint64_t accessed_size_to_decr_counter)
       : ralt::RALT(options, ucmp, dir.c_str(), init_hot_set_size,
-                   max_hot_set_size, min_hot_set_size, max_ralt_size,
+                   max_hot_set_size, 0, max_ralt_size,
                    accessed_size_to_decr_counter),
         switches_(switches),
         tier0_last_level_(tier0_last_level),
@@ -1855,7 +1854,7 @@ int main(int argc, char **argv) {
     ralt = std::make_shared<RaltWrapper>(
         ralt_options, options.comparator, ralt_path_str,
         first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
-        switches, hot_set_size_limit, hot_set_size_limit, fd_size);
+        switches, hot_set_size_limit, fd_size);
     options.ralt = ralt;
   } else {
     std::cerr << "RALT disabled" << std::endl;
@@ -1926,8 +1925,8 @@ int main(int argc, char **argv) {
   AutoTuner *autotuner = nullptr;
   if (vm.count("enable_auto_tuning")) {
     uint64_t fd_size = options.db_paths[0].target_size;
-    autotuner = new AutoTuner(*db, first_level_in_last_tier, fd_size / 20, 0.85,
-                              fd_size / 20);
+    autotuner =
+        new AutoTuner(*db, first_level_in_last_tier, 0.85, fd_size / 20);
   }
 
   Tester tester(work_options);
