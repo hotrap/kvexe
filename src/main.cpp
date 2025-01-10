@@ -1817,7 +1817,34 @@ int main(int argc, char **argv) {
   }
 
   size_t first_level_in_last_tier = calc_first_level_in_last_tier(options);
-  calc_fd_size_ratio(options, first_level_in_last_tier, max_ralt_size);
+  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
+  if (std::filesystem::exists(first_level_in_last_tier_path)) {
+    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
+    rusty_assert(first_level_in_last_tier_in);
+    std::string first_level_in_last_tier_stored;
+    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
+    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
+                    first_level_in_last_tier);
+  } else {
+    std::ofstream(first_level_in_last_tier_path)
+        << first_level_in_last_tier << std::endl;
+  }
+
+  std::shared_ptr<RaltWrapper> ralt = nullptr;
+  uint64_t ralt_size;
+  if (first_level_in_last_tier != 0 && hot_set_size_limit > 0) {
+    uint64_t fd_size = options.db_paths[0].target_size;
+    ralt = std::make_shared<RaltWrapper>(
+        ralt_options, options.comparator, ralt_path_str,
+        first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
+        switches, hot_set_size_limit, fd_size);
+    options.ralt = ralt;
+    ralt_size = ralt->GetRealPhySize();
+  } else {
+    std::cerr << "RALT disabled" << std::endl;
+    ralt_size = 0;
+  }
+  calc_fd_size_ratio(options, first_level_in_last_tier, ralt_size);
   std::cerr << "Initial options.max_bytes_for_level_multiplier_additional: [";
   for (double x : options.max_bytes_for_level_multiplier_additional) {
     std::cerr << x << ',';
@@ -1835,30 +1862,6 @@ int main(int argc, char **argv) {
   std::cerr << level_size_path_id.size() - 1 << "+ " << options.db_paths[p].path
             << ' ' << level_size_path_id[first_level_in_last_tier].first
             << std::endl;
-  auto first_level_in_last_tier_path = db_path / "first-level-in-last-tier";
-  if (std::filesystem::exists(first_level_in_last_tier_path)) {
-    std::ifstream first_level_in_last_tier_in(first_level_in_last_tier_path);
-    rusty_assert(first_level_in_last_tier_in);
-    std::string first_level_in_last_tier_stored;
-    std::getline(first_level_in_last_tier_in, first_level_in_last_tier_stored);
-    rusty_assert_eq((size_t)std::atoi(first_level_in_last_tier_stored.c_str()),
-                    first_level_in_last_tier);
-  } else {
-    std::ofstream(first_level_in_last_tier_path)
-        << first_level_in_last_tier << std::endl;
-  }
-
-  std::shared_ptr<RaltWrapper> ralt = nullptr;
-  if (first_level_in_last_tier != 0 && hot_set_size_limit > 0) {
-    uint64_t fd_size = options.db_paths[0].target_size;
-    ralt = std::make_shared<RaltWrapper>(
-        ralt_options, options.comparator, ralt_path_str,
-        first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
-        switches, hot_set_size_limit, fd_size);
-    options.ralt = ralt;
-  } else {
-    std::cerr << "RALT disabled" << std::endl;
-  }
 
   rocksdb::DB *db;
   auto s = rocksdb::DB::Open(options, db_path.string(), &db);
