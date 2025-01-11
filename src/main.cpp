@@ -362,9 +362,11 @@ class Tester {
     std::ofstream info_json;
     if (options_.load) {
       info_json = std::ofstream(info_json_path);
-      info_json << "{" << std::endl;
     } else {
       info_json = std::ofstream(info_json_path, std::ios_base::app);
+    }
+    if (info_json.tellp() == 0) {
+      info_json << "{" << std::endl;
     }
     rusty::sync::Mutex<std::ofstream> info_json_out(std::move(info_json));
 
