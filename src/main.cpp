@@ -1838,6 +1838,7 @@ int main(int argc, char **argv) {
         first_level_in_last_tier - 1, hot_set_size_limit, max_ralt_size,
         switches, hot_set_size_limit, fd_size);
     options.ralt = ralt;
+    options.disable_hotrap = true;
     ralt_size = ralt->GetRealPhySize();
   } else {
     std::cerr << "RALT disabled" << std::endl;
