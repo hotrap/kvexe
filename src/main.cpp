@@ -408,14 +408,14 @@ class Tester {
       const rocksdb::Statistics &stats = *options_.options->statistics;
       *info_json_out.lock()
           << "\t\"pc-insert-fail-lock\": "
-          << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT_FAIL_LOCK)
+          << stats.getTickerCount(rocksdb::PROMOTION_BUFFER_INSERT_FAIL_LOCK)
           << ",\n"
           << "\t\"pc-insert-fail-compacted\": "
           << stats.getTickerCount(
-                 rocksdb::PROMOTION_CACHE_INSERT_FAIL_COMPACTED)
+                 rocksdb::PROMOTION_BUFFER_INSERT_FAIL_COMPACTED)
           << ",\n"
           << "\t\"pc-insert\": "
-          << stats.getTickerCount(rocksdb::PROMOTION_CACHE_INSERT) << ",\n"
+          << stats.getTickerCount(rocksdb::PROMOTION_BUFFER_INSERT) << ",\n"
           << "\t\"not-found\": " << not_found << ",\n"
           << "\t\"scanned-records\": " << scanned << "\n}";
     } else {
@@ -453,7 +453,7 @@ class Tester {
         << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
 
     log << "Promotion cache hits: "
-        << stats->getTickerCount(rocksdb::PROMOTION_CACHE_GET_HIT) << '\n';
+        << stats->getTickerCount(rocksdb::PROMOTION_BUFFER_GET_HIT) << '\n';
 
     print_timers(log);
 
@@ -1449,7 +1449,8 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
 
   std::ofstream promoted_or_retained_out(db_path /
                                          "promoted-or-retained-bytes");
-  promoted_or_retained_out << "Timestamp(ns) by-flush 2fdlast 2sdfront\n";
+  promoted_or_retained_out
+      << "Timestamp(ns) by-flush by-compaction 2fdlast 2sdfront\n";
 
   std::ofstream not_promoted_bytes_out(db_path / "not-promoted-bytes");
   not_promoted_bytes_out << "Timestamp(ns) not-hot has-newer-version\n";
@@ -1563,6 +1564,7 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     promoted_or_retained_out
         << timestamp << ' '
         << stats->getTickerCount(rocksdb::PROMOTED_FLUSH_BYTES) << ' '
+        << stats->getTickerCount(rocksdb::PROMOTION_BUFFER_TAKEN_BYTES) << ' '
         << stats->getTickerCount(rocksdb::TO_FD_LAST_BYTES) << ' '
         << stats->getTickerCount(rocksdb::TO_SD_FRONT_BYTES) << std::endl;
 
