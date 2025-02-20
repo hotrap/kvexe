@@ -12,6 +12,13 @@ add_compile_options(-fno-omit-frame-pointer -Wall -Wextra -fexceptions)
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
 
+option(WITH_ASAN "build with ASAN" OFF)
+if(WITH_ASAN)
+	add_compile_options(-fsanitize=address)
+	# Should come first in initial library list
+	target_link_libraries(${PROJECT_NAME} PRIVATE asan)
+endif()
+
 include_directories(
     ${ROCKSDB_INCLUDE_DIR}
     ${RALT_INCLUDE_DIR}
