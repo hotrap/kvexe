@@ -8,9 +8,6 @@ add_subdirectory(3rdparty/counter-timer-vec)
 add_subdirectory(3rdparty/AutoTuner)
 
 add_compile_options(-fno-omit-frame-pointer -Wall -Wextra -fexceptions)
-IF (CMAKE_BUILD_TYPE STREQUAL Debug)
-    ADD_DEFINITIONS(-DDEBUG)
-ENDIF()
 
 aux_source_directory(src SRCS)
 add_executable(${PROJECT_NAME} ${SRCS})
