@@ -1442,8 +1442,9 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
   std::ofstream rand_read_bytes_out(db_path / "rand-read-bytes");
 
   std::ofstream report(db_path / "report.csv");
-  report << "Timestamp(ns),num-reads\n";
+  report << "Timestamp(ns),num-reads,hotrap.promotion_buffer.get.hit\n";
   uint64_t num_reads = 0;
+  uint64_t promotion_buffer_hit = 0;
 
   // Stats of hotrap
 
@@ -1558,6 +1559,10 @@ void bg_stat_printer(Tester *tester, std::atomic<bool> *should_stop) {
     uint64_t value = tester->num_reads();
     report << ',' << value - num_reads;
     num_reads = value;
+
+    value = stats->getTickerCount(rocksdb::PROMOTION_BUFFER_GET_HIT);
+    report << ',' << value - promotion_buffer_hit;
+    promotion_buffer_hit = value;
 
     report << std::endl;
 
