@@ -129,6 +129,7 @@ enum class WorkloadType {
   ConfigFile,
   u24685531,
   hotspot_2_4_6_8,
+  hotspot_1_shift_1,
   hotspot_5_shift_5,
 };
 
@@ -384,6 +385,9 @@ class Tester {
               break;
             case WorkloadType::hotspot_2_4_6_8:
               hotspot_2_4_6_8();
+              break;
+            case WorkloadType::hotspot_1_shift_1:
+              hotspot_1_shift_1();
               break;
             case WorkloadType::hotspot_5_shift_5:
               hotspot_5_shift_5();
@@ -1188,6 +1192,10 @@ class Tester {
     run_hotspot(0, 0.06);
     run_hotspot(0, 0.08);
   }
+  void hotspot_1_shift_1() {
+    run_hotspot(0, 0.01);
+    run_hotspot(0.01 * num_load_keys, 0.01);
+  }
   void hotspot_5_shift_5() {
     run_hotspot(0, 0.05);
     run_hotspot(0.05 * num_load_keys, 0.05);
@@ -1906,6 +1914,8 @@ int main(int argc, char **argv) {
     work_options.workload_type = WorkloadType::u24685531;
   } else if (workload == "2-4-6-8") {
     work_options.workload_type = WorkloadType::hotspot_2_4_6_8;
+  } else if (workload == "1-shift-1") {
+    work_options.workload_type = WorkloadType::hotspot_1_shift_1;
   } else if (workload == "5-shift-5") {
     work_options.workload_type = WorkloadType::hotspot_5_shift_5;
   } else {
