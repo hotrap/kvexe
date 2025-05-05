@@ -818,6 +818,7 @@ class Tester {
     for (const auto &timer : ts) {
       timer.reset();
     }
+    options_.db->ResetStats();
 
     *info_json_out.lock() << "\t\"run-start-timestamp(ns)\": " << timestamp_ns()
                           << ',' << std::endl;
