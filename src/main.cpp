@@ -920,6 +920,7 @@ class Tester {
     for (const auto &timer : ts) {
       timer.reset();
     }
+    options_.db->ResetStats();
 
     if (options_.rate_limiter) {
       options_.rate_limiter->SetBytesPerSecond(
