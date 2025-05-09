@@ -316,9 +316,6 @@ struct WorkOptions {
   bool wait_for_background_job_after_run{false};
   bool export_key_only_trace{false};
   bool export_ans_xxh64{false};
-
-  // For stats
-  std::shared_ptr<rocksdb::Cache> block_cache;
 };
 
 class Tester {
@@ -401,10 +398,6 @@ class Tester {
         << stats->getTickerCount(rocksdb::NON_LEADER_WRITE_COUNT) << '\n';
 
     print_timers(log);
-
-    rocksdb::Cache &block_cache = *work_options().block_cache;
-    log << "Block cache usage: " << block_cache.GetUsage()
-        << ", pinned usage: " << block_cache.GetPinnedUsage() << '\n';
 
     {
       std::unique_lock lck(thread_local_m_);
@@ -1606,7 +1599,7 @@ int main(int argc, char **argv) {
   // by an additional transaction layer.
   options.unordered_write = true;
 
-  table_options.block_cache = rocksdb::NewLRUCache(cache_size);
+  options.row_cache = rocksdb::NewLRUCache(cache_size);
   table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   options.table_factory.reset(
       rocksdb::NewBlockBasedTableFactory(table_options));
@@ -1716,8 +1709,6 @@ int main(int argc, char **argv) {
     work_options.ycsb_gen_options = YCSBGen::YCSBGeneratorOptions();
   }
   work_options.export_ans_xxh64 = vm.count("export_ans_xxh64");
-
-  work_options.block_cache = table_options.block_cache;
 
   Tester tester(work_options);
 
