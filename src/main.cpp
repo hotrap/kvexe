@@ -395,6 +395,10 @@ class Tester {
         << '\n'
         << "rocksdb.rocksdb.l2andup.hit: "
         << stats->getTickerCount(rocksdb::GET_HIT_L2_AND_UP) << '\n'
+        << "rocksdb.row.cache.hit: "
+        << stats->getTickerCount(rocksdb::ROW_CACHE_HIT) << '\n'
+        << "rocksdb.row.cache.miss: "
+        << stats->getTickerCount(rocksdb::ROW_CACHE_MISS) << '\n'
         << "leader write count: "
         << stats->getTickerCount(rocksdb::LEADER_WRITE_COUNT) << '\n'
         << "non leader write count: "
